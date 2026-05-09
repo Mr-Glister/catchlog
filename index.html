@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Fishing Trip Log</title>
+  <title>The Catch Log</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -249,22 +249,6 @@ const css = `
   .export-step:last-child { margin-bottom: 0; }
   .export-step-num { width: 18px; height: 18px; border-radius: 50%; background: var(--water); color: white; font-size: 9px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; margin-top: 1px; }
 
-  /* Backup panel */
-  .backup-panel { background: var(--ink); border-radius: 6px; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
-  .backup-panel-title { font-family: 'Playfair Display', serif; font-size: 16px; color: var(--paper); display: flex; align-items: center; gap: 8px; }
-  .backup-panel-sub { font-size: 11px; color: rgba(245,240,232,.5); line-height: 1.5; }
-  .backup-btn-row { display: flex; gap: 8px; }
-  .backup-btn { flex: 1; padding: 12px 8px; font-family: 'Source Code Pro', monospace; font-size: 10px;
-    letter-spacing: 1.5px; text-transform: uppercase; border: none; border-radius: 4px; cursor: pointer; transition: opacity .2s; }
-  .backup-btn:hover { opacity: .85; }
-  .backup-btn.primary { background: var(--copper); color: var(--ink); font-weight: 700; }
-  .backup-btn.secondary { background: rgba(245,240,232,.12); color: var(--paper); border: 1px solid rgba(245,240,232,.2); }
-  .backup-btn.danger { background: rgba(180,80,60,.8); color: white; }
-  .backup-btn:disabled { opacity: .35; cursor: not-allowed; }
-  .backup-divider { height: 1px; background: rgba(245,240,232,.1); margin: 2px 0; }
-  .backup-restore-confirm { background: rgba(180,80,60,.15); border: 1px solid rgba(180,80,60,.4); border-radius: 4px; padding: 10px 12px; font-size: 11px; color: #f5a090; line-height: 1.6; }
-  .csv-section-title { font-size: 9px; letter-spacing: 2px; text-transform: uppercase; color: #aaa; padding: 4px 0 2px; }
-
   .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--paper); padding: 10px 20px; border-radius: 4px; font-size: 11px; letter-spacing: 1px; z-index: 999; border-bottom: 2px solid var(--copper); animation: fadeup .3s ease; }
   @keyframes fadeup { from{opacity:0;transform:translate(-50%,10px)} to{opacity:1;transform:translate(-50%,0)} }
 `;
@@ -308,36 +292,35 @@ function normalizeTide(v, lat, hat) {
 }
 function tideLabel(n) {
   if (n == null) return null;
-  if (n >= .88) return "Near HAT";
-  if (n >= .65) return "High";
-  if (n >= .35) return "Mid";
-  if (n >= .12) return "Low";
-  return "Near LAT";
+  if (n > 1.0) return "Above MHWS";
+  if (n >= 0.75) return "High";
+  if (n >= 0.4) return "Mid";
+  if (n >= 0.1) return "Low";
+  if (n < 0) return "Below MLWS";
+  return "Very Low";
+}
+function tidePct(n) {
+  if (n == null) return null;
+  return Math.round(n * 100);
 }
 function parseKartverketXML(xml) {
   const doc = new DOMParser().parseFromString(xml, "text/xml");
   const wl = doc.querySelectorAll("waterlevel");
   if (wl.length > 0) {
     const v = parseFloat(wl[0].getAttribute("value"));
-    return {
-      type: "level",
-      valueCM: isNaN(v) ? null : v
-    };
+    return { type: "level", valueCM: isNaN(v) ? null : v };
   }
-  let hat = null,
-    lat = null;
+  let hat = null, lat = null, mhws = null, mlws = null;
   doc.querySelectorAll("level").forEach(el => {
     const code = (el.getAttribute("code") || el.getAttribute("shortenglish") || el.getAttribute("fullname") || "").toUpperCase();
     const v = parseFloat(el.getAttribute("value"));
     if (isNaN(v)) return;
     if (code === "HAT" || code.includes("HIGHEST ASTRO")) hat = v;
     if (code === "LAT" || code.includes("LOWEST ASTRO")) lat = v;
+    if (code === "MHWS" || code.includes("MEAN HIGH WATER SPRING")) mhws = v;
+    if (code === "MLWS" || code.includes("MEAN LOW WATER SPRING")) mlws = v;
   });
-  if (hat != null || lat != null) return {
-    type: "levels",
-    hat,
-    lat
-  };
+  if (hat != null || lat != null) return { type: "levels", hat, lat, mhws, mlws };
   return null;
 }
 const DATUM_CACHE = {};
@@ -377,20 +360,20 @@ async function fetchTideData(lat, lon, isoTs) {
     if (p?.type === "levels") {
       hatCM = p.hat;
       latCM = p.lat;
-      DATUM_CACHE[ck] = {
-        hatCM,
-        latCM
-      };
+      DATUM_CACHE[ck] = { hatCM, latCM, mhwsCM: p.mhws, mlwsCM: p.mlws };
     }
   }
+  const { mhwsCM, mlwsCM } = DATUM_CACHE[ck] || {};
   const txt2 = await proxyFetch(`${BASE}?lat=${ls}&lon=${lo}&fromtime=${toKartverketTime(from)}&totime=${toKartverketTime(to)}&datatype=pre&refcode=cd&lang=en&interval=10&dst=0&tide_request=locationdata`);
   const p2 = parseKartverketXML(txt2);
   if (!p2 || p2.valueCM == null) return null;
+  // Seasonal: normalized between MLWS and MHWS, expressed 0-1 (display as %)
+  const seasonal = mhwsCM != null && mlwsCM != null ? normalizeTide(p2.valueCM, mlwsCM, mhwsCM) : null;
   return {
     valueCM: p2.valueCM,
-    normalized: hatCM != null && latCM != null ? normalizeTide(p2.valueCM, latCM, hatCM) : null,
-    hatCM,
-    latCM
+    seasonal,
+    mhwsCM,
+    mlwsCM
   };
 }
 
@@ -494,19 +477,19 @@ const spotsCSV = (spots, trips) => {
   })].join("\n");
 };
 const catchesCSV = (catches, spots, trips) => {
-  const h = row(["catch_id", "trip_id", "trip_name", "spot_id", "spot_name", "timestamp", "species", "fly_pattern", "size", "gps_lat", "gps_lon", "water_temp", "air_temp_c", "pressure_hpa", "moon_phase", "tide_normalized", "tide_cm", "tide_lat_cm", "tide_hat_cm", "has_fish_photo", "has_fly_photo", "notes"]);
+  const h = row(["catch_id", "trip_id", "trip_name", "spot_id", "spot_name", "timestamp", "species", "fly_pattern", "size", "gps_lat", "gps_lon", "water_temp", "air_temp_c", "pressure_hpa", "moon_phase", "tide_seasonal_pct", "tide_cm", "tide_lat_cm", "tide_hat_cm", "notes"]);
   return [h, ...[...catches].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp)).map(c => {
     const t = trips.find(x => x.id === c.tripId),
       s = spots.find(x => x.id === c.spotId);
-    return row([c.id, c.tripId || "", t?.name || "", c.spotId || "", s?.name || "", c.timestamp, c.species, c.flyPattern || "", c.size || "", c.gps?.lat ?? "", c.gps?.lon ?? "", c.waterTemp ?? "", c.weather?.airTemp ?? "", c.weather?.pressure ?? "", c.weather?.moon || "", c.tide?.normalized != null ? c.tide.normalized.toFixed(4) : "", c.tide?.valueCM ?? "", c.tide?.latCM ?? "", c.tide?.hatCM ?? "", c.fishPhoto ? "1" : "0", c.flyPhoto ? "1" : "0", c.notes || ""]);
+    return row([c.id, c.tripId || "", t?.name || "", c.spotId || "", s?.name || "", c.timestamp, c.species, c.flyPattern || "", c.size || "", c.gps?.lat ?? "", c.gps?.lon ?? "", c.waterTemp || "", c.weather?.airTemp ?? "", c.weather?.pressure ?? "", c.weather?.moon || "", c.tide?.seasonal != null ? tidePct(c.tide.seasonal) : "", c.tide?.valueCM ?? "", c.tide?.latCM ?? "", c.tide?.hatCM ?? "", c.notes || ""]);
   })].join("\n");
 };
 const obsCSV = (observations, spots, trips) => {
-  const h = row(["obs_id", "trip_id", "trip_name", "spot_id", "spot_name", "timestamp", "species", "count", "estimated_size", "gps_lat", "gps_lon", "notes"]);
+  const h = row(["obs_id", "trip_id", "trip_name", "spot_id", "spot_name", "timestamp", "species", "count", "estimated_size", "gps_lat", "gps_lon", "air_temp_c", "pressure_hpa", "moon_phase", "tide_seasonal_pct", "tide_cm", "notes"]);
   return [h, ...[...observations].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp)).map(o => {
     const t = trips.find(x => x.id === o.tripId),
       s = spots.find(x => x.id === o.spotId);
-    return row([o.id, o.tripId || "", t?.name || "", o.spotId || "", s?.name || "", o.timestamp, o.species, o.count || "", o.estimatedSize || "", o.gps?.lat ?? "", o.gps?.lon ?? "", o.notes || ""]);
+    return row([o.id, o.tripId || "", t?.name || "", o.spotId || "", s?.name || "", o.timestamp, o.species, o.count || "", o.estimatedSize || "", o.gps?.lat ?? "", o.gps?.lon ?? "", o.weather?.airTemp ?? "", o.weather?.pressure ?? "", o.weather?.moon || "", o.tide?.seasonal != null ? tidePct(o.tide.seasonal) : "", o.tide?.valueCM ?? "", o.notes || ""]);
   })].join("\n");
 };
 function dlCSV(content, filename) {
@@ -517,79 +500,6 @@ function dlCSV(content, filename) {
   const a = document.createElement("a");
   a.href = url;
   a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-// ── Backup / restore / photo export ──────────────────────────────────────────
-
-function dlJSON(obj, filename) {
-  const blob = new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-function backupAll(trips, spots, catches, observations) {
-  const today = new Date().toISOString().slice(0, 10);
-  dlJSON({
-    exportedAt: new Date().toISOString(),
-    version: 1,
-    trips,
-    spots,
-    catches,
-    observations
-  }, `catchlog_backup_${today}.json`);
-}
-
-function restoreFromFile(file, onDone) {
-  const reader = new FileReader();
-  reader.onload = e => {
-    try {
-      const data = JSON.parse(e.target.result);
-      if (!data.trips || !data.spots || !data.catches || !data.observations) {
-        alert("Invalid backup file — missing expected data.");
-        return;
-      }
-      localStorage.setItem("fl_trips_v3",  JSON.stringify(data.trips));
-      localStorage.setItem("fl_spots_v2",  JSON.stringify(data.spots));
-      localStorage.setItem("fl_catches_v3", JSON.stringify(data.catches));
-      localStorage.setItem("fl_obs_v2",    JSON.stringify(data.observations));
-      onDone(data);
-    } catch {
-      alert("Could not read backup file. Make sure it's a valid CatchLog JSON backup.");
-    }
-  };
-  reader.readAsText(file);
-}
-
-function exportPhotos(catches) {
-  const withPhotos = catches.filter(c => c.fishPhoto || c.flyPhoto);
-  if (!withPhotos.length) { alert("No photos to export."); return; }
-  // Build a self-contained HTML page with all photos labelled by catch ID
-  const today = new Date().toISOString().slice(0, 10);
-  const items = withPhotos.map(c => {
-    const parts = [];
-    if (c.fishPhoto) parts.push(`<div class="item"><p class="label">${c.id} · fish · ${c.species} · ${c.timestamp.slice(0,10)}</p><img src="${c.fishPhoto}" /></div>`);
-    if (c.flyPhoto)  parts.push(`<div class="item"><p class="label">${c.id} · fly · ${c.species} · ${c.timestamp.slice(0,10)}</p><img src="${c.flyPhoto}" /></div>`);
-    return parts.join("\n");
-  }).join("\n");
-  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>CatchLog Photos ${today}</title>
-<style>body{font-family:monospace;background:#1a1a18;color:#f5f0e8;padding:20px;}
-.item{margin-bottom:32px;border-bottom:1px solid #333;padding-bottom:24px;}
-.label{font-size:11px;letter-spacing:1px;color:#b87333;margin-bottom:8px;}
-img{max-width:480px;width:100%;border-radius:4px;display:block;}
-</style></head><body><h2 style="font-family:serif;color:#d4944a">CatchLog Photos — ${today}</h2>
-<p style="font-size:11px;opacity:.5">${withPhotos.length} catches · right-click any image to save</p>
-${items}</body></html>`;
-  const blob = new Blob([html], { type: "text/html" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `catchlog_photos_${today}.html`;
   a.click();
   URL.revokeObjectURL(url);
 }
@@ -701,13 +611,6 @@ function FishLog() {
     showToast("Trip deleted");
   };
   const updSpot = s => mutSpots(p => p.map(x => x.id === s.id ? s : x));
-  const restoreAll = data => {
-    setTrips(data.trips);
-    setSpots(data.spots);
-    setCatches(data.catches);
-    setObservations(data.observations);
-    showToast("Backup restored ✓");
-  };
   const addCatch = c => {
     mutCatches(p => [c, ...p]);
     setTab("journal");
@@ -739,7 +642,7 @@ function FishLog() {
     className: "header-top"
   }, /*#__PURE__*/React.createElement("div", {
     className: "header-title"
-  }, "The ", /*#__PURE__*/React.createElement("span", null, "Fishing Trip"), " Log"), /*#__PURE__*/React.createElement("div", {
+  }, "The ", /*#__PURE__*/React.createElement("span", null, "Catch"), " Log"), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
   }, "Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
@@ -765,7 +668,7 @@ function FishLog() {
     className: "ab-spot"
   }, activeSpot ? `📍 ${activeSpot.name || "Unnamed spot"}` : "📍 No spot yet"), activeSpot?.waterTemp && /*#__PURE__*/React.createElement("div", {
     className: "ab-meta"
-  }, "\uD83D\uDCA7 ", activeSpot.waterTemp, "\xB0C")), /*#__PURE__*/React.createElement("div", {
+  }, "\uD83D\uDCA7 ", activeSpot.waterTemp)), /*#__PURE__*/React.createElement("div", {
     className: "ab-buttons"
   }, /*#__PURE__*/React.createElement("button", {
     className: "ab-btn",
@@ -803,8 +706,7 @@ function FishLog() {
     trips: trips,
     spots: spots,
     catches: catches,
-    observations: observations,
-    onRestore: restoreAll
+    observations: observations
   }), selTrip && /*#__PURE__*/React.createElement(TripDetail, {
     trip: selTrip,
     onClose: () => setSelTrip(null),
@@ -876,23 +778,6 @@ function TargetSelect({
     value: s
   }, s))));
 }
-function SpeciesSelect({
-  value,
-  onChange
-}) {
-  return /*#__PURE__*/React.createElement("div", {
-    className: "field-select-wrap"
-  }, /*#__PURE__*/React.createElement("select", {
-    className: "field-select",
-    value: value,
-    onChange: e => onChange(e.target.value)
-  }, /*#__PURE__*/React.createElement("option", {
-    value: ""
-  }, "\u2014 select \u2014"), TARGET_SPECIES.map(s => /*#__PURE__*/React.createElement("option", {
-    key: s,
-    value: s
-  }, s))));
-}
 function TripsList({
   trips,
   tripSpots,
@@ -927,7 +812,7 @@ function TripsList({
     onStartSession({
       name: spotName.trim(),
       gps,
-      waterTemp: waterTemp ? parseInt(waterTemp) : null,
+      waterTemp: waterTemp.trim(),
       lineType,
       notes: spotNotes.trim()
     }, {
@@ -1264,7 +1149,7 @@ function AddSpotForm({
       name: name.trim(),
       timestamp: new Date().toISOString(),
       gps,
-      waterTemp: waterTemp ? parseInt(waterTemp) : null,
+      waterTemp: waterTemp.trim(),
       lineType,
       notes: notes.trim()
     });
@@ -1429,7 +1314,7 @@ function CatchForm({
       species: species.trim(),
       flyPattern: flyPattern.trim(),
       size: size.trim(),
-      waterTemp: waterTemp ? parseInt(waterTemp) : null,
+      waterTemp: waterTemp.trim(),
       notes: notes.trim(),
       fishPhoto,
       flyPhoto,
@@ -1488,16 +1373,13 @@ function CatchForm({
     className: "field-group"
   }, /*#__PURE__*/React.createElement("div", {
     className: "field-group-title"
-  }, "Catch Details"), /*#__PURE__*/React.createElement("div", {
-    className: "field-row"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "field-icon"
-  }, "\uD83D\uDC1F"), /*#__PURE__*/React.createElement("span", {
-    className: "field-label"
-  }, "Species"), /*#__PURE__*/React.createElement(SpeciesSelect, {
-    value: species,
-    onChange: setSpecies
-  })), [{
+  }, "Catch Details"), [{
+    icon: "🐟",
+    label: "Species",
+    val: species,
+    set: setSpecies,
+    ph: "Brown Trout…"
+  }, {
     icon: "🪰",
     label: "Fly Pattern",
     val: flyPattern,
@@ -1586,7 +1468,7 @@ function CatchForm({
   }, "Water Temp"), /*#__PURE__*/React.createElement(TempSelect, {
     value: waterTemp,
     onChange: setWaterTemp,
-    placeholder: activeSpot?.waterTemp != null ? `Spot: ${activeSpot.waterTemp}°C` : "— select —"
+    placeholder: activeSpot?.waterTemp ? `Spot: ${activeSpot.waterTemp}` : "— select —"
   }), /*#__PURE__*/React.createElement("span", {
     className: "field-unit"
   }, "manual")), /*#__PURE__*/React.createElement("div", {
@@ -1618,20 +1500,20 @@ function CatchForm({
     className: "tide-value-line"
   }, /*#__PURE__*/React.createElement("span", {
     className: "tide-normalized"
-  }, tide.normalized != null ? tide.normalized.toFixed(2) : "—"), tide.valueCM != null && /*#__PURE__*/React.createElement("span", {
+  }, tide.seasonal != null ? tidePct(tide.seasonal) + "%" : "—"), tide.valueCM != null && /*#__PURE__*/React.createElement("span", {
     className: "tide-raw"
-  }, "(", tide.valueCM, " cm)"), tide.normalized != null && /*#__PURE__*/React.createElement("span", {
+  }, "(", tide.valueCM, " cm)"), tide.seasonal != null && /*#__PURE__*/React.createElement("span", {
     className: "tide-hint"
-  }, tideLabel(tide.normalized))), tide.normalized != null && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+  }, tideLabel(tide.seasonal))), tide.seasonal != null && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     className: "tide-bar-track"
   }, /*#__PURE__*/React.createElement("div", {
     className: "tide-bar-fill",
     style: {
-      width: `${tide.normalized * 100}%`
+      width: `${Math.max(0,Math.min(100,tide.seasonal*100))}%`
     }
   })), /*#__PURE__*/React.createElement("div", {
     className: "tide-bar-labels"
-  }, /*#__PURE__*/React.createElement("span", null, "0.0 LAT", tide.latCM != null ? ` (${tide.latCM}cm)` : ""), /*#__PURE__*/React.createElement("span", null, "1.0 HAT", tide.hatCM != null ? ` (${tide.hatCM}cm)` : ""))))), /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("span", null, "Typical Low", tide.mhwsCM != null ? ` (${tide.mlwsCM}cm)` : ""), /*#__PURE__*/React.createElement("span", null, "Typical High", tide.mhwsCM != null ? ` (${tide.mhwsCM}cm)` : ""))))), /*#__PURE__*/React.createElement("div", {
     className: "field-row"
   }, /*#__PURE__*/React.createElement("span", {
     className: "field-icon"
@@ -1688,22 +1570,9 @@ function ObsForm({
   const [count, setCount] = useState("");
   const [estSize, setEstSize] = useState("");
   const [notes, setNotes] = useState("");
-  const [gps, setGps] = useState(null);
-  const [gpsStatus, setGpsStatus] = useState("idle");
   const [timestamp] = useState(() => new Date().toISOString());
-  const getGPS = () => {
-    setGpsStatus("loading");
-    navigator.geolocation.getCurrentPosition(p => {
-      setGps({
-        lat: p.coords.latitude,
-        lon: p.coords.longitude
-      });
-      setGpsStatus("ok");
-    }, () => setGpsStatus("error"), {
-      enableHighAccuracy: true,
-      timeout: 15000
-    });
-  };
+  const { gps, gpsStatus, weather, weatherStatus, tide, tideStatus, getGPS, reset } = useEnv();
+
   const handleSave = () => {
     if (!species.trim()) return;
     onSave({
@@ -1714,119 +1583,89 @@ function ObsForm({
       estimatedSize: estSize.trim(),
       notes: notes.trim(),
       gps,
+      weather,
+      tide,
       tripId: activeTrip?.id || null,
       spotId: activeSpot?.id || null
     });
-    setSpecies("");
-    setCount("");
-    setEstSize("");
-    setNotes("");
-    setGps(null);
-    setGpsStatus("idle");
+    setSpecies(""); setCount(""); setEstSize(""); setNotes(""); reset();
   };
-  return /*#__PURE__*/React.createElement(React.Fragment, null, activeSpot && /*#__PURE__*/React.createElement("div", {
-    className: "context-pill copper"
-  }, "\uD83D\uDCCD At: ", /*#__PURE__*/React.createElement("strong", null, activeSpot.name || "Active spot")), /*#__PURE__*/React.createElement("div", {
-    className: "field-group"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "field-group-title"
-  }, "Fish Observed"), /*#__PURE__*/React.createElement("div", {
-    className: "field-row"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "field-icon"
-  }, "\uD83D\uDC1F"), /*#__PURE__*/React.createElement("span", {
-    className: "field-label"
-  }, "Species"), /*#__PURE__*/React.createElement(SpeciesSelect, {
-    value: species,
-    onChange: setSpecies
-  })), /*#__PURE__*/React.createElement("div", {
-    className: "field-row"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "field-icon"
-  }, "#"), /*#__PURE__*/React.createElement("span", {
-    className: "field-label"
-  }, "Count"), /*#__PURE__*/React.createElement("input", {
-    className: "field-num",
-    type: "number",
-    min: "1",
-    value: count,
-    onChange: e => setCount(e.target.value),
-    placeholder: "0"
-  }), /*#__PURE__*/React.createElement("span", {
-    className: "field-unit",
-    style: {
-      marginLeft: 4
-    }
-  }, "fish")), /*#__PURE__*/React.createElement("div", {
-    className: "field-row"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "field-icon"
-  }, "\uD83D\uDCCF"), /*#__PURE__*/React.createElement("span", {
-    className: "field-label"
-  }, "Est. Size"), /*#__PURE__*/React.createElement("input", {
-    className: "field-input",
-    value: estSize,
-    onChange: e => setEstSize(e.target.value),
-    placeholder: "e.g. 35\u201350 cm, large\u2026"
-  })), /*#__PURE__*/React.createElement("div", {
-    className: "field-row"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "field-icon"
-  }, "\uD83D\uDD50"), /*#__PURE__*/React.createElement("span", {
-    className: "field-label"
-  }, "Time"), /*#__PURE__*/React.createElement("span", {
-    className: "field-value",
-    style: {
-      fontSize: 12
-    }
-  }, fmtDT(timestamp))), /*#__PURE__*/React.createElement("div", {
-    className: "field-row"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "field-icon"
-  }, "\uD83D\uDCCD"), /*#__PURE__*/React.createElement("span", {
-    className: "field-label"
-  }, "GPS"), gpsStatus === "idle" && /*#__PURE__*/React.createElement("button", {
-    className: "gps-btn",
-    onClick: getGPS
-  }, "Get Fix"), gpsStatus === "loading" && /*#__PURE__*/React.createElement("span", {
-    className: "status-badge status-loading"
-  }, "Acquiring\u2026"), gpsStatus === "error" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
-    className: "status-badge status-error"
-  }, "Failed"), /*#__PURE__*/React.createElement("button", {
-    className: "gps-btn",
-    style: {
-      marginLeft: 6
-    },
-    onClick: getGPS
-  }, "Retry")), gpsStatus === "ok" && gps && /*#__PURE__*/React.createElement("span", {
-    className: "gps-coords"
-  }, formatCoords(gps.lat, gps.lon))), /*#__PURE__*/React.createElement("div", {
-    className: "field-row top"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "field-icon",
-    style: {
-      marginTop: 2
-    }
-  }, "\uD83D\uDCDD"), /*#__PURE__*/React.createElement("span", {
-    className: "field-label",
-    style: {
-      marginTop: 2
-    }
-  }, "Notes"), /*#__PURE__*/React.createElement("textarea", {
-    className: "field-input",
-    value: notes,
-    onChange: e => setNotes(e.target.value),
-    placeholder: "Behaviour, depth, rising, spooked\u2026",
-    rows: 3,
-    style: {
-      padding: "2px 0",
-      resize: "none"
-    }
-  }))), /*#__PURE__*/React.createElement("button", {
-    className: "save-btn",
-    onClick: handleSave,
-    disabled: !species.trim()
-  }, "\uD83D\uDC41 Record Observation"));
+
+  return /*#__PURE__*/React.createElement(React.Fragment, null,
+    activeSpot && /*#__PURE__*/React.createElement("div", { className: "context-pill copper" },
+      "\uD83D\uDCCD At: ", /*#__PURE__*/React.createElement("strong", null, activeSpot.name || "Active spot")),
+    /*#__PURE__*/React.createElement("div", { className: "field-group" },
+      /*#__PURE__*/React.createElement("div", { className: "field-group-title" }, "Fish Observed"),
+      /*#__PURE__*/React.createElement("div", { className: "field-row" },
+        /*#__PURE__*/React.createElement("span", { className: "field-icon" }, "\uD83D\uDC1F"),
+        /*#__PURE__*/React.createElement("span", { className: "field-label" }, "Species"),
+        /*#__PURE__*/React.createElement("input", { className: "field-input", value: species, onChange: e => setSpecies(e.target.value), placeholder: "Sea Trout, Grayling\u2026" })),
+      /*#__PURE__*/React.createElement("div", { className: "field-row" },
+        /*#__PURE__*/React.createElement("span", { className: "field-icon" }, "#"),
+        /*#__PURE__*/React.createElement("span", { className: "field-label" }, "Count"),
+        /*#__PURE__*/React.createElement("input", { className: "field-num", type: "number", min: "1", value: count, onChange: e => setCount(e.target.value), placeholder: "0" }),
+        /*#__PURE__*/React.createElement("span", { className: "field-unit", style: { marginLeft: 4 } }, "fish")),
+      /*#__PURE__*/React.createElement("div", { className: "field-row" },
+        /*#__PURE__*/React.createElement("span", { className: "field-icon" }, "\uD83D\uDCCF"),
+        /*#__PURE__*/React.createElement("span", { className: "field-label" }, "Est. Size"),
+        /*#__PURE__*/React.createElement("input", { className: "field-input", value: estSize, onChange: e => setEstSize(e.target.value), placeholder: "e.g. 35\u201350 cm, large\u2026" })),
+      /*#__PURE__*/React.createElement("div", { className: "field-row" },
+        /*#__PURE__*/React.createElement("span", { className: "field-icon" }, "\uD83D\uDD50"),
+        /*#__PURE__*/React.createElement("span", { className: "field-label" }, "Time"),
+        /*#__PURE__*/React.createElement("span", { className: "field-value", style: { fontSize: 12 } }, fmtDT(timestamp))),
+      /*#__PURE__*/React.createElement("div", { className: "field-row" },
+        /*#__PURE__*/React.createElement("span", { className: "field-icon" }, "\uD83D\uDCCD"),
+        /*#__PURE__*/React.createElement("span", { className: "field-label" }, "GPS"),
+        gpsStatus === "idle" && /*#__PURE__*/React.createElement("button", { className: "gps-btn", onClick: () => getGPS(timestamp) }, "Get Fix"),
+        gpsStatus === "loading" && /*#__PURE__*/React.createElement("span", { className: "status-badge status-loading" }, "Acquiring\u2026"),
+        gpsStatus === "error" && /*#__PURE__*/React.createElement(React.Fragment, null,
+          /*#__PURE__*/React.createElement("span", { className: "status-badge status-error" }, "Failed"),
+          /*#__PURE__*/React.createElement("button", { className: "gps-btn", style: { marginLeft: 6 }, onClick: () => getGPS(timestamp) }, "Retry")),
+        gpsStatus === "ok" && gps && /*#__PURE__*/React.createElement("span", { className: "gps-coords" }, formatCoords(gps.lat, gps.lon)))),
+    /*#__PURE__*/React.createElement("div", { className: "field-group" },
+      /*#__PURE__*/React.createElement("div", { className: "field-group-title" },
+        "Conditions", (weatherStatus === "loading" || tideStatus === "loading") && /*#__PURE__*/React.createElement("span", { style: { opacity: .5, fontSize: 9 } }, " \u00b7 fetching\u2026")),
+      /*#__PURE__*/React.createElement("div", { className: "field-row" },
+        /*#__PURE__*/React.createElement("span", { className: "field-icon" }, "\uD83C\uDF21\uFE0F"),
+        /*#__PURE__*/React.createElement("span", { className: "field-label" }, "Air Temp"),
+        weather?.airTemp != null
+          ? /*#__PURE__*/React.createElement("span", { className: "field-value" }, weather.airTemp, " \xb0C")
+          : /*#__PURE__*/React.createElement("span", { className: "field-value", style:{color:"#ccc"} }, "\u2014 get GPS fix")),
+      /*#__PURE__*/React.createElement("div", { className: "field-row top" },
+        /*#__PURE__*/React.createElement("span", { className: "field-icon", style: { marginTop: 2 } }, "\uD83C\uDF0A"),
+        /*#__PURE__*/React.createElement("span", { className: "field-label", style: { marginTop: 2 } }, "Tide"),
+        tideStatus === "idle" && /*#__PURE__*/React.createElement("span", { style: { fontSize: 11, color: "#bbb" } }, "\u2014 get GPS first"),
+        tideStatus === "loading" && /*#__PURE__*/React.createElement("span", { className: "status-badge status-loading" }, "Loading\u2026"),
+        tideStatus === "error" && /*#__PURE__*/React.createElement("span", { className: "status-badge status-error" }, "API error"),
+        tideStatus === "unavailable" && /*#__PURE__*/React.createElement("span", { className: "status-badge status-error" }, "No data"),
+        tideStatus === "ok" && tide && /*#__PURE__*/React.createElement("div", { className: "tide-bar-wrap" },
+          /*#__PURE__*/React.createElement("div", { className: "tide-value-line" },
+            /*#__PURE__*/React.createElement("span", { className: "tide-normalized" }, tide.seasonal != null ? tidePct(tide.seasonal) + "%" : "\u2014"),
+            tide.valueCM != null && /*#__PURE__*/React.createElement("span", { className: "tide-raw" }, "(", tide.valueCM, " cm)"),
+            tide.seasonal != null && /*#__PURE__*/React.createElement("span", { className: "tide-hint" }, tideLabel(tide.seasonal))),
+          tide.seasonal != null && /*#__PURE__*/React.createElement(React.Fragment, null,
+            /*#__PURE__*/React.createElement("div", { className: "tide-bar-track" },
+              /*#__PURE__*/React.createElement("div", { className: "tide-bar-fill", style: { width: `${Math.max(0,Math.min(100,tide.seasonal*100))}%` } })),
+            /*#__PURE__*/React.createElement("div", { className: "tide-bar-labels" },
+              /*#__PURE__*/React.createElement("span", null, "Typical Low", tide.mlwsCM != null ? ` (${tide.mlwsCM}cm)` : ""),
+              /*#__PURE__*/React.createElement("span", null, "Typical High", tide.mhwsCM != null ? ` (${tide.mhwsCM}cm)` : ""))))),
+      /*#__PURE__*/React.createElement("div", { className: "field-row" },
+        /*#__PURE__*/React.createElement("span", { className: "field-icon" }, "\uD83D\uDD35"),
+        /*#__PURE__*/React.createElement("span", { className: "field-label" }, "Pressure"),
+        weather?.pressure != null
+          ? /*#__PURE__*/React.createElement("span", { className: "field-value" }, weather.pressure, " hPa")
+          : /*#__PURE__*/React.createElement("span", { className: "field-value", style:{color:"#ccc"} }, "\u2014")),
+      /*#__PURE__*/React.createElement("div", { className: "field-row" },
+        /*#__PURE__*/React.createElement("span", { className: "field-icon" }, "\uD83C\uDF15"),
+        /*#__PURE__*/React.createElement("span", { className: "field-label" }, "Moon"),
+        /*#__PURE__*/React.createElement("span", { className: "field-value" }, weather?.moon ?? getMoonPhase(new Date()))),
+      !gps && /*#__PURE__*/React.createElement("div", { className: "info-note" }, "Get GPS fix to auto-load air temp, pressure & tide"),
+      tideStatus === "ok" && /*#__PURE__*/React.createElement("div", { className: "info-note" }, "Tide \xa9 Kartverket/NMA (CC BY 4.0)")),
+    /*#__PURE__*/React.createElement("div", { className: "field-group" },
+      /*#__PURE__*/React.createElement("div", { className: "field-group-title" }, "Notes"),
+      /*#__PURE__*/React.createElement("div", { className: "field-row top" },
+        /*#__PURE__*/React.createElement("textarea", { className: "field-input", value: notes, onChange: e => setNotes(e.target.value), placeholder: "Behaviour, depth, rising, spooked\u2026", rows: 3, style: { padding: "2px 0", resize: "none" } }))),
+    /*#__PURE__*/React.createElement("button", { className: "save-btn", onClick: handleSave, disabled: !species.trim() }, "\uD83D\uDC41 Record Observation"));
 }
 
 // ── Journal ───────────────────────────────────────────────────────────────────
@@ -1896,9 +1735,9 @@ function Journal({
     className: "chip"
   }, "\uD83D\uDCCF ", item.size), item.weather?.airTemp != null && /*#__PURE__*/React.createElement("span", {
     className: "chip"
-  }, "\uD83C\uDF21\uFE0F ", item.weather.airTemp, "\xB0C"), item.tide?.normalized != null && /*#__PURE__*/React.createElement("span", {
+  }, "\uD83C\uDF21\uFE0F ", item.weather.airTemp, "\xB0C"), item.tide?.seasonal != null && /*#__PURE__*/React.createElement("span", {
     className: "chip chip-tide"
-  }, "\uD83C\uDF0A ", item.tide.normalized.toFixed(2), " \xB7 ", tideLabel(item.tide.normalized)), item.weather?.moon && /*#__PURE__*/React.createElement("span", {
+  }, "\uD83C\uDF0A ", tidePct(item.tide.seasonal) + "%", " \xB7 ", tideLabel(item.tide.seasonal)), item.weather?.moon && /*#__PURE__*/React.createElement("span", {
     className: "chip"
   }, item.weather.moon), item.spotId && spotName(item.spotId) && /*#__PURE__*/React.createElement("span", {
     className: "chip chip-spot"
@@ -2076,7 +1915,7 @@ function TripDetail({
         color: "var(--water)",
         marginLeft: s.lineType ? 6 : "auto"
       }
-    }, "\uD83D\uDCA7 ", s.waterTemp, "\xB0C")), s.gps && /*#__PURE__*/React.createElement("div", {
+    }, "\uD83D\uDCA7 ", s.waterTemp)), s.gps && /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 10,
         color: "var(--water)",
@@ -2101,7 +1940,7 @@ function TripDetail({
       className: "mini-catch-species"
     }, c.species), /*#__PURE__*/React.createElement("div", {
       className: "mini-catch-time"
-    }, fmtTime(c.timestamp), c.size ? ` · ${c.size}` : "", c.tide?.normalized != null ? ` · 🌊 ${c.tide.normalized.toFixed(2)}` : "")), /*#__PURE__*/React.createElement("span", {
+    }, fmtTime(c.timestamp), c.size ? ` · ${c.size}` : "", c.tide?.seasonal != null ? ` · 🌊 ${tidePct(c.tide.seasonal) + "%"}` : "")), /*#__PURE__*/React.createElement("span", {
       style: {
         color: "#ccc",
         fontSize: 16
@@ -2156,7 +1995,7 @@ function CatchDetail({
   trips,
   spots
 }) {
-  const norm = c.tide?.normalized;
+  const norm = c.tide?.seasonal;
   const trip = trips?.find(t => t.id === c.tripId);
   const spot = spots?.find(s => s.id === c.spotId);
   return /*#__PURE__*/React.createElement("div", {
@@ -2247,7 +2086,7 @@ function CatchDetail({
     className: "modal-stat-label"
   }, "Water Temp"), /*#__PURE__*/React.createElement("div", {
     className: "modal-stat-value"
-  }, c.waterTemp, "\xB0C")), c.weather?.pressure != null && /*#__PURE__*/React.createElement("div", {
+  }, c.waterTemp)), c.weather?.pressure != null && /*#__PURE__*/React.createElement("div", {
     className: "modal-stat"
   }, /*#__PURE__*/React.createElement("div", {
     className: "modal-stat-label"
@@ -2271,7 +2110,7 @@ function CatchDetail({
     style: {
       marginBottom: 5
     }
-  }, "Tide Level (Kartverket)"), /*#__PURE__*/React.createElement("div", {
+  }, "Tide Level (Seasonal %)"), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       alignItems: "baseline",
@@ -2284,7 +2123,7 @@ function CatchDetail({
       fontWeight: 700,
       color: "var(--water)"
     }
-  }, norm.toFixed(2)), c.tide.valueCM != null && /*#__PURE__*/React.createElement("span", {
+  }, tidePct(norm) + "%"), c.tide.valueCM != null && /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 11,
       color: "#888"
@@ -2310,7 +2149,7 @@ function CatchDetail({
       color: "#aaa",
       marginTop: 3
     }
-  }, /*#__PURE__*/React.createElement("span", null, "0.0 LAT", c.tide.latCM != null ? ` (${c.tide.latCM}cm)` : ""), /*#__PURE__*/React.createElement("span", null, "1.0 HAT", c.tide.hatCM != null ? ` (${c.tide.hatCM}cm)` : ""))), /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("span", null, "Typical Low", c.tide.mlwsCM != null ? ` (${c.tide.mlwsCM}cm)` : ""), /*#__PURE__*/React.createElement("span", null, "Typical High", c.tide.mhwsCM != null ? ` (${c.tide.mhwsCM}cm)` : ""))), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 9,
       color: "#ccc",
@@ -2339,76 +2178,63 @@ function ObsDetail({
 }) {
   const trip = trips?.find(t => t.id === o.tripId);
   const spot = spots?.find(s => s.id === o.spotId);
+  const norm = o.tide?.seasonal;
   return /*#__PURE__*/React.createElement("div", {
-    className: "modal-overlay",
-    onClick: e => e.target === e.currentTarget && onClose()
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "modal"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "modal-header"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "modal-title"
-  }, "\uD83D\uDC41 ", o.species), /*#__PURE__*/React.createElement("button", {
-    className: "modal-close",
-    onClick: onClose
-  }, "\xD7")), /*#__PURE__*/React.createElement("div", {
-    className: "modal-section"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "modal-section-title"
-  }, "Observation"), /*#__PURE__*/React.createElement("div", {
-    className: "modal-grid"
-  }, o.count && /*#__PURE__*/React.createElement("div", {
-    className: "modal-stat"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "modal-stat-label"
-  }, "Count"), /*#__PURE__*/React.createElement("div", {
-    className: "modal-stat-value"
-  }, o.count, " fish")), o.estimatedSize && /*#__PURE__*/React.createElement("div", {
-    className: "modal-stat"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "modal-stat-label"
-  }, "Est. Size"), /*#__PURE__*/React.createElement("div", {
-    className: "modal-stat-value"
-  }, o.estimatedSize)), /*#__PURE__*/React.createElement("div", {
-    className: "modal-stat"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "modal-stat-label"
-  }, "Time"), /*#__PURE__*/React.createElement("div", {
-    className: "modal-stat-value",
-    style: {
-      fontSize: 11
-    }
-  }, fmtDT(o.timestamp))), o.gps && /*#__PURE__*/React.createElement("div", {
-    className: "modal-stat"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "modal-stat-label"
-  }, "GPS"), /*#__PURE__*/React.createElement("div", {
-    className: "modal-stat-value",
-    style: {
-      fontSize: 10
-    }
-  }, formatCoords(o.gps.lat, o.gps.lon))), spot && /*#__PURE__*/React.createElement("div", {
-    className: "modal-stat"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "modal-stat-label"
-  }, "Spot"), /*#__PURE__*/React.createElement("div", {
-    className: "modal-stat-value"
-  }, spot.name || "—")), trip && /*#__PURE__*/React.createElement("div", {
-    className: "modal-stat"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "modal-stat-label"
-  }, "Session"), /*#__PURE__*/React.createElement("div", {
-    className: "modal-stat-value"
-  }, trip.name)))), o.notes && /*#__PURE__*/React.createElement("div", {
-    className: "modal-section"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "modal-section-title"
-  }, "Notes"), /*#__PURE__*/React.createElement("div", {
-    className: "modal-notes"
-  }, o.notes)), /*#__PURE__*/React.createElement("button", {
-    className: "delete-btn",
-    onClick: () => onDelete(o.id)
-  }, "Delete this observation")));
+    className: "modal-overlay", onClick: e => e.target === e.currentTarget && onClose()
+  }, /*#__PURE__*/React.createElement("div", { className: "modal" },
+    /*#__PURE__*/React.createElement("div", { className: "modal-header" },
+      /*#__PURE__*/React.createElement("div", { className: "modal-title" }, "\uD83D\uDC41 ", o.species),
+      /*#__PURE__*/React.createElement("button", { className: "modal-close", onClick: onClose }, "\xD7")),
+    /*#__PURE__*/React.createElement("div", { className: "modal-section" },
+      /*#__PURE__*/React.createElement("div", { className: "modal-section-title" }, "Observation"),
+      /*#__PURE__*/React.createElement("div", { className: "modal-grid" },
+        o.count && /*#__PURE__*/React.createElement("div", { className: "modal-stat" },
+          /*#__PURE__*/React.createElement("div", { className: "modal-stat-label" }, "Count"),
+          /*#__PURE__*/React.createElement("div", { className: "modal-stat-value" }, o.count, " fish")),
+        o.estimatedSize && /*#__PURE__*/React.createElement("div", { className: "modal-stat" },
+          /*#__PURE__*/React.createElement("div", { className: "modal-stat-label" }, "Est. Size"),
+          /*#__PURE__*/React.createElement("div", { className: "modal-stat-value" }, o.estimatedSize)),
+        /*#__PURE__*/React.createElement("div", { className: "modal-stat" },
+          /*#__PURE__*/React.createElement("div", { className: "modal-stat-label" }, "Time"),
+          /*#__PURE__*/React.createElement("div", { className: "modal-stat-value", style: { fontSize: 11 } }, fmtDT(o.timestamp))),
+        o.gps && /*#__PURE__*/React.createElement("div", { className: "modal-stat" },
+          /*#__PURE__*/React.createElement("div", { className: "modal-stat-label" }, "GPS"),
+          /*#__PURE__*/React.createElement("div", { className: "modal-stat-value", style: { fontSize: 10 } }, formatCoords(o.gps.lat, o.gps.lon))),
+        spot && /*#__PURE__*/React.createElement("div", { className: "modal-stat" },
+          /*#__PURE__*/React.createElement("div", { className: "modal-stat-label" }, "Spot"),
+          /*#__PURE__*/React.createElement("div", { className: "modal-stat-value" }, spot.name || "\u2014")),
+        trip && /*#__PURE__*/React.createElement("div", { className: "modal-stat" },
+          /*#__PURE__*/React.createElement("div", { className: "modal-stat-label" }, "Session"),
+          /*#__PURE__*/React.createElement("div", { className: "modal-stat-value" }, trip.name)))),
+    (o.weather || o.tide) && /*#__PURE__*/React.createElement("div", { className: "modal-section" },
+      /*#__PURE__*/React.createElement("div", { className: "modal-section-title" }, "Conditions"),
+      /*#__PURE__*/React.createElement("div", { className: "modal-grid" },
+        o.weather?.airTemp != null && /*#__PURE__*/React.createElement("div", { className: "modal-stat" },
+          /*#__PURE__*/React.createElement("div", { className: "modal-stat-label" }, "Air Temp"),
+          /*#__PURE__*/React.createElement("div", { className: "modal-stat-value" }, o.weather.airTemp, "\xb0C")),
+        o.weather?.pressure != null && /*#__PURE__*/React.createElement("div", { className: "modal-stat" },
+          /*#__PURE__*/React.createElement("div", { className: "modal-stat-label" }, "Pressure"),
+          /*#__PURE__*/React.createElement("div", { className: "modal-stat-value" }, o.weather.pressure, " hPa")),
+        o.weather?.moon && /*#__PURE__*/React.createElement("div", { className: "modal-stat" },
+          /*#__PURE__*/React.createElement("div", { className: "modal-stat-label" }, "Moon"),
+          /*#__PURE__*/React.createElement("div", { className: "modal-stat-value" }, o.weather.moon))),
+      o.tide && /*#__PURE__*/React.createElement("div", { style: { marginTop: 10, background: "white", padding: "10px", borderRadius: 4 } },
+        /*#__PURE__*/React.createElement("div", { className: "modal-stat-label", style: { marginBottom: 5 } }, "Tide Level (Seasonal)"),
+        /*#__PURE__*/React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" } },
+          norm != null && /*#__PURE__*/React.createElement("span", { style: { fontSize: 21, fontWeight: 700, color: "var(--water)" } }, tidePct(norm), "%"),
+          o.tide.valueCM != null && /*#__PURE__*/React.createElement("span", { style: { fontSize: 11, color: "#888" } }, o.tide.valueCM, " cm above CD"),
+          norm != null && /*#__PURE__*/React.createElement("span", { style: { fontSize: 11, color: "var(--water-light)", fontStyle: "italic" } }, tideLabel(norm))),
+        norm != null && /*#__PURE__*/React.createElement(React.Fragment, null,
+          /*#__PURE__*/React.createElement("div", { className: "modal-tide-bar" },
+            /*#__PURE__*/React.createElement("div", { className: "modal-tide-fill", style: { width: `${Math.max(0,Math.min(100,norm*100))}%` } })),
+          /*#__PURE__*/React.createElement("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 9, color: "#aaa", marginTop: 3 } },
+            /*#__PURE__*/React.createElement("span", null, "Typical Low", o.tide.mlwsCM != null ? ` (${o.tide.mlwsCM}cm)` : ""),
+            /*#__PURE__*/React.createElement("span", null, "Typical High", o.tide.mhwsCM != null ? ` (${o.tide.mhwsCM}cm)` : ""))),
+        /*#__PURE__*/React.createElement("div", { style: { fontSize: 9, color: "#ccc", marginTop: 4 } }, "\xa9 Kartverket/NMA \xb7 CC BY 4.0"))),
+    o.notes && /*#__PURE__*/React.createElement("div", { className: "modal-section" },
+      /*#__PURE__*/React.createElement("div", { className: "modal-section-title" }, "Notes"),
+      /*#__PURE__*/React.createElement("div", { className: "modal-notes" }, o.notes)),
+    /*#__PURE__*/React.createElement("button", { className: "delete-btn", onClick: () => onDelete(o.id) }, "Delete this observation")));
 }
 
 // ── Export tab ────────────────────────────────────────────────────────────────
@@ -2417,103 +2243,37 @@ function ExportTab({
   trips,
   spots,
   catches,
-  observations,
-  onRestore
+  observations
 }) {
-  const [restoreStep, setRestoreStep] = useState("idle"); // idle | confirm | done
-  const restoreRef = useRef();
   const today = new Date().toISOString().slice(0, 10);
-  const totalItems = trips.length + catches.length + observations.length;
-
-  const handleRestoreFile = e => {
-    const file = e.target.files[0];
-    if (!file) return;
-    restoreFromFile(file, data => {
-      onRestore(data);
-      setRestoreStep("done");
-    });
-    e.target.value = "";
-  };
-
   const sheets = [{
     title: "Sessions",
     sub: "One row per fishing session, with totals.",
-    cols: ["trip_id", "name", "start_time", "end_time", "duration_min", "target_species", "method", "spot_count", "catch_count", "obs_count", "notes"],
+    cols: ["trip_id", "name", "start_time", "end_time", "duration_min", "target_species", "method", "water_temp", "spot_count", "catch_count", "obs_count", "notes"],
     count: trips.length,
-    fn: () => dlCSV(tripsCSV(trips, spots, catches, observations), `catchlog_sessions_${today}.csv`)
+    fn: () => dlCSV(tripsCSV(trips, spots, catches, observations), `fishlog_sessions_${today}.csv`)
   }, {
     title: "Spots",
     sub: "Each named location visited within a session.",
     cols: ["spot_id", "trip_id", "trip_name", "name", "timestamp", "gps_lat", "gps_lon", "line_type", "water_temp", "notes"],
     count: spots.length,
-    fn: () => dlCSV(spotsCSV(spots, trips), `catchlog_spots_${today}.csv`)
+    fn: () => dlCSV(spotsCSV(spots, trips), `fishlog_spots_${today}.csv`)
   }, {
     title: "Catches",
     sub: "One row per fish caught, with all conditions.",
-    cols: ["catch_id", "trip_id", "spot_id", "timestamp", "species", "fly_pattern", "size", "water_temp", "air_temp_c", "pressure_hpa", "tide_normalized", "moon_phase", "has_fish_photo", "has_fly_photo", "notes"],
+    cols: ["catch_id", "trip_id", "spot_id", "timestamp", "species", "fly_pattern", "size", "water_temp", "air_temp_c", "tide_seasonal_pct", "moon_phase", "notes"],
     count: catches.length,
-    fn: () => dlCSV(catchesCSV(catches, spots, trips), `catchlog_catches_${today}.csv`)
+    fn: () => dlCSV(catchesCSV(catches, spots, trips), `fishlog_catches_${today}.csv`)
   }, {
     title: "Observations",
     sub: "Fish seen but not caught.",
-    cols: ["obs_id", "trip_id", "spot_id", "timestamp", "species", "count", "estimated_size", "gps_lat", "gps_lon", "notes"],
+    cols: ["obs_id", "trip_id", "spot_id", "timestamp", "species", "count", "estimated_size", "air_temp_c", "pressure_hpa", "tide_seasonal_pct", "notes"],
     count: observations.length,
-    fn: () => dlCSV(obsCSV(observations, spots, trips), `catchlog_observations_${today}.csv`)
+    fn: () => dlCSV(obsCSV(observations, spots, trips), `fishlog_observations_${today}.csv`)
   }];
-
   return /*#__PURE__*/React.createElement("div", {
     className: "export-wrap"
-  },
-
-  /* ── Backup panel ── */
-  /*#__PURE__*/React.createElement("div", { className: "backup-panel" },
-    /*#__PURE__*/React.createElement("div", { className: "backup-panel-title" }, "💾 Data Backup"),
-    /*#__PURE__*/React.createElement("div", { className: "backup-panel-sub" },
-      "All your data lives in this browser's local storage. Export a backup regularly and keep it somewhere safe (iCloud, Google Drive). A backup includes everything — sessions, spots, catches, observations and photos."
-    ),
-    /*#__PURE__*/React.createElement("div", { className: "backup-btn-row" },
-      /*#__PURE__*/React.createElement("button", {
-        className: "backup-btn primary",
-        disabled: !totalItems,
-        onClick: () => backupAll(trips, spots, catches, observations)
-      }, "⬇ Backup all data"),
-      catches.some(c => c.fishPhoto || c.flyPhoto) && /*#__PURE__*/React.createElement("button", {
-        className: "backup-btn secondary",
-        onClick: () => exportPhotos(catches)
-      }, "🖼 Export photos")
-    ),
-    /*#__PURE__*/React.createElement("div", { className: "backup-divider" }),
-    restoreStep === "idle" && /*#__PURE__*/React.createElement("button", {
-      className: "backup-btn secondary",
-      onClick: () => setRestoreStep("confirm")
-    }, "↑ Restore from backup"),
-    restoreStep === "confirm" && /*#__PURE__*/React.createElement(React.Fragment, null,
-      /*#__PURE__*/React.createElement("div", { className: "backup-restore-confirm" },
-        "⚠ This will overwrite all current data with the contents of the backup file. Make sure you have a fresh backup first."
-      ),
-      /*#__PURE__*/React.createElement("div", { className: "backup-btn-row" },
-        /*#__PURE__*/React.createElement("button", {
-          className: "backup-btn danger",
-          onClick: () => restoreRef.current.click()
-        }, "Choose backup file"),
-        /*#__PURE__*/React.createElement("button", {
-          className: "backup-btn secondary",
-          onClick: () => setRestoreStep("idle")
-        }, "Cancel")
-      ),
-      /*#__PURE__*/React.createElement("input", {
-        ref: restoreRef, type: "file", accept: ".json", style: { display: "none" },
-        onChange: handleRestoreFile
-      })
-    ),
-    restoreStep === "done" && /*#__PURE__*/React.createElement("div", {
-      style: { fontSize: 11, color: "#7dbf7d", letterSpacing: 1 }
-    }, "✓ Restore complete — reload the app to see your data.")
-  ),
-
-  /* ── CSV section ── */
-  /*#__PURE__*/React.createElement("div", { className: "csv-section-title" }, "CSV Export — for spreadsheet analysis"),
-  sheets.map(s => /*#__PURE__*/React.createElement("div", {
+  }, sheets.map(s => /*#__PURE__*/React.createElement("div", {
     key: s.title,
     className: "export-card"
   }, /*#__PURE__*/React.createElement("div", {
@@ -2539,9 +2299,7 @@ function ExportTab({
     className: "export-btn",
     disabled: !s.count,
     onClick: s.fn
-  }, /*#__PURE__*/React.createElement("span", null, "\u2193 Download ", s.title.toLowerCase(), ".csv"), /*#__PURE__*/React.createElement("span", null, "\uD83D\uDCC4")))),
-
-  /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("span", null, "\u2193 Download ", s.title.toLowerCase(), ".csv"), /*#__PURE__*/React.createElement("span", null, "\uD83D\uDCC4")))), /*#__PURE__*/React.createElement("div", {
     className: "export-instructions"
   }, /*#__PURE__*/React.createElement("div", {
     className: "export-instructions-title"
@@ -2565,10 +2323,15 @@ function ExportTab({
     className: "export-step"
   }, /*#__PURE__*/React.createElement("div", {
     className: "export-step-num"
-  }, "5"), /*#__PURE__*/React.createElement("span", null, "Join on ", /*#__PURE__*/React.createElement("strong", null, "trip_id"), " and ", /*#__PURE__*/React.createElement("strong", null, "spot_id"), " for comparisons and pivot tables"))),
-  /*#__PURE__*/React.createElement("div", {
-    style: { fontSize: 10, color: "#bbb", textAlign: "center", paddingBottom: 8, lineHeight: 1.6 }
-  }, "Photos exported separately via \u201cExport photos\u201d above \xB7 filenames keyed to catch_id"));
+  }, "5"), /*#__PURE__*/React.createElement("span", null, "Join on ", /*#__PURE__*/React.createElement("strong", null, "trip_id"), " and ", /*#__PURE__*/React.createElement("strong", null, "spot_id"), " for comparisons and pivot tables"))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: "#bbb",
+      textAlign: "center",
+      paddingBottom: 8,
+      lineHeight: 1.6
+    }
+  }, "Photos stored locally only \xB7 Connect Google later for Drive sync"));
 }const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(React.createElement(FishLog));
   </script>
