@@ -1,6 +1,6 @@
 {
-  "name": "The Catch Log",
-  "short_name": "Catch Log",
+  "name": "The Fishing Trip Log",
+  "short_name": "Trip Log",
   "description": "Fishing session and catch logger for Norway",
   "start_url": "/catchlog/",
   "scope": "/catchlog/",
