@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v0.4</title>
+  <title>The Catch Log v0.5</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -366,12 +366,21 @@ async function fetchTideData(lat, lon, isoTs) {
   let mhwsCM, mlwsCM;
   if (DATUM_CACHE[ck]) ({ mhwsCM, mlwsCM } = DATUM_CACHE[ck]);
   else {
-    const txt = await proxyFetch(`${BASE}?lat=${ls}&lon=${lo}&refcode=cd&lang=en&tide_request=locationlevels`);
-    const p = parseKartverketXML(txt);
-    if (p?.type === "levels") {
-      mhwsCM = p.mhws;
-      mlwsCM = p.mlws;
-      DATUM_CACHE[ck] = { mhwsCM, mlwsCM };
+    const datumUrl = `${BASE}?lat=${ls}&lon=${lo}&refcode=cd&lang=en&tide_request=locationlevels`;
+    // Try up to 4 times — CORS proxies are unreliable for this call
+    for (let attempt = 0; attempt < 4; attempt++) {
+      try {
+        const txt = await proxyFetch(datumUrl);
+        const p = parseKartverketXML(txt);
+        if (p?.type === "levels" && p.mhws != null && p.mlws != null) {
+          mhwsCM = p.mhws;
+          mlwsCM = p.mlws;
+          DATUM_CACHE[ck] = { mhwsCM, mlwsCM };
+          break;
+        }
+      } catch (e) {
+        if (attempt === 3) console.warn("datum levels failed after 4 attempts", e);
+      }
     }
   }
   const txt2 = await proxyFetch(`${BASE}?lat=${ls}&lon=${lo}&fromtime=${toKartverketTime(from)}&totime=${toKartverketTime(to)}&datatype=pre&refcode=cd&lang=en&interval=10&dst=0&tide_request=locationdata`);
@@ -719,7 +728,7 @@ function FishLog() {
     className: "header-title"
   }, "The ", /*#__PURE__*/React.createElement("span", null, "Catch"), " Log"), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v0.4 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v0.5 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
