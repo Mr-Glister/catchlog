@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="theme-color" content="#1a1a18" />
+  <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
@@ -14,19 +15,1140 @@
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { background: #1a1a18; }
     #root { min-height: 100vh; }
+    #error-display {
+      display: none; position: fixed; inset: 0;
+      background: #1a1a18; color: #f5f0e8;
+      font-family: monospace; font-size: 13px;
+      padding: 24px 16px; overflow-y: auto; z-index: 9999;
+      white-space: pre-wrap; word-break: break-all;
+    }
+    #error-display h2 { color: #d4944a; margin-bottom: 12px; font-size: 15px; }
   </style>
 </head>
 <body>
+  <div id="error-display"><h2>Loading error</h2><div id="error-text"></div></div>
   <div id="root"></div>
+
+  <script>
+    window.onerror = function(msg, src, line, col, err) {
+      document.getElementById('error-display').style.display = 'block';
+      document.getElementById('error-text').textContent =
+        'Message: ' + msg + '\nSource: ' + src + '\nLine: ' + line + '\n\n' + (err ? err.stack : '');
+      return false;
+    };
+    window.addEventListener('unhandledrejection', function(e) {
+      document.getElementById('error-display').style.display = 'block';
+      document.getElementById('error-text').textContent =
+        'Unhandled promise rejection:\n' + (e.reason ? (e.reason.stack || e.reason) : e);
+    });
+  </script>
 
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-  <script type="text/babel" src="app.jsx"></script>
+  <script type="text/babel" data-presets="react">
+const { useState, useRef, useCallback } = React;
+
+const FONTS = `@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;1,400&family=Source+Code+Pro:wght@300;400;500&display=swap');`;
+
+const css = `
+  ${FONTS}
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --ink: #1a1a18; --paper: #f5f0e8; --water: #2c6e7a; --water-light: #4a9aaa;
+    --moss: #4a6741; --copper: #b87333; --copper-light: #d4944a;
+    --mist: #e8e2d4; --shadow: rgba(26,26,24,0.15);
+  }
+  body { font-family: 'Source Code Pro', monospace; background: var(--paper); color: var(--ink); }
+  .app { max-width: 480px; margin: 0 auto; min-height: 100vh; }
+
+  .header { background: var(--ink); color: var(--paper); padding: 18px 20px 0; position: sticky; top: 0; z-index: 100; border-bottom: 3px solid var(--copper); }
+  .header-top { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 2px; }
+  .header-title { font-family: 'Playfair Display', serif; font-size: 21px; }
+  .header-title span { color: var(--copper-light); font-style: italic; }
+  .header-sub { font-size: 9px; opacity: 0.45; letter-spacing: 2px; text-transform: uppercase; }
+  .tab-bar { display: flex; gap: 2px; margin-top: 12px; }
+  .tab { flex: 1; padding: 7px 2px; text-align: center; font-size: 9px; letter-spacing: 1.2px; text-transform: uppercase;
+    background: transparent; border: 1px solid rgba(245,240,232,0.18); color: rgba(245,240,232,0.45);
+    cursor: pointer; transition: all 0.2s; }
+  .tab.active { background: var(--copper); border-color: var(--copper); color: var(--ink); font-weight: 700; }
+
+  /* Active session banner */
+  .active-banner { background: var(--moss); color: #fff; padding: 9px 14px; display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+  .ab-left { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+  .ab-trip { font-size: 9px; opacity: .7; letter-spacing: 1.5px; text-transform: uppercase; }
+  .ab-spot { font-family: 'Playfair Display', serif; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ab-meta { font-size: 10px; opacity: .75; }
+  .ab-buttons { display: flex; gap: 5px; flex-shrink: 0; }
+  .ab-btn { font-size: 9px; letter-spacing: .8px; padding: 5px 9px; border-radius: 2px;
+    border: 1px solid rgba(255,255,255,.4); background: rgba(255,255,255,.15); color: #fff;
+    cursor: pointer; text-transform: uppercase; white-space: nowrap; transition: background .2s; }
+  .ab-btn:hover { background: rgba(255,255,255,.28); }
+  .ab-btn.end { border-color: rgba(255,200,150,.5); background: rgba(184,115,51,.35); }
+  .ab-btn.end:hover { background: rgba(184,115,51,.55); }
+
+  .form-wrap { padding: 18px 16px; display: flex; flex-direction: column; gap: 14px; }
+
+  /* Section divider */
+  .section-divider { display: flex; align-items: center; gap: 10px; margin: 2px 0; }
+  .section-divider-line { flex: 1; height: 1px; background: var(--mist); }
+  .section-divider-label { font-size: 9px; letter-spacing: 2px; text-transform: uppercase; color: #bbb; }
+
+  .photo-grid { display: grid; gap: 10px; }
+  .photo-grid-2 { grid-template-columns: 1fr 1fr; }
+  .photo-slot { aspect-ratio: 1; border: 2px dashed rgba(44,110,122,0.35); border-radius: 4px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    cursor: pointer; background: rgba(44,110,122,0.03); position: relative; overflow: hidden; transition: border-color .2s; }
+  .photo-slot:hover { border-color: var(--water); }
+  .photo-slot img { width:100%; height:100%; object-fit:cover; position:absolute; inset:0; }
+  .photo-slot-label { font-size: 9px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--water); margin-top: 5px; }
+  .photo-slot-icon { font-size: 26px; opacity: .35; }
+  .photo-slot input { display: none; }
+  .photo-add-row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .photo-thumb { width: 60px; height: 60px; object-fit: cover; border-radius: 4px; border: 2px solid transparent; }
+  .photo-add-btn { width: 60px; height: 60px; border: 2px dashed rgba(44,110,122,0.35); border-radius: 4px;
+    display: flex; align-items: center; justify-content: center; font-size: 22px; cursor: pointer;
+    background: rgba(44,110,122,.03); color: var(--water); opacity: .7; }
+
+  .field-group { background: white; border: 1px solid var(--mist); border-radius: 6px; overflow: hidden; }
+  .field-group-title { background: var(--ink); color: var(--paper); font-size: 9px; letter-spacing: 2px;
+    text-transform: uppercase; padding: 6px 12px; display: flex; align-items: center; gap: 8px; }
+  .field-group-title.moss { background: var(--moss); }
+  .field-row { display: flex; align-items: center; padding: 10px 12px; gap: 10px; border-bottom: 1px solid var(--mist); }
+  .field-row:last-child { border-bottom: none; }
+  .field-row.top { align-items: flex-start; padding-top: 12px; padding-bottom: 12px; }
+  .field-icon { font-size: 15px; width: 20px; text-align: center; flex-shrink: 0; }
+  .field-label { font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: #888; flex-shrink: 0; min-width: 80px; }
+  .field-label.opt::after { content: ' ·opt'; font-size: 8px; color: #ccc; letter-spacing: 0; }
+  .field-value { flex: 1; font-size: 13px; color: var(--ink); }
+  .field-input { flex: 1; border: none; outline: none; font-family: 'Source Code Pro', monospace;
+    font-size: 13px; color: var(--ink); background: transparent; -webkit-appearance: none; }
+  .field-input::placeholder { color: #ccc; }
+  .field-unit { font-size: 10px; color: #aaa; flex-shrink: 0; }
+  .field-num { width: 60px; border: 1px solid var(--mist); border-radius: 4px; padding: 4px 8px;
+    font-family: 'Source Code Pro', monospace; font-size: 13px; text-align: center; outline: none; }
+
+  .status-badge { font-size: 9px; letter-spacing: 1px; padding: 2px 6px; border-radius: 2px; text-transform: uppercase; font-weight: 600; }
+  .status-ok      { background: rgba(74,103,65,.12);  color: var(--moss); }
+  .status-loading { background: rgba(44,110,122,.12); color: var(--water); }
+  .status-error   { background: rgba(184,115,51,.12); color: var(--copper); }
+
+  .gps-coords { font-size: 11px; color: var(--water); font-family: 'Source Code Pro', monospace; }
+  .gps-btn { font-size: 10px; letter-spacing: 1px; padding: 4px 8px; border-radius: 2px;
+    background: var(--water); color: white; border: none; cursor: pointer; text-transform: uppercase; transition: background .2s; flex-shrink: 0; }
+  .gps-btn:hover { background: var(--water-light); }
+
+  .tide-bar-wrap { flex: 1; display: flex; flex-direction: column; gap: 4px; }
+  .tide-bar-track { height: 8px; background: var(--mist); border-radius: 4px; overflow: hidden; }
+  .tide-bar-fill  { height: 100%; border-radius: 4px; background: linear-gradient(90deg,#2c6e7a,#4a9aaa); transition: width .6s ease; }
+  .tide-bar-labels { display: flex; justify-content: space-between; font-size: 9px; color: #aaa; }
+  .tide-value-line { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+  .tide-normalized { font-size: 15px; font-weight: 600; color: var(--water); }
+  .tide-raw  { font-size: 10px; color: #aaa; }
+  .tide-hint { font-size: 10px; color: #888; font-style: italic; }
+
+  .save-btn { width: 100%; padding: 15px; background: var(--ink); color: var(--paper);
+    border: none; font-family: 'Source Code Pro', monospace; font-size: 12px;
+    letter-spacing: 3px; text-transform: uppercase; cursor: pointer;
+    border-top: 3px solid var(--copper); transition: background .2s; margin-top: 4px; }
+  .save-btn:hover { background: #2a2a28; }
+  .save-btn:disabled { opacity: .5; cursor: not-allowed; }
+  .save-btn.green { background: var(--moss); border-top-color: #3a5531; }
+  .save-btn.green:hover { background: #3a5531; }
+
+  .log-wrap { padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+  .empty-state { text-align: center; padding: 50px 20px; color: #aaa; }
+  .empty-icon { font-size: 44px; margin-bottom: 10px; }
+  .empty-text { font-size: 12px; letter-spacing: 1px; text-transform: uppercase; }
+
+  .trip-card { background: white; border: 1px solid var(--mist); border-radius: 6px; overflow: hidden; cursor: pointer; transition: box-shadow .2s; }
+  .trip-card:hover { box-shadow: 0 4px 16px var(--shadow); }
+  .trip-card-header { display: flex; }
+  .trip-thumb { width: 80px; height: 80px; object-fit: cover; flex-shrink: 0; background: linear-gradient(135deg,#2c6e7a22,#4a674122); display:flex;align-items:center;justify-content:center; font-size:28px; }
+  .trip-meta { flex: 1; padding: 9px 12px; display: flex; flex-direction: column; justify-content: space-between; min-width:0; }
+  .trip-name { font-family: 'Playfair Display', serif; font-size: 15px; font-weight: 700; }
+  .trip-date { font-size: 10px; color: #888; }
+  .trip-duration { font-size: 10px; color: var(--moss); }
+  .trip-footer { display: flex; flex-wrap: wrap; gap: 4px; padding: 7px 12px; border-top: 1px solid var(--mist); }
+  .trip-active-badge { background: var(--moss); color: white; font-size: 9px; padding: 2px 7px; border-radius: 10px; letter-spacing: 1px; text-transform: uppercase; animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.6} }
+
+  .catch-card { background: white; border: 1px solid var(--mist); border-radius: 6px; overflow: hidden; cursor: pointer; transition: box-shadow .2s; }
+  .catch-card:hover { box-shadow: 0 4px 16px var(--shadow); }
+  .catch-card-header { display: flex; }
+  .catch-thumb { width: 76px; height: 76px; object-fit: cover; flex-shrink: 0; background: var(--mist); display:flex;align-items:center;justify-content:center; }
+  .catch-thumb-placeholder { font-size: 26px; }
+  .catch-meta { flex: 1; padding: 9px 12px; display: flex; flex-direction: column; justify-content: space-between; min-width:0; }
+  .catch-species { font-family: 'Playfair Display', serif; font-size: 15px; font-weight: 700; }
+  .catch-date { font-size: 10px; color: #888; }
+  .catch-chips { display: flex; flex-wrap: wrap; gap: 4px; padding: 7px 12px; border-top: 1px solid var(--mist); }
+  .chip { font-size: 10px; padding: 2px 7px; border-radius: 10px; background: var(--mist); color: #555; }
+  .chip-tide { background: rgba(44,110,122,.12); color: var(--water); }
+  .chip-spot { background: rgba(74,103,65,.12); color: var(--moss); }
+  .chip-obs  { background: rgba(184,115,51,.1);  color: var(--copper); }
+
+  .obs-card { background: white; border: 1px solid rgba(184,115,51,.2); border-left: 3px solid var(--copper-light); border-radius: 6px; padding: 10px 13px; cursor: pointer; transition: box-shadow .2s; }
+  .obs-card:hover { box-shadow: 0 4px 16px var(--shadow); }
+  .obs-header { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .obs-species { font-family: 'Playfair Display', serif; font-size: 14px; font-weight: 700; }
+  .obs-count { font-size: 12px; color: var(--copper); font-weight: 600; }
+  .obs-meta { font-size: 10px; color: #999; display: flex; gap: 10px; flex-wrap: wrap; }
+
+  .modal-overlay { position: fixed; inset: 0; background: rgba(26,26,24,.72); z-index: 200; display: flex; align-items: flex-end; justify-content: center; }
+  .modal { background: var(--paper); width: 100%; max-width: 480px; max-height: 92vh; overflow-y: auto; border-radius: 12px 12px 0 0; padding-bottom: 28px; }
+  .modal-header { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--mist); position: sticky; top: 0; background: var(--paper); z-index: 10; }
+  .modal-title { font-family: 'Playfair Display', serif; font-size: 19px; }
+  .modal-close { font-size: 22px; cursor: pointer; opacity: .45; background: none; border: none; }
+  .modal-photos-strip { display: flex; gap: 2px; overflow-x: auto; }
+  .modal-photo { width: 160px; height: 160px; object-fit: cover; flex-shrink: 0; }
+  .modal-photos-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; }
+  .modal-photo-2 { aspect-ratio: 1; object-fit: cover; width: 100%; }
+  .modal-section { padding: 12px 18px; border-bottom: 1px solid var(--mist); }
+  .modal-section-title { font-size: 9px; letter-spacing: 2px; text-transform: uppercase; color: #aaa; margin-bottom: 8px; }
+  .modal-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+  .modal-stat { background: white; padding: 8px 10px; border-radius: 4px; }
+  .modal-stat-label { font-size: 9px; letter-spacing: 1px; text-transform: uppercase; color: #aaa; }
+  .modal-stat-value { font-size: 13px; color: var(--ink); margin-top: 2px; }
+  .modal-tide-bar { height: 6px; background: var(--mist); border-radius: 3px; overflow:hidden; margin-top:6px; }
+  .modal-tide-fill { height:100%; border-radius:3px; background: linear-gradient(90deg,#2c6e7a,#4a9aaa); }
+  .modal-notes { font-size: 13px; line-height: 1.6; color: #555; white-space: pre-wrap; }
+
+  .spot-group { margin-bottom: 14px; }
+  .spot-group-header { display: flex; align-items: center; gap: 8px; padding: 7px 0 5px; border-bottom: 2px solid var(--ink); margin-bottom: 8px; }
+  .spot-group-name { font-family: 'Playfair Display', serif; font-size: 14px; font-weight: 700; }
+  .spot-group-meta { font-size: 10px; color: #888; }
+  .spot-items { display: flex; flex-direction: column; gap: 7px; }
+  .mini-catch { display: flex; align-items: center; gap: 9px; background: white; border-radius: 4px; padding: 8px 10px; cursor: pointer; border: 1px solid var(--mist); }
+  .mini-catch:hover { background: var(--mist); }
+  .mini-catch-thumb { width: 34px; height: 34px; border-radius: 3px; object-fit: cover; background: var(--mist); display:flex;align-items:center;justify-content:center; font-size:15px; flex-shrink:0; }
+  .mini-catch-info { flex: 1; min-width: 0; }
+  .mini-catch-species { font-size: 13px; font-weight: 600; font-family: 'Playfair Display', serif; }
+  .mini-catch-time { font-size: 10px; color: #999; }
+  .mini-obs { display: flex; align-items: center; gap: 9px; background: rgba(184,115,51,.05); border: 1px solid rgba(184,115,51,.2); border-left: 3px solid var(--copper-light); border-radius: 4px; padding: 8px 10px; cursor: pointer; }
+  .mini-obs:hover { background: rgba(184,115,51,.1); }
+
+  .delete-btn { margin: 14px 18px 0; width: calc(100% - 36px); padding: 11px; background: transparent; border: 1px solid #e0d0c0; color: #c07060; font-family: 'Source Code Pro', monospace; font-size: 10px; letter-spacing: 2px; text-transform: uppercase; cursor: pointer; border-radius: 4px; }
+  .inline-edit { background: white; padding: 4px 8px; border-radius: 4px; border: 1px solid var(--mist); font-family: 'Source Code Pro', monospace; font-size: 13px; color: var(--ink); outline: none; width: 100%; }
+  .field-select { flex: 1; border: none; outline: none; font-family: 'Source Code Pro', monospace; font-size: 13px; color: var(--ink); background: transparent; -webkit-appearance: none; appearance: none; cursor: pointer; }
+  .field-select-wrap { flex: 1; position: relative; display: flex; align-items: center; }
+  .field-select-wrap::after { content: "▾"; position: absolute; right: 0; font-size: 12px; color: #aaa; pointer-events: none; }
+  .line-type-badge { font-size: 11px; padding: 2px 9px; border-radius: 10px; font-weight: 600; }
+  .line-type-fly  { background: rgba(44,110,122,.12); color: var(--water); }
+  .line-type-spin { background: rgba(184,115,51,.12); color: var(--copper); }
+  .method-derived { font-size: 10px; color: #aaa; font-style: italic; }
+  .info-note { font-size: 10px; color: #999; padding: 7px 12px; text-align: center; line-height: 1.5; border-top: 1px solid var(--mist); }
+  .context-pill { border-radius: 6px; padding: 7px 12px; font-size: 11px; }
+  .context-pill.water { background: rgba(44,110,122,.07); border: 1px solid rgba(44,110,122,.18); color: var(--water); }
+  .context-pill.copper { background: rgba(184,115,51,.07); border: 1px solid rgba(184,115,51,.2); color: var(--copper); }
+
+  .export-wrap { padding: 20px 16px; display: flex; flex-direction: column; gap: 16px; }
+  .export-card { background: white; border: 1px solid var(--mist); border-radius: 6px; overflow: hidden; }
+  .export-card-header { padding: 14px 16px 10px; border-bottom: 1px solid var(--mist); }
+  .export-card-title { font-family: 'Playfair Display', serif; font-size: 16px; margin-bottom: 3px; }
+  .export-card-sub { font-size: 11px; color: #999; line-height: 1.5; }
+  .export-card-stats { display: flex; gap: 16px; padding: 10px 16px; border-bottom: 1px solid var(--mist); flex-wrap: wrap; }
+  .export-stat { display: flex; flex-direction: column; gap: 2px; }
+  .export-stat-val { font-size: 20px; font-weight: 700; color: var(--ink); font-family: 'Playfair Display', serif; }
+  .export-stat-label { font-size: 9px; letter-spacing: 1.5px; text-transform: uppercase; color: #aaa; }
+  .export-btn { display: flex; align-items: center; justify-content: space-between; padding: 13px 16px;
+    background: var(--ink); color: var(--paper); border: none; width: 100%; cursor: pointer;
+    font-family: 'Source Code Pro', monospace; font-size: 11px; letter-spacing: 2px; text-transform: uppercase; transition: background .2s; }
+  .export-btn:hover { background: #2a2a28; }
+  .export-btn:disabled { opacity: .4; cursor: not-allowed; }
+  .export-columns { padding: 10px 16px; display: flex; flex-wrap: wrap; gap: 5px; }
+  .export-col-chip { font-size: 9px; padding: 2px 7px; border-radius: 10px; background: var(--mist); color: #666; }
+  .export-instructions { background: rgba(44,110,122,.05); border: 1px solid rgba(44,110,122,.15); border-radius: 6px; padding: 14px 16px; }
+  .export-instructions-title { font-size: 9px; letter-spacing: 2px; text-transform: uppercase; color: var(--water); margin-bottom: 8px; }
+  .export-step { display: flex; gap: 10px; margin-bottom: 7px; font-size: 12px; color: #555; line-height: 1.5; }
+  .export-step:last-child { margin-bottom: 0; }
+  .export-step-num { width: 18px; height: 18px; border-radius: 50%; background: var(--water); color: white; font-size: 9px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; margin-top: 1px; }
+
+  .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--paper); padding: 10px 20px; border-radius: 4px; font-size: 11px; letter-spacing: 1px; z-index: 999; border-bottom: 2px solid var(--copper); animation: fadeup .3s ease; }
+  @keyframes fadeup { from{opacity:0;transform:translate(-50%,10px)} to{opacity:1;transform:translate(-50%,0)} }
+`;
+
+// ── Utilities ─────────────────────────────────────────────────────────────────
+
+function getMoonPhase(d) {
+  const phases=["🌑 New","🌒 Waxing Crescent","🌓 First Quarter","🌔 Waxing Gibbous","🌕 Full","🌖 Waning Gibbous","🌗 Last Quarter","🌘 Waning Crescent"];
+  const diff=(d-new Date("2000-01-06"))/86400000;
+  return phases[Math.floor(((diff%29.53)+29.53)%29.53/(29.53/8))];
+}
+const formatCoords=(lat,lon)=>lat==null?null:`${Math.abs(lat).toFixed(5)}°${lat>=0?"N":"S"}  ${Math.abs(lon).toFixed(5)}°${lon>=0?"E":"W"}`;
+const fmtDT =iso=>new Date(iso).toLocaleString("en-US",{month:"short",day:"numeric",year:"numeric",hour:"2-digit",minute:"2-digit"});
+const fmtTime=iso=>new Date(iso).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"});
+const fmtDateLong=d=>d.toLocaleDateString("en-GB",{day:"numeric",month:"long",year:"numeric"});
+const durStr=(s,e)=>{const m=Math.round((new Date(e)-new Date(s))/60000);return m<60?`${m}m`:`${Math.floor(m/60)}h ${m%60}m`;};
+
+function toKartverketTime(d){const p=n=>String(n).padStart(2,"0");return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;}
+function normalizeTide(v,lat,hat){const r=hat-lat;if(!r||r<=0)return null;return Math.max(0,Math.min(1,(v-lat)/r));}
+function tideLabel(n){if(n==null)return null;if(n>=.88)return"Near HAT";if(n>=.65)return"High";if(n>=.35)return"Mid";if(n>=.12)return"Low";return"Near LAT";}
+function parseKartverketXML(xml){
+  const doc=new DOMParser().parseFromString(xml,"text/xml");
+  const wl=doc.querySelectorAll("waterlevel");
+  if(wl.length>0){const v=parseFloat(wl[0].getAttribute("value"));return{type:"level",valueCM:isNaN(v)?null:v};}
+  let hat=null,lat=null;
+  doc.querySelectorAll("level").forEach(el=>{
+    const code=(el.getAttribute("code")||el.getAttribute("shortenglish")||el.getAttribute("fullname")||"").toUpperCase();
+    const v=parseFloat(el.getAttribute("value"));if(isNaN(v))return;
+    if(code==="HAT"||code.includes("HIGHEST ASTRO"))hat=v;
+    if(code==="LAT"||code.includes("LOWEST ASTRO"))lat=v;
+  });
+  if(hat!=null||lat!=null)return{type:"levels",hat,lat};
+  return null;
+}
+const DATUM_CACHE={};
+async function fetchTideData(lat,lon,isoTs){
+  const BASE="https://vannstand.kartverket.no/tideapi.php",PROXY="https://api.allorigins.win/raw?url=";
+  const ls=lat.toFixed(6),lo=lon.toFixed(6),ck=`${ls},${lo}`;
+  const cd=new Date(isoTs),from=new Date(cd-600000),to=new Date(cd+600000);
+  let hatCM,latCM;
+  if(DATUM_CACHE[ck])({hatCM,latCM}=DATUM_CACHE[ck]);
+  else{
+    const r=await fetch(PROXY+encodeURIComponent(`${BASE}?lat=${ls}&lon=${lo}&refcode=cd&lang=en&tide_request=locationlevels`));
+    if(!r.ok)throw new Error("datums");
+    const p=parseKartverketXML(await r.text());
+    if(p?.type==="levels"){hatCM=p.hat;latCM=p.lat;DATUM_CACHE[ck]={hatCM,latCM};}
+  }
+  const r2=await fetch(PROXY+encodeURIComponent(`${BASE}?lat=${ls}&lon=${lo}&fromtime=${toKartverketTime(from)}&totime=${toKartverketTime(to)}&datatype=pre&refcode=cd&lang=en&interval=10&dst=0&tide_request=locationdata`));
+  if(!r2.ok)throw new Error("level");
+  const p2=parseKartverketXML(await r2.text());
+  if(!p2||p2.valueCM==null)return null;
+  return{valueCM:p2.valueCM,normalized:hatCM!=null&&latCM!=null?normalizeTide(p2.valueCM,latCM,hatCM):null,hatCM,latCM};
+}
+
+// ── GPS / env hook ────────────────────────────────────────────────────────────
+
+function useEnv(){
+  const [gps,setGps]=useState(null);
+  const [gpsStatus,setGpsStatus]=useState("idle");
+  const [weather,setWeather]=useState(null);
+  const [weatherStatus,setWeatherStatus]=useState("idle");
+  const [tide,setTide]=useState(null);
+  const [tideStatus,setTideStatus]=useState("idle");
+
+  const fetchEnv=useCallback(async(la,lo,ts)=>{
+    setWeatherStatus("loading");
+    try{
+      const r=await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${la}&longitude=${lo}&current=temperature_2m,surface_pressure&timezone=auto&forecast_days=1`);
+      const d=await r.json();
+      setWeather({airTemp:d.current?.temperature_2m!=null?Math.round(d.current.temperature_2m*10)/10:null,pressure:d.current?.surface_pressure!=null?Math.round(d.current.surface_pressure):null,moon:getMoonPhase(new Date())});
+      setWeatherStatus("ok");
+    }catch{setWeatherStatus("error");}
+    setTideStatus("loading");
+    try{const res=await fetchTideData(la,lo,ts);if(res){setTide(res);setTideStatus("ok");}else setTideStatus("unavailable");}
+    catch(e){console.warn("tide",e);setTideStatus("error");}
+  },[]);
+
+  const getGPS=useCallback((ts)=>{
+    setGpsStatus("loading");
+    navigator.geolocation.getCurrentPosition(
+      pos=>{const{latitude:la,longitude:lo}=pos.coords;setGps({lat:la,lon:lo});setGpsStatus("ok");fetchEnv(la,lo,ts);},
+      ()=>setGpsStatus("error"),{enableHighAccuracy:true,timeout:15000}
+    );
+  },[fetchEnv]);
+
+  const reset=()=>{setGps(null);setGpsStatus("idle");setWeather(null);setWeatherStatus("idle");setTide(null);setTideStatus("idle");};
+  return{gps,gpsStatus,weather,weatherStatus,tide,tideStatus,getGPS,reset};
+}
+
+// ── CSV helpers ───────────────────────────────────────────────────────────────
+
+const esc=v=>{if(v==null)return"";const s=String(v);return(s.includes(",")||s.includes('"')||s.includes("\n"))?`"${s.replace(/"/g,'""')}"`:s;};
+const row=cells=>cells.map(esc).join(",");
+
+const tripsCSV=(trips,spots,catches,obs)=>{
+  const h=row(["trip_id","name","start_time","end_time","duration_min","target_species","method","spot_count","catch_count","obs_count","notes"]);
+  return[h,...trips.map(t=>{
+    const ts=spots.filter(s=>s.tripId===t.id);
+    const tc=catches.filter(c=>c.tripId===t.id);
+    const to=obs.filter(o=>o.tripId===t.id);
+    const dur=t.endTime?Math.round((new Date(t.endTime)-new Date(t.startTime))/60000):"";
+    const method=deriveMethod(ts)||"";
+    return row([t.id,t.name,t.startTime,t.endTime||"",dur,t.targetSpecies||"",method,ts.length,tc.length,to.length,t.notes||""]);
+  })].join("\n");
+};
+const spotsCSV=(spots,trips)=>{
+  const h=row(["spot_id","trip_id","trip_name","name","timestamp","gps_lat","gps_lon","line_type","water_temp","notes"]);
+  return[h,...spots.map(s=>{const t=trips.find(x=>x.id===s.tripId);return row([s.id,s.tripId,t?.name||"",s.name||"",s.timestamp,s.gps?.lat??"",s.gps?.lon??"",s.lineType||"",s.waterTemp||"",s.notes||""])})].join("\n");
+};
+const catchesCSV=(catches,spots,trips)=>{
+  const h=row(["catch_id","trip_id","trip_name","spot_id","spot_name","timestamp","species","fly_pattern","size","gps_lat","gps_lon","water_temp","air_temp_c","pressure_hpa","moon_phase","tide_normalized","tide_cm","tide_lat_cm","tide_hat_cm","notes"]);
+  return[h,...[...catches].sort((a,b)=>new Date(a.timestamp)-new Date(b.timestamp)).map(c=>{
+    const t=trips.find(x=>x.id===c.tripId),s=spots.find(x=>x.id===c.spotId);
+    return row([c.id,c.tripId||"",t?.name||"",c.spotId||"",s?.name||"",c.timestamp,c.species,c.flyPattern||"",c.size||"",c.gps?.lat??"",c.gps?.lon??"",c.waterTemp||"",c.weather?.airTemp??"",c.weather?.pressure??"",c.weather?.moon||"",c.tide?.normalized!=null?c.tide.normalized.toFixed(4):"",c.tide?.valueCM??"",c.tide?.latCM??"",c.tide?.hatCM??"",c.notes||""]);
+  })].join("\n");
+};
+const obsCSV=(observations,spots,trips)=>{
+  const h=row(["obs_id","trip_id","trip_name","spot_id","spot_name","timestamp","species","count","estimated_size","gps_lat","gps_lon","notes"]);
+  return[h,...[...observations].sort((a,b)=>new Date(a.timestamp)-new Date(b.timestamp)).map(o=>{
+    const t=trips.find(x=>x.id===o.tripId),s=spots.find(x=>x.id===o.spotId);
+    return row([o.id,o.tripId||"",t?.name||"",o.spotId||"",s?.name||"",o.timestamp,o.species,o.count||"",o.estimatedSize||"",o.gps?.lat??"",o.gps?.lon??"",o.notes||""]);
+  })].join("\n");
+};
+function dlCSV(content,filename){
+  const blob=new Blob(["\uFEFF"+content],{type:"text/csv;charset=utf-8;"});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");a.href=url;a.download=filename;a.click();URL.revokeObjectURL(url);
+}
+
+// ── Line types & method derivation ───────────────────────────────────────────
+
+const FLY_LINES  = ["Float","Slow Int","Fast Int","Sink3","Sink5","Sink7"];
+const SPIN_LINES = ["Wobbler","Shad","Softjerk"];
+const ALL_LINES  = [...FLY_LINES, ...SPIN_LINES];
+
+const TEMP_OPTIONS = Array.from({length:19},(_,i)=>`${i+7} °C`); // 7–25 °C
+const TARGET_SPECIES = ["Sea Trout","Sea Bass"];
+
+function deriveMethod(tripSpots) {
+  const lines = tripSpots.map(s => s.lineType).filter(Boolean);
+  if (!lines.length) return null;
+  const hasFly  = lines.some(l => FLY_LINES.includes(l));
+  const hasSpin = lines.some(l => SPIN_LINES.includes(l));
+  if (hasFly && hasSpin) return "Fly & Spin";
+  if (hasFly)  return "Fly";
+  if (hasSpin) return "Spin";
+  return null;
+}
+
+
+
+const SK={trips:"fl_trips_v3",spots:"fl_spots_v2",catches:"fl_catches_v3",obs:"fl_obs_v2"};
+const load=k=>{try{return JSON.parse(localStorage.getItem(k)||"[]");}catch{return[];}};
+const persist=(k,d)=>localStorage.setItem(k,JSON.stringify(d));
+
+// ── App root ──────────────────────────────────────────────────────────────────
+
+function FishLog(){
+  const [tab,setTab]=useState("trips");
+  const [logMode,setLogMode]=useState("catch"); // lifted so banner can control it
+  const [trips,setTrips]=useState(()=>load(SK.trips));
+  const [spots,setSpots]=useState(()=>load(SK.spots));
+  const [catches,setCatches]=useState(()=>load(SK.catches));
+  const [observations,setObservations]=useState(()=>load(SK.obs));
+  const [selTrip,setSelTrip]=useState(null);
+  const [selCatch,setSelCatch]=useState(null);
+  const [selObs,setSelObs]=useState(null);
+  const [toast,setToast]=useState(null);
+  const toastRef=useRef(null);
+
+  const activeTrip=trips.find(t=>!t.endTime)||null;
+  const activeSpot=activeTrip
+    ?[...spots].filter(s=>s.tripId===activeTrip.id).sort((a,b)=>new Date(b.timestamp)-new Date(a.timestamp))[0]||null
+    :null;
+
+  const showToast=msg=>{setToast(msg);clearTimeout(toastRef.current);toastRef.current=setTimeout(()=>setToast(null),2800);};
+
+  const mut=(setter,key)=>fn=>{setter(p=>{const u=fn(p);persist(key,u);return u;});};
+  const mutTrips  =mut(setTrips,  SK.trips);
+  const mutSpots  =mut(setSpots,  SK.spots);
+  const mutCatches=mut(setCatches,SK.catches);
+  const mutObs    =mut(setObservations,SK.obs);
+
+  // Starting a session creates both a trip AND the first spot atomically
+  const startSession=(spotData,tripMeta)=>{
+    const now=new Date();
+    const tripId=`t_${now.getTime()}`;
+    const spotId=`s_${now.getTime()}`;
+    const trip={id:tripId,name:fmtDateLong(now),startTime:now.toISOString(),endTime:null,...tripMeta};
+    const spot={id:spotId,tripId,...spotData,timestamp:now.toISOString()};
+    mutTrips(p=>[trip,...p]);
+    mutSpots(p=>[spot,...p]);
+    showToast(`Session started · ${spot.name||"New spot"}`);
+  };
+
+  const addSpot=s=>{mutSpots(p=>[s,...p]);showToast(`Spot "${s.name||"New spot"}" added`);};
+  const endTrip=()=>{mutTrips(p=>p.map(t=>t.id===activeTrip.id?{...t,endTime:new Date().toISOString()}:t));showToast("Session ended");};
+  const updTrip=t=>mutTrips(p=>p.map(x=>x.id===t.id?t:x));
+  const delTrip=id=>{mutTrips(p=>p.filter(t=>t.id!==id));setSelTrip(null);showToast("Trip deleted");};
+  const updSpot=s=>mutSpots(p=>p.map(x=>x.id===s.id?s:x));
+
+  const addCatch=c=>{mutCatches(p=>[c,...p]);setTab("journal");showToast("Catch recorded ✓");};
+  const delCatch=id=>{mutCatches(p=>p.filter(c=>c.id!==id));setSelCatch(null);showToast("Catch deleted");};
+  const addObs  =o=>{mutObs(p=>[o,...p]);setTab("journal");showToast("Observation recorded 👁");};
+  const delObs  =id=>{mutObs(p=>p.filter(o=>o.id!==id));setSelObs(null);showToast("Observation deleted");};
+
+  const tripSpots  =t=>[...spots].filter(s=>s.tripId===t.id).sort((a,b)=>new Date(a.timestamp)-new Date(b.timestamp));
+  const tripCatches=t=>catches.filter(c=>c.tripId===t.id);
+  const tripObs    =t=>observations.filter(o=>o.tripId===t.id);
+
+  return(
+    <>
+      <style>{css}</style>
+      <div className="app">
+        <header className="header">
+          <div className="header-top">
+            <div className="header-title">The <span>Catch</span> Log</div>
+            <div className="header-sub">Norway</div>
+          </div>
+          <div className="tab-bar">
+            <button className={`tab${tab==="trips"?" active":""}`}   onClick={()=>setTab("trips")}>🗓 Sessions</button>
+            <button className={`tab${tab==="log"?" active":""}`}     onClick={()=>setTab("log")}>⊕ Log</button>
+            <button className={`tab${tab==="journal"?" active":""}`} onClick={()=>setTab("journal")}>📋 Journal</button>
+            <button className={`tab${tab==="export"?" active":""}`}  onClick={()=>setTab("export")}>↓ Export</button>
+          </div>
+        </header>
+
+        {activeTrip&&(
+          <div className="active-banner">
+            <div className="ab-left">
+              <div className="ab-trip">{activeTrip.name}</div>
+              <div className="ab-spot">{activeSpot?`📍 ${activeSpot.name||"Unnamed spot"}`:"📍 No spot yet"}</div>
+              {activeSpot?.waterTemp&&<div className="ab-meta">💧 {activeSpot.waterTemp}</div>}
+            </div>
+            <div className="ab-buttons">
+              <button className="ab-btn" onClick={()=>{setLogMode("spot");setTab("log");}}>+ New Spot</button>
+              <button className="ab-btn end" onClick={endTrip}>End</button>
+            </div>
+          </div>
+        )}
+
+        {tab==="trips"  &&<TripsList trips={trips} tripSpots={tripSpots} tripCatches={tripCatches} tripObs={tripObs} activeTrip={activeTrip} onSelect={setSelTrip} onStartSession={startSession}/>}
+        {tab==="log"    &&<LogTab activeTrip={activeTrip} activeSpot={activeSpot} onAddSpot={addSpot} onAddCatch={addCatch} onAddObs={addObs} logMode={logMode} setLogMode={setLogMode}/>}
+        {tab==="journal"&&<Journal catches={catches} observations={observations} spots={spots} trips={trips} onSelCatch={setSelCatch} onSelObs={setSelObs}/>}
+        {tab==="export" &&<ExportTab trips={trips} spots={spots} catches={catches} observations={observations}/>}
+
+        {selTrip &&<TripDetail  trip={selTrip}  onClose={()=>setSelTrip(null)}  onDelete={delTrip}  onUpdate={updTrip}  spots={tripSpots(selTrip)} catches={tripCatches(selTrip)} observations={tripObs(selTrip)} onSelCatch={c=>{setSelTrip(null);setSelCatch(c);}} onSelObs={o=>{setSelTrip(null);setSelObs(o);}} onUpdSpot={updSpot}/>}
+        {selCatch&&<CatchDetail catch={selCatch} onClose={()=>setSelCatch(null)} onDelete={delCatch} trips={trips} spots={spots}/>}
+        {selObs  &&<ObsDetail  obs={selObs}     onClose={()=>setSelObs(null)}   onDelete={delObs}   trips={trips} spots={spots}/>}
+        {toast&&<div className="toast">{toast}</div>}
+      </div>
+    </>
+  );
+}
+
+// ── Reusable dropdowns ────────────────────────────────────────────────────────
+
+function TempSelect({value, onChange, placeholder="— select —"}) {
+  return (
+    <div className="field-select-wrap">
+      <select className="field-select" value={value} onChange={e=>onChange(e.target.value)}>
+        <option value="">{placeholder}</option>
+        {TEMP_OPTIONS.map(t=><option key={t} value={t}>{t}</option>)}
+      </select>
+    </div>
+  );
+}
+
+function TargetSelect({value, onChange}) {
+  return (
+    <div className="field-select-wrap">
+      <select className="field-select" value={value} onChange={e=>onChange(e.target.value)}>
+        <option value="">— select —</option>
+        {TARGET_SPECIES.map(s=><option key={s} value={s}>{s}</option>)}
+      </select>
+    </div>
+  );
+}
+
+
+
+function TripsList({trips,tripSpots,tripCatches,tripObs,activeTrip,onSelect,onStartSession}){
+  const [showForm,setShowForm]=useState(false);
+  const [spotName,setSpotName]=useState("");
+  const [waterTemp,setWaterTemp]=useState("");
+  const [lineType,setLineType]=useState("");
+  const [targetSpecies,setTargetSpecies]=useState("");
+  const [spotNotes,setSpotNotes]=useState("");
+  const [gps,setGps]=useState(null);
+  const [gpsStatus,setGpsStatus]=useState("idle");
+  const getGPS=()=>{setGpsStatus("loading");navigator.geolocation.getCurrentPosition(p=>{setGps({lat:p.coords.latitude,lon:p.coords.longitude});setGpsStatus("ok");},()=>setGpsStatus("error"),{enableHighAccuracy:true,timeout:15000});};
+
+  const handleStart=()=>{
+    onStartSession(
+      {name:spotName.trim(),gps,waterTemp:waterTemp.trim(),lineType,notes:spotNotes.trim()},
+      {targetSpecies:targetSpecies.trim()}
+    );
+    setShowForm(false);setSpotName("");setWaterTemp("");setLineType("");setTargetSpecies("");setSpotNotes("");setGps(null);setGpsStatus("idle");
+  };
+
+  const sorted=[...trips].sort((a,b)=>new Date(b.startTime)-new Date(a.startTime));
+
+  return(
+    <div className="log-wrap">
+      {!activeTrip&&!showForm&&(
+        <button className="save-btn green" style={{borderRadius:6,borderTop:"none",marginTop:0}} onClick={()=>setShowForm(true)}>
+          + Start New Session
+        </button>
+      )}
+
+      {showForm&&!activeTrip&&(
+        <div className="field-group">
+          {/* First spot — required context */}
+          <div className="field-group-title moss">First Spot</div>
+          <div className="field-row">
+            <span className="field-icon">📍</span>
+            <span className="field-label">Spot Name</span>
+            <input className="field-input" value={spotName} onChange={e=>setSpotName(e.target.value)} placeholder="Upper pool, bridge beat…"/>
+          </div>
+          <div className="field-row">
+            <span className="field-icon">🗺️</span>
+            <span className="field-label">GPS</span>
+            {gpsStatus==="idle"   &&<button className="gps-btn" onClick={getGPS}>Get Fix</button>}
+            {gpsStatus==="loading"&&<span className="status-badge status-loading">Acquiring…</span>}
+            {gpsStatus==="error"  &&<><span className="status-badge status-error">Failed</span><button className="gps-btn" style={{marginLeft:6}} onClick={getGPS}>Retry</button></>}
+            {gpsStatus==="ok"&&gps&&<span className="gps-coords">{formatCoords(gps.lat,gps.lon)}</span>}
+          </div>
+          <div className="field-row">
+            <span className="field-icon">🎣</span>
+            <span className="field-label">Line Type</span>
+            <div className="field-select-wrap">
+              <select className="field-select" value={lineType} onChange={e=>setLineType(e.target.value)}>
+                <option value="">— select —</option>
+                <optgroup label="Fly">{FLY_LINES.map(l=><option key={l} value={l}>{l}</option>)}</optgroup>
+                <optgroup label="Spin">{SPIN_LINES.map(l=><option key={l} value={l}>{l}</option>)}</optgroup>
+              </select>
+            </div>
+            {lineType&&<span className={`line-type-badge ${FLY_LINES.includes(lineType)?"line-type-fly":"line-type-spin"}`}>{FLY_LINES.includes(lineType)?"Fly":"Spin"}</span>}
+          </div>
+          <div className="field-row">
+            <span className="field-icon">💧</span>
+            <span className="field-label">Water Temp</span>
+            <TempSelect value={waterTemp} onChange={setWaterTemp}/>
+          </div>
+          <div className="field-row top">
+            <span className="field-icon" style={{marginTop:2}}>📝</span>
+            <span className="field-label top" style={{marginTop:2}}>Notes</span>
+            <textarea className="field-input" value={spotNotes} onChange={e=>setSpotNotes(e.target.value)} placeholder="Spot conditions…" rows={2} style={{padding:"2px 0",resize:"none"}}/>
+          </div>
+
+          {/* Session context — optional */}
+          <div className="field-group-title" style={{background:"#444"}}>Session Context <span style={{fontWeight:400,opacity:.5}}>· optional</span></div>
+          <div className="field-row">
+            <span className="field-icon">🐟</span>
+            <span className="field-label opt">Targeting</span>
+            <TargetSelect value={targetSpecies} onChange={setTargetSpecies}/>
+          </div>
+
+          <div style={{display:"flex"}}>
+            <button className="save-btn green" style={{borderRadius:0,flex:1,marginTop:0,borderTop:"none",padding:"14px"}} onClick={handleStart}>▶ Start Session</button>
+            <button onClick={()=>setShowForm(false)} style={{padding:"14px 18px",background:"transparent",border:"none",cursor:"pointer",color:"#aaa",fontSize:20}}>×</button>
+          </div>
+        </div>
+      )}
+
+      {sorted.length===0&&!showForm&&(
+        <div className="empty-state"><div className="empty-icon">🗺️</div><div className="empty-text">No sessions yet</div><div style={{fontSize:11,marginTop:8,color:"#bbb"}}>Head to the water ↑</div></div>
+      )}
+
+      {sorted.map(t=>{
+        const ts=tripSpots(t),tc=tripCatches(t),to=tripObs(t);
+        const thumb=tc.find(c=>c.fishPhoto)?.fishPhoto||null;
+        const derivedMethod=deriveMethod(ts);
+        return(
+          <div key={t.id} className="trip-card" onClick={()=>onSelect(t)}>
+            <div className="trip-card-header">
+              {thumb?<img src={thumb} alt="" className="trip-thumb"/>:<div className="trip-thumb">🎣</div>}
+              <div className="trip-meta">
+                <div>
+                  <div className="trip-name">{t.name}</div>
+                  <div style={{fontSize:10,color:"#888",marginTop:1}}>
+                    {t.targetSpecies?`🎯 ${t.targetSpecies}`:""}{t.targetSpecies&&derivedMethod?" · ":""}{derivedMethod?`🎣 ${derivedMethod}`:""}
+                  </div>
+                </div>
+                <div>
+                  <div className="trip-date">{fmtDT(t.startTime)}</div>
+                  {t.endTime?<div className="trip-duration">⏱ {durStr(t.startTime,t.endTime)}</div>:<div className="trip-duration" style={{color:"var(--moss)"}}>● In progress</div>}
+                </div>
+              </div>
+            </div>
+            <div className="trip-footer">
+              {!t.endTime&&<span className="trip-active-badge">Active</span>}
+              {ts.length>0&&<span className="chip">📍 {ts.length} spot{ts.length!==1?"s":""}</span>}
+              {tc.length>0&&<span className="chip">🐟 {tc.length} catch{tc.length!==1?"es":""}</span>}
+              {to.length>0&&<span className="chip chip-obs">👁 {to.length} obs</span>}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Log tab ───────────────────────────────────────────────────────────────────
+
+function LogTab({activeTrip,activeSpot,onAddSpot,onAddCatch,onAddObs,logMode,setLogMode}){
+  const mode=logMode;
+  const setMode=setLogMode;
+
+  // No active session → only show "New Spot" (which starts one)
+  if(!activeTrip) return(
+    <div className="form-wrap">
+      <div style={{background:"white",border:"1px solid var(--mist)",borderRadius:6,padding:"20px",textAlign:"center",color:"#aaa"}}>
+        <div style={{fontSize:36,marginBottom:8}}>📍</div>
+        <div style={{fontSize:12,letterSpacing:1,textTransform:"uppercase",marginBottom:6}}>No active session</div>
+        <div style={{fontSize:12}}>Go to Sessions and tap "Start New Session"</div>
+      </div>
+    </div>
+  );
+
+  return(
+    <div className="form-wrap">
+      <div style={{display:"flex",gap:6}}>
+        {[["catch","🐟 Catch"],["obs","👁 Observation"],["spot","📍 New Spot"]].map(([m,label])=>(
+          <button key={m} onClick={()=>setMode(m)} style={{flex:1,padding:"9px 4px",fontSize:9,letterSpacing:.8,textTransform:"uppercase",border:"1px solid var(--mist)",borderRadius:4,cursor:"pointer",background:mode===m?"var(--ink)":"white",color:mode===m?"var(--paper)":"#888",transition:"all .2s"}}>
+            {label}
+          </button>
+        ))}
+      </div>
+      {mode==="catch"&&<CatchForm   activeTrip={activeTrip} activeSpot={activeSpot} onSave={onAddCatch}/>}
+      {mode==="obs"  &&<ObsForm     activeTrip={activeTrip} activeSpot={activeSpot} onSave={onAddObs}/>}
+      {mode==="spot" &&<AddSpotForm activeTrip={activeTrip} onSave={onAddSpot}/>}
+    </div>
+  );
+}
+
+// ── Add Spot form ─────────────────────────────────────────────────────────────
+
+function AddSpotForm({activeTrip,onSave}){
+  const [name,setName]=useState("");
+  const [waterTemp,setWaterTemp]=useState("");
+  const [lineType,setLineType]=useState("");
+  const [notes,setNotes]=useState("");
+  const [gps,setGps]=useState(null);
+  const [gpsStatus,setGpsStatus]=useState("idle");
+  const getGPS=()=>{setGpsStatus("loading");navigator.geolocation.getCurrentPosition(p=>{setGps({lat:p.coords.latitude,lon:p.coords.longitude});setGpsStatus("ok");},()=>setGpsStatus("error"),{enableHighAccuracy:true,timeout:15000});};
+
+  const handleSave=()=>{
+    onSave({id:`s_${Date.now()}`,tripId:activeTrip.id,name:name.trim(),timestamp:new Date().toISOString(),gps,waterTemp:waterTemp.trim(),lineType,notes:notes.trim()});
+    setName("");setWaterTemp("");setLineType("");setNotes("");setGps(null);setGpsStatus("idle");
+  };
+
+  return(
+    <>
+      <div className="field-group">
+        <div className="field-group-title">New Spot</div>
+        <div className="field-row">
+          <span className="field-icon">📍</span><span className="field-label">Name</span>
+          <input className="field-input" value={name} onChange={e=>setName(e.target.value)} placeholder="Pool name, bridge, bend…"/>
+        </div>
+        <div className="field-row">
+          <span className="field-icon">🗺️</span><span className="field-label">GPS</span>
+          {gpsStatus==="idle"   &&<button className="gps-btn" onClick={getGPS}>Get Fix</button>}
+          {gpsStatus==="loading"&&<span className="status-badge status-loading">Acquiring…</span>}
+          {gpsStatus==="error"  &&<><span className="status-badge status-error">Failed</span><button className="gps-btn" style={{marginLeft:6}} onClick={getGPS}>Retry</button></>}
+          {gpsStatus==="ok"&&gps&&<span className="gps-coords">{formatCoords(gps.lat,gps.lon)}</span>}
+        </div>
+        <div className="field-row">
+          <span className="field-icon">🎣</span><span className="field-label">Line Type</span>
+          <div className="field-select-wrap">
+            <select className="field-select" value={lineType} onChange={e=>setLineType(e.target.value)}>
+              <option value="">— select —</option>
+              <optgroup label="Fly">{FLY_LINES.map(l=><option key={l} value={l}>{l}</option>)}</optgroup>
+              <optgroup label="Spin">{SPIN_LINES.map(l=><option key={l} value={l}>{l}</option>)}</optgroup>
+            </select>
+          </div>
+          {lineType&&<span className={`line-type-badge ${FLY_LINES.includes(lineType)?"line-type-fly":"line-type-spin"}`}>{FLY_LINES.includes(lineType)?"Fly":"Spin"}</span>}
+        </div>
+        <div className="field-row">
+          <span className="field-icon">💧</span><span className="field-label">Water Temp</span>
+          <TempSelect value={waterTemp} onChange={setWaterTemp}/>
+        </div>
+        <div className="field-row top">
+          <span className="field-icon" style={{marginTop:2}}>📝</span><span className="field-label" style={{marginTop:2}}>Notes</span>
+          <textarea className="field-input" value={notes} onChange={e=>setNotes(e.target.value)} placeholder="Conditions, access…" rows={2} style={{padding:"2px 0",resize:"none"}}/>
+        </div>
+      </div>
+      <button className="save-btn" onClick={handleSave}>📍 Add Spot</button>
+    </>
+  );
+}
+
+// ── Catch form ────────────────────────────────────────────────────────────────
+
+function CatchForm({activeTrip,activeSpot,onSave}){
+  const [fishPhoto,setFishPhoto]=useState(null);
+  const [flyPhoto,setFlyPhoto]=useState(null);
+  const [species,setSpecies]=useState("");
+  const [flyPattern,setFlyPattern]=useState("");
+  const [size,setSize]=useState("");
+  const [waterTemp,setWaterTemp]=useState("");
+  const [notes,setNotes]=useState("");
+  const [timestamp]=useState(()=>new Date().toISOString());
+  const {gps,gpsStatus,weather,weatherStatus,tide,tideStatus,getGPS,reset}=useEnv();
+  const fishRef=useRef(),flyRef=useRef();
+  const hp=s=>e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=ev=>s(ev.target.result);r.readAsDataURL(f);};
+
+  const handleSave=()=>{
+    if(!species.trim())return;
+    onSave({id:`c_${Date.now()}`,timestamp,species:species.trim(),flyPattern:flyPattern.trim(),size:size.trim(),waterTemp:waterTemp.trim(),notes:notes.trim(),fishPhoto,flyPhoto,gps,weather,tide,tripId:activeTrip?.id||null,spotId:activeSpot?.id||null});
+    setFishPhoto(null);setFlyPhoto(null);setSpecies("");setFlyPattern("");setSize("");setWaterTemp("");setNotes("");reset();
+  };
+
+  return(
+    <>
+      {activeSpot&&<div className="context-pill water">📍 Logging to: <strong>{activeSpot.name||"Active spot"}</strong>{activeSpot.waterTemp?` · 💧 ${activeSpot.waterTemp}`:""}</div>}
+
+      <div className="photo-grid photo-grid-2">
+        {[{ref:fishRef,photo:fishPhoto,setter:setFishPhoto,label:"Fish"},{ref:flyRef,photo:flyPhoto,setter:setFlyPhoto,label:"Fly"}].map(({ref,photo,setter,label})=>(
+          <div key={label} className="photo-slot" onClick={()=>ref.current.click()}>
+            {photo?<img src={photo} alt={label}/>:<><div className="photo-slot-icon">📷</div><div className="photo-slot-label">{label}</div></>}
+            <input ref={ref} type="file" accept="image/*" capture="environment" onChange={hp(setter)}/>
+          </div>
+        ))}
+      </div>
+
+      <div className="field-group">
+        <div className="field-group-title">Catch Details</div>
+        {[{icon:"🐟",label:"Species",val:species,set:setSpecies,ph:"Brown Trout…"},
+          {icon:"🪰",label:"Fly Pattern",val:flyPattern,set:setFlyPattern,ph:"Elk Hair Caddis #14…"},
+          {icon:"📏",label:"Size",val:size,set:setSize,ph:"42 cm / 16 in"}].map(f=>(
+          <div key={f.label} className="field-row"><span className="field-icon">{f.icon}</span><span className="field-label">{f.label}</span><input className="field-input" value={f.val} onChange={e=>f.set(e.target.value)} placeholder={f.ph}/></div>
+        ))}
+      </div>
+
+      <div className="field-group">
+        <div className="field-group-title">Location & Time</div>
+        <div className="field-row"><span className="field-icon">🕐</span><span className="field-label">Time</span><span className="field-value" style={{fontSize:12}}>{fmtDT(timestamp)}</span></div>
+        <div className="field-row">
+          <span className="field-icon">📍</span><span className="field-label">GPS</span>
+          {gpsStatus==="idle"   &&<button className="gps-btn" onClick={()=>getGPS(timestamp)}>Get Fix</button>}
+          {gpsStatus==="loading"&&<span className="status-badge status-loading">Acquiring…</span>}
+          {gpsStatus==="error"  &&<><span className="status-badge status-error">Failed</span><button className="gps-btn" style={{marginLeft:6}} onClick={()=>getGPS(timestamp)}>Retry</button></>}
+          {gpsStatus==="ok"&&gps&&<span className="gps-coords">{formatCoords(gps.lat,gps.lon)}</span>}
+        </div>
+      </div>
+
+      <div className="field-group">
+        <div className="field-group-title">Conditions{(weatherStatus==="loading"||tideStatus==="loading")&&<span style={{opacity:.5,fontSize:9}}> · fetching…</span>}</div>
+        <div className="field-row"><span className="field-icon">🌡️</span><span className="field-label">Air Temp</span>{weather?.airTemp!=null?<span className="field-value">{weather.airTemp} °C</span>:<input className="field-input" placeholder="e.g. 12 °C"/>}</div>
+        <div className="field-row">
+          <span className="field-icon">💧</span><span className="field-label">Water Temp</span>
+          <TempSelect value={waterTemp} onChange={setWaterTemp} placeholder={activeSpot?.waterTemp?`Spot: ${activeSpot.waterTemp}`:"— select —"}/>
+          <span className="field-unit">manual</span>
+        </div>
+        <div className="field-row top">
+          <span className="field-icon" style={{marginTop:2}}>🌊</span><span className="field-label" style={{marginTop:2}}>Tide</span>
+          {tideStatus==="idle"       &&<span style={{fontSize:11,color:"#bbb"}}>— get GPS first</span>}
+          {tideStatus==="loading"    &&<span className="status-badge status-loading">Loading…</span>}
+          {tideStatus==="error"      &&<span className="status-badge status-error">API error</span>}
+          {tideStatus==="unavailable"&&<span className="status-badge status-error">No data</span>}
+          {tideStatus==="ok"&&tide&&(
+            <div className="tide-bar-wrap">
+              <div className="tide-value-line">
+                <span className="tide-normalized">{tide.normalized!=null?tide.normalized.toFixed(2):"—"}</span>
+                {tide.valueCM!=null&&<span className="tide-raw">({tide.valueCM} cm)</span>}
+                {tide.normalized!=null&&<span className="tide-hint">{tideLabel(tide.normalized)}</span>}
+              </div>
+              {tide.normalized!=null&&<><div className="tide-bar-track"><div className="tide-bar-fill" style={{width:`${tide.normalized*100}%`}}/></div><div className="tide-bar-labels"><span>0.0 LAT{tide.latCM!=null?` (${tide.latCM}cm)`:""}</span><span>1.0 HAT{tide.hatCM!=null?` (${tide.hatCM}cm)`:""}</span></div></>}
+            </div>
+          )}
+        </div>
+        <div className="field-row"><span className="field-icon">🔵</span><span className="field-label">Pressure</span>{weather?.pressure!=null?<span className="field-value">{weather.pressure} hPa</span>:<input className="field-input" placeholder="e.g. 1013 hPa"/>}</div>
+        <div className="field-row"><span className="field-icon">🌕</span><span className="field-label">Moon</span><span className="field-value">{weather?.moon??getMoonPhase(new Date())}</span></div>
+        {!gps&&<div className="info-note">Get GPS fix to auto-load air temp, pressure & tide</div>}
+        {tideStatus==="ok"&&<div className="info-note">Tide © Kartverket/NMA (CC BY 4.0)</div>}
+      </div>
+
+      <div className="field-group">
+        <div className="field-group-title">Notes</div>
+        <div className="field-row"><textarea className="field-input" value={notes} onChange={e=>setNotes(e.target.value)} placeholder="Hatches, retrieve, technique…" rows={3} style={{padding:"4px 0",resize:"none"}}/></div>
+      </div>
+      <button className="save-btn" onClick={handleSave} disabled={!species.trim()}>⊕ Record Catch</button>
+    </>
+  );
+}
+
+// ── Observation form ──────────────────────────────────────────────────────────
+
+function ObsForm({activeTrip,activeSpot,onSave}){
+  const [species,setSpecies]=useState("");
+  const [count,setCount]=useState("");
+  const [estSize,setEstSize]=useState("");
+  const [notes,setNotes]=useState("");
+  const [gps,setGps]=useState(null);
+  const [gpsStatus,setGpsStatus]=useState("idle");
+  const [timestamp]=useState(()=>new Date().toISOString());
+  const getGPS=()=>{setGpsStatus("loading");navigator.geolocation.getCurrentPosition(p=>{setGps({lat:p.coords.latitude,lon:p.coords.longitude});setGpsStatus("ok");},()=>setGpsStatus("error"),{enableHighAccuracy:true,timeout:15000});};
+
+  const handleSave=()=>{
+    if(!species.trim())return;
+    onSave({id:`o_${Date.now()}`,timestamp,species:species.trim(),count:count.trim(),estimatedSize:estSize.trim(),notes:notes.trim(),gps,tripId:activeTrip?.id||null,spotId:activeSpot?.id||null});
+    setSpecies("");setCount("");setEstSize("");setNotes("");setGps(null);setGpsStatus("idle");
+  };
+
+  return(
+    <>
+      {activeSpot&&<div className="context-pill copper">📍 At: <strong>{activeSpot.name||"Active spot"}</strong></div>}
+      <div className="field-group">
+        <div className="field-group-title">Fish Observed</div>
+        <div className="field-row"><span className="field-icon">🐟</span><span className="field-label">Species</span><input className="field-input" value={species} onChange={e=>setSpecies(e.target.value)} placeholder="Sea Trout, Grayling…"/></div>
+        <div className="field-row">
+          <span className="field-icon">#</span><span className="field-label">Count</span>
+          <input className="field-num" type="number" min="1" value={count} onChange={e=>setCount(e.target.value)} placeholder="0"/>
+          <span className="field-unit" style={{marginLeft:4}}>fish</span>
+        </div>
+        <div className="field-row"><span className="field-icon">📏</span><span className="field-label">Est. Size</span><input className="field-input" value={estSize} onChange={e=>setEstSize(e.target.value)} placeholder="e.g. 35–50 cm, large…"/></div>
+        <div className="field-row"><span className="field-icon">🕐</span><span className="field-label">Time</span><span className="field-value" style={{fontSize:12}}>{fmtDT(timestamp)}</span></div>
+        <div className="field-row">
+          <span className="field-icon">📍</span><span className="field-label">GPS</span>
+          {gpsStatus==="idle"   &&<button className="gps-btn" onClick={getGPS}>Get Fix</button>}
+          {gpsStatus==="loading"&&<span className="status-badge status-loading">Acquiring…</span>}
+          {gpsStatus==="error"  &&<><span className="status-badge status-error">Failed</span><button className="gps-btn" style={{marginLeft:6}} onClick={getGPS}>Retry</button></>}
+          {gpsStatus==="ok"&&gps&&<span className="gps-coords">{formatCoords(gps.lat,gps.lon)}</span>}
+        </div>
+        <div className="field-row top">
+          <span className="field-icon" style={{marginTop:2}}>📝</span><span className="field-label" style={{marginTop:2}}>Notes</span>
+          <textarea className="field-input" value={notes} onChange={e=>setNotes(e.target.value)} placeholder="Behaviour, depth, rising, spooked…" rows={3} style={{padding:"2px 0",resize:"none"}}/>
+        </div>
+      </div>
+      <button className="save-btn" onClick={handleSave} disabled={!species.trim()}>👁 Record Observation</button>
+    </>
+  );
+}
+
+// ── Journal ───────────────────────────────────────────────────────────────────
+
+function Journal({catches,observations,spots,trips,onSelCatch,onSelObs}){
+  const spotName=id=>spots.find(s=>s.id===id)?.name||null;
+  const items=[...catches.map(c=>({...c,_type:"catch"})),...observations.map(o=>({...o,_type:"obs"}))].sort((a,b)=>new Date(b.timestamp)-new Date(a.timestamp));
+  if(!items.length)return(<div className="log-wrap"><div className="empty-state"><div className="empty-icon">🎣</div><div className="empty-text">Nothing logged yet</div></div></div>);
+  return(
+    <div className="log-wrap">
+      {items.map(item=>item._type==="catch"?(
+        <div key={item.id} className="catch-card" onClick={()=>onSelCatch(item)}>
+          <div className="catch-card-header">
+            {item.fishPhoto?<img src={item.fishPhoto} alt="fish" className="catch-thumb"/>:<div className="catch-thumb"><span className="catch-thumb-placeholder">🐟</span></div>}
+            <div className="catch-meta">
+              <div><div className="catch-species">{item.species}</div>{item.flyPattern&&<div style={{fontSize:10,color:"#888",marginTop:1}}>🪰 {item.flyPattern}</div>}</div>
+              <div><div className="catch-date">{fmtDT(item.timestamp)}</div>{item.gps&&<div style={{fontSize:10,color:"var(--water)",fontFamily:"'Source Code Pro',monospace"}}>{formatCoords(item.gps.lat,item.gps.lon)}</div>}</div>
+            </div>
+          </div>
+          <div className="catch-chips">
+            {item.size&&<span className="chip">📏 {item.size}</span>}
+            {item.weather?.airTemp!=null&&<span className="chip">🌡️ {item.weather.airTemp}°C</span>}
+            {item.tide?.normalized!=null&&<span className="chip chip-tide">🌊 {item.tide.normalized.toFixed(2)} · {tideLabel(item.tide.normalized)}</span>}
+            {item.weather?.moon&&<span className="chip">{item.weather.moon}</span>}
+            {item.spotId&&spotName(item.spotId)&&<span className="chip chip-spot">📍 {spotName(item.spotId)}</span>}
+          </div>
+        </div>
+      ):(
+        <div key={item.id} className="obs-card" onClick={()=>onSelObs(item)}>
+          <div className="obs-header"><span style={{fontSize:16}}>👁</span><span className="obs-species">{item.species}</span>{item.count&&<span className="obs-count">× {item.count}</span>}</div>
+          <div className="obs-meta">
+            <span>{fmtDT(item.timestamp)}</span>
+            {item.estimatedSize&&<span>📏 {item.estimatedSize}</span>}
+            {item.spotId&&spotName(item.spotId)&&<span>📍 {spotName(item.spotId)}</span>}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── Trip detail modal ─────────────────────────────────────────────────────────
+
+function TripDetail({trip:t,onClose,onDelete,onUpdate,spots,catches,observations,onSelCatch,onSelObs,onUpdSpot}){
+  const [editTarget,setEditTarget]=useState(t.targetSpecies||"");
+  const [editNotes,setEditNotes]=useState(t.notes||"");
+  const derivedMethod=deriveMethod(spots);
+  const dirty=editTarget!==t.targetSpecies||editNotes!==t.notes;
+  const save=()=>onUpdate({...t,targetSpecies:editTarget,notes:editNotes});
+
+  return(
+    <div className="modal-overlay" onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div className="modal">
+        <div className="modal-header"><div className="modal-title">{t.name}</div><button className="modal-close" onClick={onClose}>×</button></div>
+
+        <div className="modal-section">
+          <div className="modal-section-title">Session</div>
+          <div className="modal-grid">
+            <div className="modal-stat"><div className="modal-stat-label">Started</div><div className="modal-stat-value" style={{fontSize:11}}>{fmtDT(t.startTime)}</div></div>
+            {t.endTime?<div className="modal-stat"><div className="modal-stat-label">Duration</div><div className="modal-stat-value">{durStr(t.startTime,t.endTime)}</div></div>
+              :<div className="modal-stat"><div className="modal-stat-label">Status</div><div className="modal-stat-value" style={{color:"var(--moss)"}}>● Active</div></div>}
+          </div>
+        </div>
+
+        <div className="modal-section">
+          <div className="modal-section-title">Context — tap to edit</div>
+          {[{label:"Targeting"}].map(f=>(
+            <div key={f.label} className="field-row" style={{padding:"7px 0"}}>
+              <span className="field-label">{f.label}</span>
+              <TargetSelect value={editTarget} onChange={setEditTarget}/>
+            </div>
+          ))}
+          <div className="field-row" style={{padding:"7px 0"}}>
+            <span className="field-label">Method</span>
+            {derivedMethod
+              ? <span style={{fontSize:13,color:"var(--ink)"}}>{derivedMethod} <span className="method-derived">· auto from spots</span></span>
+              : <span className="method-derived">Set by choosing line types at each spot</span>}
+          </div>
+          <div style={{padding:"7px 0"}}>
+            <textarea value={editNotes} onChange={e=>setEditNotes(e.target.value)} placeholder="Session notes…" rows={3}
+              style={{width:"100%",padding:"4px 8px",borderRadius:4,border:"1px solid var(--mist)",fontFamily:"'Source Code Pro',monospace",fontSize:13,resize:"none",outline:"none"}}/>
+          </div>
+          {dirty&&<button className="gps-btn" onClick={save} style={{marginTop:4}}>Save changes</button>}
+        </div>
+
+        {/* Spots with grouped activity */}
+        <div className="modal-section">
+          <div className="modal-section-title">Spots & Activity</div>
+          {spots.length===0&&<div style={{fontSize:11,color:"#ccc"}}>No spots recorded</div>}
+          {spots.map(s=>{
+            const sc=catches.filter(c=>c.spotId===s.id);
+            const so=observations.filter(o=>o.spotId===s.id);
+            return(
+              <div key={s.id} className="spot-group">
+                <div className="spot-group-header">
+                  <span>📍</span>
+                  <span className="spot-group-name">{s.name||"Unnamed spot"}</span>
+                  <span className="spot-group-meta">{fmtTime(s.timestamp)}</span>
+                  {s.lineType&&<span className={`line-type-badge ${FLY_LINES.includes(s.lineType)?"line-type-fly":"line-type-spin"}`} style={{marginLeft:"auto"}}>{s.lineType}</span>}
+                  {s.waterTemp&&<span style={{fontSize:10,color:"var(--water)",marginLeft:s.lineType?6:"auto"}}>💧 {s.waterTemp}</span>}
+                </div>
+                {s.gps&&<div style={{fontSize:10,color:"var(--water)",fontFamily:"'Source Code Pro',monospace",marginBottom:6}}>{formatCoords(s.gps.lat,s.gps.lon)}</div>}
+                <div className="spot-items">
+                  {sc.map(c=>(
+                    <div key={c.id} className="mini-catch" onClick={()=>onSelCatch(c)}>
+                      {c.fishPhoto?<img src={c.fishPhoto} alt="" className="mini-catch-thumb"/>:<div className="mini-catch-thumb">🐟</div>}
+                      <div className="mini-catch-info">
+                        <div className="mini-catch-species">{c.species}</div>
+                        <div className="mini-catch-time">{fmtTime(c.timestamp)}{c.size?` · ${c.size}`:""}{c.tide?.normalized!=null?` · 🌊 ${c.tide.normalized.toFixed(2)}`:""}</div>
+                      </div>
+                      <span style={{color:"#ccc",fontSize:16}}>›</span>
+                    </div>
+                  ))}
+                  {so.map(o=>(
+                    <div key={o.id} className="mini-obs" onClick={()=>onSelObs(o)}>
+                      <span style={{fontSize:14}}>👁</span>
+                      <div style={{flex:1}}>
+                        <div style={{fontSize:13,fontFamily:"'Playfair Display',serif",fontWeight:600}}>{o.species}{o.count?` × ${o.count}`:""}</div>
+                        <div style={{fontSize:10,color:"#999"}}>{fmtTime(o.timestamp)}{o.estimatedSize?` · ${o.estimatedSize}`:""}</div>
+                      </div>
+                      <span style={{color:"#ccc",fontSize:16}}>›</span>
+                    </div>
+                  ))}
+                  {sc.length===0&&so.length===0&&<div style={{fontSize:11,color:"#ccc",padding:"4px 0"}}>Nothing logged at this spot</div>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <button className="delete-btn" onClick={()=>onDelete(t.id)}>Delete this session</button>
+      </div>
+    </div>
+  );
+}
+
+// ── Catch detail modal ────────────────────────────────────────────────────────
+
+function CatchDetail({catch:c,onClose,onDelete,trips,spots}){
+  const norm=c.tide?.normalized;
+  const trip=trips?.find(t=>t.id===c.tripId);
+  const spot=spots?.find(s=>s.id===c.spotId);
+  return(
+    <div className="modal-overlay" onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div className="modal">
+        <div className="modal-header"><div className="modal-title">{c.species}</div><button className="modal-close" onClick={onClose}>×</button></div>
+        {(c.fishPhoto||c.flyPhoto)&&<div className="modal-photos-2">{c.fishPhoto&&<img src={c.fishPhoto} alt="fish" className="modal-photo-2"/>}{c.flyPhoto&&<img src={c.flyPhoto} alt="fly" className="modal-photo-2"/>}</div>}
+        <div className="modal-section">
+          <div className="modal-section-title">Details</div>
+          <div className="modal-grid">
+            {c.flyPattern&&<div className="modal-stat"><div className="modal-stat-label">Fly</div><div className="modal-stat-value">{c.flyPattern}</div></div>}
+            {c.size&&<div className="modal-stat"><div className="modal-stat-label">Size</div><div className="modal-stat-value">{c.size}</div></div>}
+            <div className="modal-stat"><div className="modal-stat-label">Time</div><div className="modal-stat-value" style={{fontSize:11}}>{fmtDT(c.timestamp)}</div></div>
+            {c.gps&&<div className="modal-stat"><div className="modal-stat-label">GPS</div><div className="modal-stat-value" style={{fontSize:10}}>{formatCoords(c.gps.lat,c.gps.lon)}</div></div>}
+            {spot&&<div className="modal-stat"><div className="modal-stat-label">Spot</div><div className="modal-stat-value">{spot.name||"—"}</div></div>}
+            {trip&&<div className="modal-stat"><div className="modal-stat-label">Session</div><div className="modal-stat-value">{trip.name}</div></div>}
+          </div>
+        </div>
+        <div className="modal-section">
+          <div className="modal-section-title">Conditions</div>
+          <div className="modal-grid">
+            {c.weather?.airTemp!=null&&<div className="modal-stat"><div className="modal-stat-label">Air Temp</div><div className="modal-stat-value">{c.weather.airTemp}°C</div></div>}
+            {c.waterTemp&&<div className="modal-stat"><div className="modal-stat-label">Water Temp</div><div className="modal-stat-value">{c.waterTemp}</div></div>}
+            {c.weather?.pressure!=null&&<div className="modal-stat"><div className="modal-stat-label">Pressure</div><div className="modal-stat-value">{c.weather.pressure} hPa</div></div>}
+            {c.weather?.moon&&<div className="modal-stat"><div className="modal-stat-label">Moon</div><div className="modal-stat-value">{c.weather.moon}</div></div>}
+          </div>
+          {c.tide&&(
+            <div style={{marginTop:10,background:"white",padding:"10px",borderRadius:4}}>
+              <div className="modal-stat-label" style={{marginBottom:5}}>Tide Level (Kartverket)</div>
+              <div style={{display:"flex",alignItems:"baseline",gap:8,flexWrap:"wrap"}}>
+                {norm!=null&&<span style={{fontSize:21,fontWeight:700,color:"var(--water)"}}>{norm.toFixed(2)}</span>}
+                {c.tide.valueCM!=null&&<span style={{fontSize:11,color:"#888"}}>{c.tide.valueCM} cm above CD</span>}
+                {norm!=null&&<span style={{fontSize:11,color:"var(--water-light)",fontStyle:"italic"}}>{tideLabel(norm)}</span>}
+              </div>
+              {norm!=null&&<><div className="modal-tide-bar"><div className="modal-tide-fill" style={{width:`${norm*100}%`}}/></div><div style={{display:"flex",justifyContent:"space-between",fontSize:9,color:"#aaa",marginTop:3}}><span>0.0 LAT{c.tide.latCM!=null?` (${c.tide.latCM}cm)`:""}</span><span>1.0 HAT{c.tide.hatCM!=null?` (${c.tide.hatCM}cm)`:""}</span></div></>}
+              <div style={{fontSize:9,color:"#ccc",marginTop:4}}>© Kartverket/NMA · CC BY 4.0</div>
+            </div>
+          )}
+        </div>
+        {c.notes&&<div className="modal-section"><div className="modal-section-title">Notes</div><div className="modal-notes">{c.notes}</div></div>}
+        <button className="delete-btn" onClick={()=>onDelete(c.id)}>Delete this catch</button>
+      </div>
+    </div>
+  );
+}
+
+// ── Observation detail modal ──────────────────────────────────────────────────
+
+function ObsDetail({obs:o,onClose,onDelete,trips,spots}){
+  const trip=trips?.find(t=>t.id===o.tripId);
+  const spot=spots?.find(s=>s.id===o.spotId);
+  return(
+    <div className="modal-overlay" onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div className="modal">
+        <div className="modal-header"><div className="modal-title">👁 {o.species}</div><button className="modal-close" onClick={onClose}>×</button></div>
+        <div className="modal-section">
+          <div className="modal-section-title">Observation</div>
+          <div className="modal-grid">
+            {o.count&&<div className="modal-stat"><div className="modal-stat-label">Count</div><div className="modal-stat-value">{o.count} fish</div></div>}
+            {o.estimatedSize&&<div className="modal-stat"><div className="modal-stat-label">Est. Size</div><div className="modal-stat-value">{o.estimatedSize}</div></div>}
+            <div className="modal-stat"><div className="modal-stat-label">Time</div><div className="modal-stat-value" style={{fontSize:11}}>{fmtDT(o.timestamp)}</div></div>
+            {o.gps&&<div className="modal-stat"><div className="modal-stat-label">GPS</div><div className="modal-stat-value" style={{fontSize:10}}>{formatCoords(o.gps.lat,o.gps.lon)}</div></div>}
+            {spot&&<div className="modal-stat"><div className="modal-stat-label">Spot</div><div className="modal-stat-value">{spot.name||"—"}</div></div>}
+            {trip&&<div className="modal-stat"><div className="modal-stat-label">Session</div><div className="modal-stat-value">{trip.name}</div></div>}
+          </div>
+        </div>
+        {o.notes&&<div className="modal-section"><div className="modal-section-title">Notes</div><div className="modal-notes">{o.notes}</div></div>}
+        <button className="delete-btn" onClick={()=>onDelete(o.id)}>Delete this observation</button>
+      </div>
+    </div>
+  );
+}
+
+// ── Export tab ────────────────────────────────────────────────────────────────
+
+function ExportTab({trips,spots,catches,observations}){
+  const today=new Date().toISOString().slice(0,10);
+  const sheets=[
+    {title:"Sessions",      sub:"One row per fishing session, with totals.",  cols:["trip_id","name","start_time","end_time","duration_min","target_species","method","water_temp","spot_count","catch_count","obs_count","notes"],   count:trips.length,        fn:()=>dlCSV(tripsCSV(trips,spots,catches,observations),`fishlog_sessions_${today}.csv`)},
+    {title:"Spots",         sub:"Each named location visited within a session.", cols:["spot_id","trip_id","trip_name","name","timestamp","gps_lat","gps_lon","line_type","water_temp","notes"],                                                   count:spots.length,        fn:()=>dlCSV(spotsCSV(spots,trips),`fishlog_spots_${today}.csv`)},
+    {title:"Catches",       sub:"One row per fish caught, with all conditions.", cols:["catch_id","trip_id","spot_id","timestamp","species","fly_pattern","size","water_temp","air_temp_c","tide_normalized","moon_phase","notes"],    count:catches.length,      fn:()=>dlCSV(catchesCSV(catches,spots,trips),`fishlog_catches_${today}.csv`)},
+    {title:"Observations",  sub:"Fish seen but not caught.",                  cols:["obs_id","trip_id","spot_id","timestamp","species","count","estimated_size","gps_lat","gps_lon","notes"],                                         count:observations.length, fn:()=>dlCSV(obsCSV(observations,spots,trips),`fishlog_observations_${today}.csv`)},
+  ];
+  return(
+    <div className="export-wrap">
+      {sheets.map(s=>(
+        <div key={s.title} className="export-card">
+          <div className="export-card-header"><div className="export-card-title">{s.title}</div><div className="export-card-sub">{s.sub}</div></div>
+          <div className="export-card-stats"><div className="export-stat"><div className="export-stat-val">{s.count}</div><div className="export-stat-label">Rows</div></div></div>
+          <div className="export-columns">{s.cols.map(c=><span key={c} className="export-col-chip">{c}</span>)}</div>
+          <button className="export-btn" disabled={!s.count} onClick={s.fn}><span>↓ Download {s.title.toLowerCase()}.csv</span><span>📄</span></button>
+        </div>
+      ))}
+      <div className="export-instructions">
+        <div className="export-instructions-title">Import to Google Sheets</div>
+        <div className="export-step"><div className="export-step-num">1</div><span>Download the CSVs you want</span></div>
+        <div className="export-step"><div className="export-step-num">2</div><span>Create a Google Sheet with four tabs: <strong>Sessions, Spots, Catches, Observations</strong></span></div>
+        <div className="export-step"><div className="export-step-num">3</div><span>On each tab: <strong>File → Import → Replace current sheet</strong></span></div>
+        <div className="export-step"><div className="export-step-num">4</div><span>Future exports: use <strong>Replace data from selected cell</strong> to keep your formulas</span></div>
+        <div className="export-step"><div className="export-step-num">5</div><span>Join on <strong>trip_id</strong> and <strong>spot_id</strong> for comparisons and pivot tables</span></div>
+      </div>
+      <div style={{fontSize:10,color:"#bbb",textAlign:"center",paddingBottom:8,lineHeight:1.6}}>Photos stored locally only · Connect Google later for Drive sync</div>
+    </div>
+  );
+}
+
+// Mount
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(React.createElement(FishLog));
+  </script>
 
   <script>
-    // Register service worker for offline support
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {
         navigator.serviceWorker.register('sw.js');
