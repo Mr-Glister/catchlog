@@ -1,0 +1,25 @@
+{
+  "name": "The Catch Log",
+  "short_name": "Catch Log",
+  "description": "Fishing session and catch logger for Norway",
+  "start_url": "/catchlog/",
+  "scope": "/catchlog/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#1a1a18",
+  "theme_color": "#1a1a18",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
