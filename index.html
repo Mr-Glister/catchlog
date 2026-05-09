@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v0.3</title>
+  <title>The Catch Log v0.4</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -325,17 +325,15 @@ function parseKartverketXML(xml) {
     const v = parseFloat(wl[0].getAttribute("value"));
     return { type: "level", valueCM: isNaN(v) ? null : v };
   }
-  let hat = null, lat = null, mhws = null, mlws = null;
+  let mhws = null, mlws = null;
   doc.querySelectorAll("level").forEach(el => {
     const code = (el.getAttribute("code") || el.getAttribute("shortenglish") || el.getAttribute("fullname") || "").toUpperCase();
     const v = parseFloat(el.getAttribute("value"));
     if (isNaN(v)) return;
-    if (code === "HAT" || code.includes("HIGHEST ASTRO")) hat = v;
-    if (code === "LAT" || code.includes("LOWEST ASTRO")) lat = v;
     if (code === "MHWS" || code.includes("MEAN HIGH WATER SPRING")) mhws = v;
-    if (code === "MLWS" || code.includes("MEAN LOW WATER SPRING")) mlws = v;
+    if (code === "MLWS" || code.includes("MEAN LOW WATER SPRING"))  mlws = v;
   });
-  if (hat != null || lat != null) return { type: "levels", hat, lat, mhws, mlws };
+  if (mhws != null || mlws != null) return { type: "levels", mhws, mlws };
   return null;
 }
 const DATUM_CACHE = {};
@@ -365,20 +363,17 @@ async function fetchTideData(lat, lon, isoTs) {
   const cd = new Date(isoTs),
     from = new Date(cd - 600000),
     to = new Date(cd + 600000);
-  let hatCM, latCM;
-  if (DATUM_CACHE[ck]) ({
-    hatCM,
-    latCM
-  } = DATUM_CACHE[ck]);else {
+  let mhwsCM, mlwsCM;
+  if (DATUM_CACHE[ck]) ({ mhwsCM, mlwsCM } = DATUM_CACHE[ck]);
+  else {
     const txt = await proxyFetch(`${BASE}?lat=${ls}&lon=${lo}&refcode=cd&lang=en&tide_request=locationlevels`);
     const p = parseKartverketXML(txt);
     if (p?.type === "levels") {
-      hatCM = p.hat;
-      latCM = p.lat;
-      DATUM_CACHE[ck] = { hatCM, latCM, mhwsCM: p.mhws, mlwsCM: p.mlws };
+      mhwsCM = p.mhws;
+      mlwsCM = p.mlws;
+      DATUM_CACHE[ck] = { mhwsCM, mlwsCM };
     }
   }
-  const { mhwsCM, mlwsCM } = DATUM_CACHE[ck] || {};
   const txt2 = await proxyFetch(`${BASE}?lat=${ls}&lon=${lo}&fromtime=${toKartverketTime(from)}&totime=${toKartverketTime(to)}&datatype=pre&refcode=cd&lang=en&interval=10&dst=0&tide_request=locationdata`);
   const p2 = parseKartverketXML(txt2);
   if (!p2 || p2.valueCM == null) return null;
@@ -724,7 +719,7 @@ function FishLog() {
     className: "header-title"
   }, "The ", /*#__PURE__*/React.createElement("span", null, "Catch"), " Log"), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v0.3 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v0.4 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
