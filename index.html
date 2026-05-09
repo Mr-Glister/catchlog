@@ -669,7 +669,7 @@ function FishLog() {
     className: "ab-spot"
   }, activeSpot ? `📍 ${activeSpot.name || "Unnamed spot"}` : "📍 No spot yet"), activeSpot?.waterTemp && /*#__PURE__*/React.createElement("div", {
     className: "ab-meta"
-  }, "\uD83D\uDCA7 ", activeSpot.waterTemp)), /*#__PURE__*/React.createElement("div", {
+  }, "\uD83D\uDCA7 ", activeSpot.waterTemp, "\xB0C")), /*#__PURE__*/React.createElement("div", {
     className: "ab-buttons"
   }, /*#__PURE__*/React.createElement("button", {
     className: "ab-btn",
@@ -779,6 +779,23 @@ function TargetSelect({
     value: s
   }, s))));
 }
+function SpeciesSelect({
+  value,
+  onChange
+}) {
+  return /*#__PURE__*/React.createElement("div", {
+    className: "field-select-wrap"
+  }, /*#__PURE__*/React.createElement("select", {
+    className: "field-select",
+    value: value,
+    onChange: e => onChange(e.target.value)
+  }, /*#__PURE__*/React.createElement("option", {
+    value: ""
+  }, "\u2014 select \u2014"), TARGET_SPECIES.map(s => /*#__PURE__*/React.createElement("option", {
+    key: s,
+    value: s
+  }, s))));
+}
 function TripsList({
   trips,
   tripSpots,
@@ -813,7 +830,7 @@ function TripsList({
     onStartSession({
       name: spotName.trim(),
       gps,
-      waterTemp: waterTemp.trim(),
+      waterTemp: waterTemp ? parseInt(waterTemp) : null,
       lineType,
       notes: spotNotes.trim()
     }, {
@@ -1150,7 +1167,7 @@ function AddSpotForm({
       name: name.trim(),
       timestamp: new Date().toISOString(),
       gps,
-      waterTemp: waterTemp.trim(),
+      waterTemp: waterTemp ? parseInt(waterTemp) : null,
       lineType,
       notes: notes.trim()
     });
@@ -1315,7 +1332,7 @@ function CatchForm({
       species: species.trim(),
       flyPattern: flyPattern.trim(),
       size: size.trim(),
-      waterTemp: waterTemp.trim(),
+      waterTemp: waterTemp ? parseInt(waterTemp) : null,
       notes: notes.trim(),
       fishPhoto,
       flyPhoto,
@@ -1374,13 +1391,16 @@ function CatchForm({
     className: "field-group"
   }, /*#__PURE__*/React.createElement("div", {
     className: "field-group-title"
-  }, "Catch Details"), [{
-    icon: "🐟",
-    label: "Species",
-    val: species,
-    set: setSpecies,
-    ph: "Brown Trout…"
-  }, {
+  }, "Catch Details"), /*#__PURE__*/React.createElement("div", {
+    className: "field-row"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "field-icon"
+  }, "\uD83D\uDC1F"), /*#__PURE__*/React.createElement("span", {
+    className: "field-label"
+  }, "Species"), /*#__PURE__*/React.createElement(SpeciesSelect, {
+    value: species,
+    onChange: setSpecies
+  })), [{
     icon: "🪰",
     label: "Fly Pattern",
     val: flyPattern,
@@ -1469,7 +1489,7 @@ function CatchForm({
   }, "Water Temp"), /*#__PURE__*/React.createElement(TempSelect, {
     value: waterTemp,
     onChange: setWaterTemp,
-    placeholder: activeSpot?.waterTemp ? `Spot: ${activeSpot.waterTemp}` : "— select —"
+    placeholder: activeSpot?.waterTemp != null ? `Spot: ${activeSpot.waterTemp}°C` : "— select —"
   }), /*#__PURE__*/React.createElement("span", {
     className: "field-unit"
   }, "manual")), /*#__PURE__*/React.createElement("div", {
@@ -1619,11 +1639,9 @@ function ObsForm({
     className: "field-icon"
   }, "\uD83D\uDC1F"), /*#__PURE__*/React.createElement("span", {
     className: "field-label"
-  }, "Species"), /*#__PURE__*/React.createElement("input", {
-    className: "field-input",
+  }, "Species"), /*#__PURE__*/React.createElement(SpeciesSelect, {
     value: species,
-    onChange: e => setSpecies(e.target.value),
-    placeholder: "Sea Trout, Grayling\u2026"
+    onChange: setSpecies
   })), /*#__PURE__*/React.createElement("div", {
     className: "field-row"
   }, /*#__PURE__*/React.createElement("span", {
@@ -1961,7 +1979,7 @@ function TripDetail({
         color: "var(--water)",
         marginLeft: s.lineType ? 6 : "auto"
       }
-    }, "\uD83D\uDCA7 ", s.waterTemp)), s.gps && /*#__PURE__*/React.createElement("div", {
+    }, "\uD83D\uDCA7 ", s.waterTemp, "\xB0C")), s.gps && /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 10,
         color: "var(--water)",
@@ -2132,7 +2150,7 @@ function CatchDetail({
     className: "modal-stat-label"
   }, "Water Temp"), /*#__PURE__*/React.createElement("div", {
     className: "modal-stat-value"
-  }, c.waterTemp)), c.weather?.pressure != null && /*#__PURE__*/React.createElement("div", {
+  }, c.waterTemp, "\xB0C")), c.weather?.pressure != null && /*#__PURE__*/React.createElement("div", {
     className: "modal-stat"
   }, /*#__PURE__*/React.createElement("div", {
     className: "modal-stat-label"
