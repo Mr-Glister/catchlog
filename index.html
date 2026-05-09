@@ -320,18 +320,20 @@ function tidePct(n) {
 }
 function parseKartverketXML(xml) {
   const doc = new DOMParser().parseFromString(xml, "text/xml");
+  // locationdata response — contains <waterlevel> elements
   const wl = doc.querySelectorAll("waterlevel");
   if (wl.length > 0) {
     const v = parseFloat(wl[0].getAttribute("value"));
     return { type: "level", valueCM: isNaN(v) ? null : v };
   }
+  // locationlevels response — contains <reflevel> elements
   let mhws = null, mlws = null;
-  doc.querySelectorAll("level").forEach(el => {
-    const code = (el.getAttribute("code") || el.getAttribute("shortenglish") || el.getAttribute("fullname") || "").toUpperCase();
+  doc.querySelectorAll("reflevel").forEach(el => {
+    const code = (el.getAttribute("code") || "").toUpperCase();
     const v = parseFloat(el.getAttribute("value"));
     if (isNaN(v)) return;
-    if (code === "MHWS" || code.includes("MEAN HIGH WATER SPRING")) mhws = v;
-    if (code === "MLWS" || code.includes("MEAN LOW WATER SPRING"))  mlws = v;
+    if (code === "MHW") mhws = v;
+    if (code === "MLW") mlws = v;
   });
   if (mhws != null || mlws != null) return { type: "levels", mhws, mlws };
   return null;
