@@ -249,6 +249,22 @@ const css = `
   .export-step:last-child { margin-bottom: 0; }
   .export-step-num { width: 18px; height: 18px; border-radius: 50%; background: var(--water); color: white; font-size: 9px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; margin-top: 1px; }
 
+  /* Backup panel */
+  .backup-panel { background: var(--ink); border-radius: 6px; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+  .backup-panel-title { font-family: 'Playfair Display', serif; font-size: 16px; color: var(--paper); display: flex; align-items: center; gap: 8px; }
+  .backup-panel-sub { font-size: 11px; color: rgba(245,240,232,.5); line-height: 1.5; }
+  .backup-btn-row { display: flex; gap: 8px; }
+  .backup-btn { flex: 1; padding: 12px 8px; font-family: 'Source Code Pro', monospace; font-size: 10px;
+    letter-spacing: 1.5px; text-transform: uppercase; border: none; border-radius: 4px; cursor: pointer; transition: opacity .2s; }
+  .backup-btn:hover { opacity: .85; }
+  .backup-btn.primary { background: var(--copper); color: var(--ink); font-weight: 700; }
+  .backup-btn.secondary { background: rgba(245,240,232,.12); color: var(--paper); border: 1px solid rgba(245,240,232,.2); }
+  .backup-btn.danger { background: rgba(180,80,60,.8); color: white; }
+  .backup-btn:disabled { opacity: .35; cursor: not-allowed; }
+  .backup-divider { height: 1px; background: rgba(245,240,232,.1); margin: 2px 0; }
+  .backup-restore-confirm { background: rgba(180,80,60,.15); border: 1px solid rgba(180,80,60,.4); border-radius: 4px; padding: 10px 12px; font-size: 11px; color: #f5a090; line-height: 1.6; }
+  .csv-section-title { font-size: 9px; letter-spacing: 2px; text-transform: uppercase; color: #aaa; padding: 4px 0 2px; }
+
   .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--paper); padding: 10px 20px; border-radius: 4px; font-size: 11px; letter-spacing: 1px; z-index: 999; border-bottom: 2px solid var(--copper); animation: fadeup .3s ease; }
   @keyframes fadeup { from{opacity:0;transform:translate(-50%,10px)} to{opacity:1;transform:translate(-50%,0)} }
 `;
@@ -478,11 +494,11 @@ const spotsCSV = (spots, trips) => {
   })].join("\n");
 };
 const catchesCSV = (catches, spots, trips) => {
-  const h = row(["catch_id", "trip_id", "trip_name", "spot_id", "spot_name", "timestamp", "species", "fly_pattern", "size", "gps_lat", "gps_lon", "water_temp", "air_temp_c", "pressure_hpa", "moon_phase", "tide_normalized", "tide_cm", "tide_lat_cm", "tide_hat_cm", "notes"]);
+  const h = row(["catch_id", "trip_id", "trip_name", "spot_id", "spot_name", "timestamp", "species", "fly_pattern", "size", "gps_lat", "gps_lon", "water_temp", "air_temp_c", "pressure_hpa", "moon_phase", "tide_normalized", "tide_cm", "tide_lat_cm", "tide_hat_cm", "has_fish_photo", "has_fly_photo", "notes"]);
   return [h, ...[...catches].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp)).map(c => {
     const t = trips.find(x => x.id === c.tripId),
       s = spots.find(x => x.id === c.spotId);
-    return row([c.id, c.tripId || "", t?.name || "", c.spotId || "", s?.name || "", c.timestamp, c.species, c.flyPattern || "", c.size || "", c.gps?.lat ?? "", c.gps?.lon ?? "", c.waterTemp || "", c.weather?.airTemp ?? "", c.weather?.pressure ?? "", c.weather?.moon || "", c.tide?.normalized != null ? c.tide.normalized.toFixed(4) : "", c.tide?.valueCM ?? "", c.tide?.latCM ?? "", c.tide?.hatCM ?? "", c.notes || ""]);
+    return row([c.id, c.tripId || "", t?.name || "", c.spotId || "", s?.name || "", c.timestamp, c.species, c.flyPattern || "", c.size || "", c.gps?.lat ?? "", c.gps?.lon ?? "", c.waterTemp ?? "", c.weather?.airTemp ?? "", c.weather?.pressure ?? "", c.weather?.moon || "", c.tide?.normalized != null ? c.tide.normalized.toFixed(4) : "", c.tide?.valueCM ?? "", c.tide?.latCM ?? "", c.tide?.hatCM ?? "", c.fishPhoto ? "1" : "0", c.flyPhoto ? "1" : "0", c.notes || ""]);
   })].join("\n");
 };
 const obsCSV = (observations, spots, trips) => {
@@ -501,6 +517,79 @@ function dlCSV(content, filename) {
   const a = document.createElement("a");
   a.href = url;
   a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ── Backup / restore / photo export ──────────────────────────────────────────
+
+function dlJSON(obj, filename) {
+  const blob = new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function backupAll(trips, spots, catches, observations) {
+  const today = new Date().toISOString().slice(0, 10);
+  dlJSON({
+    exportedAt: new Date().toISOString(),
+    version: 1,
+    trips,
+    spots,
+    catches,
+    observations
+  }, `catchlog_backup_${today}.json`);
+}
+
+function restoreFromFile(file, onDone) {
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const data = JSON.parse(e.target.result);
+      if (!data.trips || !data.spots || !data.catches || !data.observations) {
+        alert("Invalid backup file — missing expected data.");
+        return;
+      }
+      localStorage.setItem("fl_trips_v3",  JSON.stringify(data.trips));
+      localStorage.setItem("fl_spots_v2",  JSON.stringify(data.spots));
+      localStorage.setItem("fl_catches_v3", JSON.stringify(data.catches));
+      localStorage.setItem("fl_obs_v2",    JSON.stringify(data.observations));
+      onDone(data);
+    } catch {
+      alert("Could not read backup file. Make sure it's a valid CatchLog JSON backup.");
+    }
+  };
+  reader.readAsText(file);
+}
+
+function exportPhotos(catches) {
+  const withPhotos = catches.filter(c => c.fishPhoto || c.flyPhoto);
+  if (!withPhotos.length) { alert("No photos to export."); return; }
+  // Build a self-contained HTML page with all photos labelled by catch ID
+  const today = new Date().toISOString().slice(0, 10);
+  const items = withPhotos.map(c => {
+    const parts = [];
+    if (c.fishPhoto) parts.push(`<div class="item"><p class="label">${c.id} · fish · ${c.species} · ${c.timestamp.slice(0,10)}</p><img src="${c.fishPhoto}" /></div>`);
+    if (c.flyPhoto)  parts.push(`<div class="item"><p class="label">${c.id} · fly · ${c.species} · ${c.timestamp.slice(0,10)}</p><img src="${c.flyPhoto}" /></div>`);
+    return parts.join("\n");
+  }).join("\n");
+  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>CatchLog Photos ${today}</title>
+<style>body{font-family:monospace;background:#1a1a18;color:#f5f0e8;padding:20px;}
+.item{margin-bottom:32px;border-bottom:1px solid #333;padding-bottom:24px;}
+.label{font-size:11px;letter-spacing:1px;color:#b87333;margin-bottom:8px;}
+img{max-width:480px;width:100%;border-radius:4px;display:block;}
+</style></head><body><h2 style="font-family:serif;color:#d4944a">CatchLog Photos — ${today}</h2>
+<p style="font-size:11px;opacity:.5">${withPhotos.length} catches · right-click any image to save</p>
+${items}</body></html>`;
+  const blob = new Blob([html], { type: "text/html" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `catchlog_photos_${today}.html`;
   a.click();
   URL.revokeObjectURL(url);
 }
@@ -612,6 +701,13 @@ function FishLog() {
     showToast("Trip deleted");
   };
   const updSpot = s => mutSpots(p => p.map(x => x.id === s.id ? s : x));
+  const restoreAll = data => {
+    setTrips(data.trips);
+    setSpots(data.spots);
+    setCatches(data.catches);
+    setObservations(data.observations);
+    showToast("Backup restored ✓");
+  };
   const addCatch = c => {
     mutCatches(p => [c, ...p]);
     setTab("journal");
@@ -707,7 +803,8 @@ function FishLog() {
     trips: trips,
     spots: spots,
     catches: catches,
-    observations: observations
+    observations: observations,
+    onRestore: restoreAll
   }), selTrip && /*#__PURE__*/React.createElement(TripDetail, {
     trip: selTrip,
     onClose: () => setSelTrip(null),
@@ -2320,37 +2417,103 @@ function ExportTab({
   trips,
   spots,
   catches,
-  observations
+  observations,
+  onRestore
 }) {
+  const [restoreStep, setRestoreStep] = useState("idle"); // idle | confirm | done
+  const restoreRef = useRef();
   const today = new Date().toISOString().slice(0, 10);
+  const totalItems = trips.length + catches.length + observations.length;
+
+  const handleRestoreFile = e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    restoreFromFile(file, data => {
+      onRestore(data);
+      setRestoreStep("done");
+    });
+    e.target.value = "";
+  };
+
   const sheets = [{
     title: "Sessions",
     sub: "One row per fishing session, with totals.",
-    cols: ["trip_id", "name", "start_time", "end_time", "duration_min", "target_species", "method", "water_temp", "spot_count", "catch_count", "obs_count", "notes"],
+    cols: ["trip_id", "name", "start_time", "end_time", "duration_min", "target_species", "method", "spot_count", "catch_count", "obs_count", "notes"],
     count: trips.length,
-    fn: () => dlCSV(tripsCSV(trips, spots, catches, observations), `fishlog_sessions_${today}.csv`)
+    fn: () => dlCSV(tripsCSV(trips, spots, catches, observations), `catchlog_sessions_${today}.csv`)
   }, {
     title: "Spots",
     sub: "Each named location visited within a session.",
     cols: ["spot_id", "trip_id", "trip_name", "name", "timestamp", "gps_lat", "gps_lon", "line_type", "water_temp", "notes"],
     count: spots.length,
-    fn: () => dlCSV(spotsCSV(spots, trips), `fishlog_spots_${today}.csv`)
+    fn: () => dlCSV(spotsCSV(spots, trips), `catchlog_spots_${today}.csv`)
   }, {
     title: "Catches",
     sub: "One row per fish caught, with all conditions.",
-    cols: ["catch_id", "trip_id", "spot_id", "timestamp", "species", "fly_pattern", "size", "water_temp", "air_temp_c", "tide_normalized", "moon_phase", "notes"],
+    cols: ["catch_id", "trip_id", "spot_id", "timestamp", "species", "fly_pattern", "size", "water_temp", "air_temp_c", "pressure_hpa", "tide_normalized", "moon_phase", "has_fish_photo", "has_fly_photo", "notes"],
     count: catches.length,
-    fn: () => dlCSV(catchesCSV(catches, spots, trips), `fishlog_catches_${today}.csv`)
+    fn: () => dlCSV(catchesCSV(catches, spots, trips), `catchlog_catches_${today}.csv`)
   }, {
     title: "Observations",
     sub: "Fish seen but not caught.",
     cols: ["obs_id", "trip_id", "spot_id", "timestamp", "species", "count", "estimated_size", "gps_lat", "gps_lon", "notes"],
     count: observations.length,
-    fn: () => dlCSV(obsCSV(observations, spots, trips), `fishlog_observations_${today}.csv`)
+    fn: () => dlCSV(obsCSV(observations, spots, trips), `catchlog_observations_${today}.csv`)
   }];
+
   return /*#__PURE__*/React.createElement("div", {
     className: "export-wrap"
-  }, sheets.map(s => /*#__PURE__*/React.createElement("div", {
+  },
+
+  /* ── Backup panel ── */
+  /*#__PURE__*/React.createElement("div", { className: "backup-panel" },
+    /*#__PURE__*/React.createElement("div", { className: "backup-panel-title" }, "💾 Data Backup"),
+    /*#__PURE__*/React.createElement("div", { className: "backup-panel-sub" },
+      "All your data lives in this browser's local storage. Export a backup regularly and keep it somewhere safe (iCloud, Google Drive). A backup includes everything — sessions, spots, catches, observations and photos."
+    ),
+    /*#__PURE__*/React.createElement("div", { className: "backup-btn-row" },
+      /*#__PURE__*/React.createElement("button", {
+        className: "backup-btn primary",
+        disabled: !totalItems,
+        onClick: () => backupAll(trips, spots, catches, observations)
+      }, "⬇ Backup all data"),
+      catches.some(c => c.fishPhoto || c.flyPhoto) && /*#__PURE__*/React.createElement("button", {
+        className: "backup-btn secondary",
+        onClick: () => exportPhotos(catches)
+      }, "🖼 Export photos")
+    ),
+    /*#__PURE__*/React.createElement("div", { className: "backup-divider" }),
+    restoreStep === "idle" && /*#__PURE__*/React.createElement("button", {
+      className: "backup-btn secondary",
+      onClick: () => setRestoreStep("confirm")
+    }, "↑ Restore from backup"),
+    restoreStep === "confirm" && /*#__PURE__*/React.createElement(React.Fragment, null,
+      /*#__PURE__*/React.createElement("div", { className: "backup-restore-confirm" },
+        "⚠ This will overwrite all current data with the contents of the backup file. Make sure you have a fresh backup first."
+      ),
+      /*#__PURE__*/React.createElement("div", { className: "backup-btn-row" },
+        /*#__PURE__*/React.createElement("button", {
+          className: "backup-btn danger",
+          onClick: () => restoreRef.current.click()
+        }, "Choose backup file"),
+        /*#__PURE__*/React.createElement("button", {
+          className: "backup-btn secondary",
+          onClick: () => setRestoreStep("idle")
+        }, "Cancel")
+      ),
+      /*#__PURE__*/React.createElement("input", {
+        ref: restoreRef, type: "file", accept: ".json", style: { display: "none" },
+        onChange: handleRestoreFile
+      })
+    ),
+    restoreStep === "done" && /*#__PURE__*/React.createElement("div", {
+      style: { fontSize: 11, color: "#7dbf7d", letterSpacing: 1 }
+    }, "✓ Restore complete — reload the app to see your data.")
+  ),
+
+  /* ── CSV section ── */
+  /*#__PURE__*/React.createElement("div", { className: "csv-section-title" }, "CSV Export — for spreadsheet analysis"),
+  sheets.map(s => /*#__PURE__*/React.createElement("div", {
     key: s.title,
     className: "export-card"
   }, /*#__PURE__*/React.createElement("div", {
@@ -2376,7 +2539,9 @@ function ExportTab({
     className: "export-btn",
     disabled: !s.count,
     onClick: s.fn
-  }, /*#__PURE__*/React.createElement("span", null, "\u2193 Download ", s.title.toLowerCase(), ".csv"), /*#__PURE__*/React.createElement("span", null, "\uD83D\uDCC4")))), /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("span", null, "\u2193 Download ", s.title.toLowerCase(), ".csv"), /*#__PURE__*/React.createElement("span", null, "\uD83D\uDCC4")))),
+
+  /*#__PURE__*/React.createElement("div", {
     className: "export-instructions"
   }, /*#__PURE__*/React.createElement("div", {
     className: "export-instructions-title"
@@ -2400,15 +2565,10 @@ function ExportTab({
     className: "export-step"
   }, /*#__PURE__*/React.createElement("div", {
     className: "export-step-num"
-  }, "5"), /*#__PURE__*/React.createElement("span", null, "Join on ", /*#__PURE__*/React.createElement("strong", null, "trip_id"), " and ", /*#__PURE__*/React.createElement("strong", null, "spot_id"), " for comparisons and pivot tables"))), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 10,
-      color: "#bbb",
-      textAlign: "center",
-      paddingBottom: 8,
-      lineHeight: 1.6
-    }
-  }, "Photos stored locally only \xB7 Connect Google later for Drive sync"));
+  }, "5"), /*#__PURE__*/React.createElement("span", null, "Join on ", /*#__PURE__*/React.createElement("strong", null, "trip_id"), " and ", /*#__PURE__*/React.createElement("strong", null, "spot_id"), " for comparisons and pivot tables"))),
+  /*#__PURE__*/React.createElement("div", {
+    style: { fontSize: 10, color: "#bbb", textAlign: "center", paddingBottom: 8, lineHeight: 1.6 }
+  }, "Photos exported separately via \u201cExport photos\u201d above \xB7 filenames keyed to catch_id"));
 }const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(React.createElement(FishLog));
   </script>
