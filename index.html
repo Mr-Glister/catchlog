@@ -15,40 +15,25 @@
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { background: #1a1a18; }
     #root { min-height: 100vh; }
-    #error-display {
-      display: none; position: fixed; inset: 0;
-      background: #1a1a18; color: #f5f0e8;
-      font-family: monospace; font-size: 13px;
-      padding: 24px 16px; overflow-y: auto; z-index: 9999;
-      white-space: pre-wrap; word-break: break-all;
-    }
-    #error-display h2 { color: #d4944a; margin-bottom: 12px; font-size: 15px; }
+    #err { display:none; position:fixed; inset:0; background:#1a1a18; color:#f5f0e8;
+      font-family:monospace; font-size:12px; padding:20px; overflow-y:auto; z-index:9999;
+      white-space:pre-wrap; word-break:break-all; }
   </style>
 </head>
 <body>
-  <div id="error-display"><h2>Loading error</h2><div id="error-text"></div></div>
+  <div id="err"></div>
   <div id="root"></div>
-
   <script>
-    window.onerror = function(msg, src, line, col, err) {
-      document.getElementById('error-display').style.display = 'block';
-      document.getElementById('error-text').textContent =
-        'Message: ' + msg + '\nSource: ' + src + '\nLine: ' + line + '\n\n' + (err ? err.stack : '');
-      return false;
+    window.onerror = function(msg,src,line,col,err) {
+      var d=document.getElementById('err');
+      d.style.display='block';
+      d.textContent='ERROR: '+msg+'\nLine: '+line+'\n\n'+(err?err.stack:'');
     };
-    window.addEventListener('unhandledrejection', function(e) {
-      document.getElementById('error-display').style.display = 'block';
-      document.getElementById('error-text').textContent =
-        'Unhandled promise rejection:\n' + (e.reason ? (e.reason.stack || e.reason) : e);
-    });
   </script>
-
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-
-  <script type="text/babel" data-presets="react">
-const { useState, useRef, useCallback } = React;
+  <script type="text/babel" data-presets="react" data-type="script">
 
 const FONTS = `@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;1,400&family=Source+Code+Pro:wght@300;400;500&display=swap');`;
 
@@ -300,20 +285,29 @@ function parseKartverketXML(xml){
 }
 const DATUM_CACHE={};
 async function fetchTideData(lat,lon,isoTs){
-  const BASE="https://vannstand.kartverket.no/tideapi.php",PROXY="https://api.allorigins.win/raw?url=";
+  const BASE="https://vannstand.kartverket.no/tideapi.php";
+  // Try two CORS proxies in sequence
+  const proxies=["https://corsproxy.io/?","https://api.allorigins.win/raw?url="];
+  const proxyFetch=async(url)=>{
+    for(const proxy of proxies){
+      try{
+        const r=await fetch(proxy+encodeURIComponent(url),{signal:AbortSignal.timeout(8000)});
+        if(r.ok){const t=await r.text();if(t.includes("<"))return t;}
+      }catch(e){continue;}
+    }
+    throw new Error("all proxies failed");
+  };
   const ls=lat.toFixed(6),lo=lon.toFixed(6),ck=`${ls},${lo}`;
   const cd=new Date(isoTs),from=new Date(cd-600000),to=new Date(cd+600000);
   let hatCM,latCM;
   if(DATUM_CACHE[ck])({hatCM,latCM}=DATUM_CACHE[ck]);
   else{
-    const r=await fetch(PROXY+encodeURIComponent(`${BASE}?lat=${ls}&lon=${lo}&refcode=cd&lang=en&tide_request=locationlevels`));
-    if(!r.ok)throw new Error("datums");
-    const p=parseKartverketXML(await r.text());
+    const txt=await proxyFetch(`${BASE}?lat=${ls}&lon=${lo}&refcode=cd&lang=en&tide_request=locationlevels`);
+    const p=parseKartverketXML(txt);
     if(p?.type==="levels"){hatCM=p.hat;latCM=p.lat;DATUM_CACHE[ck]={hatCM,latCM};}
   }
-  const r2=await fetch(PROXY+encodeURIComponent(`${BASE}?lat=${ls}&lon=${lo}&fromtime=${toKartverketTime(from)}&totime=${toKartverketTime(to)}&datatype=pre&refcode=cd&lang=en&interval=10&dst=0&tide_request=locationdata`));
-  if(!r2.ok)throw new Error("level");
-  const p2=parseKartverketXML(await r2.text());
+  const txt2=await proxyFetch(`${BASE}?lat=${ls}&lon=${lo}&fromtime=${toKartverketTime(from)}&totime=${toKartverketTime(to)}&datatype=pre&refcode=cd&lang=en&interval=10&dst=0&tide_request=locationdata`);
+  const p2=parseKartverketXML(txt2);
   if(!p2||p2.valueCM==null)return null;
   return{valueCM:p2.valueCM,normalized:hatCM!=null&&latCM!=null?normalizeTide(p2.valueCM,latCM,hatCM):null,hatCM,latCM};
 }
@@ -769,7 +763,23 @@ function CatchForm({activeTrip,activeSpot,onSave}){
   const [timestamp]=useState(()=>new Date().toISOString());
   const {gps,gpsStatus,weather,weatherStatus,tide,tideStatus,getGPS,reset}=useEnv();
   const fishRef=useRef(),flyRef=useRef();
-  const hp=s=>e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=ev=>s(ev.target.result);r.readAsDataURL(f);};
+  // Compress photo to max 800px wide, JPEG quality 0.7 — keeps localStorage usage low
+  const hp=s=>e=>{
+    const f=e.target.files[0];if(!f)return;
+    const img=new Image();
+    const url=URL.createObjectURL(f);
+    img.onload=()=>{
+      const MAX=800;
+      const scale=Math.min(1,MAX/Math.max(img.width,img.height));
+      const w=Math.round(img.width*scale),h=Math.round(img.height*scale);
+      const canvas=document.createElement("canvas");
+      canvas.width=w;canvas.height=h;
+      canvas.getContext("2d").drawImage(img,0,0,w,h);
+      s(canvas.toDataURL("image/jpeg",0.7));
+      URL.revokeObjectURL(url);
+    };
+    img.src=url;
+  };
 
   const handleSave=()=>{
     if(!species.trim())return;
@@ -1143,16 +1153,12 @@ function ExportTab({trips,spots,catches,observations}){
   );
 }
 
-// Mount
 const root = ReactDOM.createRoot(document.getElementById('root'));
-root.render(React.createElement(FishLog));
+root.render(<FishLog />);
   </script>
-
   <script>
     if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => {
-        navigator.serviceWorker.register('sw.js');
-      });
+      window.addEventListener('load', () => navigator.serviceWorker.register('sw.js'));
     }
   </script>
 </body>
