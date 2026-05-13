@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v0.5</title>
+  <title>The Catch Log v0.6</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -314,6 +314,11 @@ function tideLabel(n) {
   if (n < 0) return "Below MLWS";
   return "Very Low";
 }
+function tideArrow(direction) {
+  if (direction === "rising")  return " ↑";
+  if (direction === "falling") return " ↓";
+  return "";
+}
 function tidePct(n) {
   if (n == null) return null;
   return Math.round(n * 100);
@@ -363,8 +368,8 @@ async function fetchTideData(lat, lon, isoTs) {
     lo = lon.toFixed(6),
     ck = `${ls},${lo}`;
   const cd = new Date(isoTs),
-    from = new Date(cd - 600000),
-    to = new Date(cd + 600000);
+    from = new Date(cd - 1800000),  // 30 min before
+    to   = new Date(cd + 1800000);  // 30 min after
   let mhwsCM, mlwsCM;
   if (DATUM_CACHE[ck]) ({ mhwsCM, mlwsCM } = DATUM_CACHE[ck]);
   else {
@@ -386,13 +391,29 @@ async function fetchTideData(lat, lon, isoTs) {
     }
   }
   const txt2 = await proxyFetch(`${BASE}?lat=${ls}&lon=${lo}&fromtime=${toKartverketTime(from)}&totime=${toKartverketTime(to)}&datatype=pre&refcode=cd&lang=en&interval=10&dst=0&tide_request=locationdata`);
-  const p2 = parseKartverketXML(txt2);
-  if (!p2 || p2.valueCM == null) return null;
-  // Seasonal: normalized between MLWS and MHWS, expressed 0-1 (display as %)
-  const seasonal = mhwsCM != null && mlwsCM != null ? normalizeTide(p2.valueCM, mlwsCM, mhwsCM) : null;
+  // Parse all waterlevel readings to derive direction
+  const doc2 = new DOMParser().parseFromString(txt2, "text/xml");
+  const wls = [...doc2.querySelectorAll("waterlevel")].map(el => ({
+    t: new Date(el.getAttribute("time")),
+    v: parseFloat(el.getAttribute("value"))
+  })).filter(x => !isNaN(x.v));
+  if (!wls.length) return null;
+  // Find reading closest to catch time for the value
+  const closest = wls.reduce((a, b) => Math.abs(a.t - cd) < Math.abs(b.t - cd) ? a : b);
+  // Compare average of readings 10-30 min before vs 10-30 min after to get direction
+  const before = wls.filter(x => x.t < cd);
+  const after  = wls.filter(x => x.t > cd);
+  let direction = null;
+  if (before.length && after.length) {
+    const avgBefore = before.reduce((s, x) => s + x.v, 0) / before.length;
+    const avgAfter  = after.reduce((s, x) => s + x.v, 0) / after.length;
+    direction = avgAfter > avgBefore ? "rising" : "falling";
+  }
+  const seasonal = mhwsCM != null && mlwsCM != null ? normalizeTide(closest.v, mlwsCM, mhwsCM) : null;
   return {
-    valueCM: p2.valueCM,
+    valueCM: closest.v,
     seasonal,
+    direction,
     mhwsCM,
     mlwsCM
   };
@@ -498,19 +519,19 @@ const spotsCSV = (spots, trips) => {
   })].join("\n");
 };
 const catchesCSV = (catches, spots, trips) => {
-  const h = row(["catch_id", "trip_id", "trip_name", "spot_id", "spot_name", "timestamp", "species", "fly_pattern", "size", "gps_lat", "gps_lon", "water_temp", "air_temp_c", "pressure_hpa", "moon_phase", "tide_seasonal_pct", "tide_cm", "tide_mlws_cm", "tide_mhws_cm", "has_fish_photo", "has_fly_photo", "notes"]);
+  const h = row(["catch_id", "trip_id", "trip_name", "spot_id", "spot_name", "timestamp", "species", "fly_pattern", "size", "gps_lat", "gps_lon", "water_temp", "air_temp_c", "pressure_hpa", "moon_phase", "tide_seasonal_pct", "tide_direction", "tide_cm", "tide_mlws_cm", "tide_mhws_cm", "has_fish_photo", "has_fly_photo", "notes"]);
   return [h, ...[...catches].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp)).map(c => {
     const t = trips.find(x => x.id === c.tripId),
       s = spots.find(x => x.id === c.spotId);
-    return row([c.id, c.tripId || "", t?.name || "", c.spotId || "", s?.name || "", c.timestamp, c.species, c.flyPattern || "", c.size || "", c.gps?.lat ?? "", c.gps?.lon ?? "", c.waterTemp ?? "", c.weather?.airTemp ?? "", c.weather?.pressure ?? "", c.weather?.moon || "", c.tide?.seasonal != null ? tidePct(c.tide.seasonal) : "", c.tide?.valueCM ?? "", c.tide?.mlwsCM ?? "", c.tide?.mhwsCM ?? "", c.fishPhoto ? "1" : "0", c.flyPhoto ? "1" : "0", c.notes || ""]);
+    return row([c.id, c.tripId || "", t?.name || "", c.spotId || "", s?.name || "", c.timestamp, c.species, c.flyPattern || "", c.size || "", c.gps?.lat ?? "", c.gps?.lon ?? "", c.waterTemp ?? "", c.weather?.airTemp ?? "", c.weather?.pressure ?? "", c.weather?.moon || "", c.tide?.seasonal != null ? tidePct(c.tide.seasonal) : "", c.tide?.direction || "", c.tide?.valueCM ?? "", c.tide?.mlwsCM ?? "", c.tide?.mhwsCM ?? "", c.fishPhoto ? "1" : "0", c.flyPhoto ? "1" : "0", c.notes || ""]);
   })].join("\n");
 };
 const obsCSV = (observations, spots, trips) => {
-  const h = row(["obs_id", "trip_id", "trip_name", "spot_id", "spot_name", "timestamp", "species", "count", "estimated_size", "gps_lat", "gps_lon", "air_temp_c", "pressure_hpa", "moon_phase", "tide_seasonal_pct", "tide_cm", "notes"]);
+  const h = row(["obs_id", "trip_id", "trip_name", "spot_id", "spot_name", "timestamp", "species", "count", "estimated_size", "gps_lat", "gps_lon", "air_temp_c", "pressure_hpa", "moon_phase", "tide_seasonal_pct", "tide_direction", "tide_cm", "notes"]);
   return [h, ...[...observations].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp)).map(o => {
     const t = trips.find(x => x.id === o.tripId),
       s = spots.find(x => x.id === o.spotId);
-    return row([o.id, o.tripId || "", t?.name || "", o.spotId || "", s?.name || "", o.timestamp, o.species, o.count || "", o.estimatedSize || "", o.gps?.lat ?? "", o.gps?.lon ?? "", o.weather?.airTemp ?? "", o.weather?.pressure ?? "", o.weather?.moon || "", o.tide?.seasonal != null ? tidePct(o.tide.seasonal) : "", o.tide?.valueCM ?? "", o.notes || ""]);
+    return row([o.id, o.tripId || "", t?.name || "", o.spotId || "", s?.name || "", o.timestamp, o.species, o.count || "", o.estimatedSize || "", o.gps?.lat ?? "", o.gps?.lon ?? "", o.weather?.airTemp ?? "", o.weather?.pressure ?? "", o.weather?.moon || "", o.tide?.seasonal != null ? tidePct(o.tide.seasonal) : "", o.tide?.direction || "", o.tide?.valueCM ?? "", o.notes || ""]);
   })].join("\n");
 };
 function dlCSV(content, filename) {
@@ -730,7 +751,7 @@ function FishLog() {
     className: "header-title"
   }, "The ", /*#__PURE__*/React.createElement("span", null, "Catch"), " Log"), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v0.5 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v0.6 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -1611,7 +1632,7 @@ function CatchForm({
     className: "tide-raw"
   }, "(", tide.valueCM, " cm)"), tide.seasonal != null && /*#__PURE__*/React.createElement("span", {
     className: "tide-hint"
-  }, tideLabel(tide.seasonal))), tide.seasonal != null && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+  }, tideLabel(tide.seasonal), tideArrow(tide.direction))), tide.seasonal != null && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     className: "tide-bar-track"
   }, /*#__PURE__*/React.createElement("div", {
     className: "tide-bar-fill",
@@ -1749,7 +1770,7 @@ function ObsForm({
           /*#__PURE__*/React.createElement("div", { className: "tide-value-line" },
             /*#__PURE__*/React.createElement("span", { className: "tide-normalized" }, tide.seasonal != null ? tidePct(tide.seasonal) + "%" : "\u2014"),
             tide.valueCM != null && /*#__PURE__*/React.createElement("span", { className: "tide-raw" }, "(", tide.valueCM, " cm)"),
-            tide.seasonal != null && /*#__PURE__*/React.createElement("span", { className: "tide-hint" }, tideLabel(tide.seasonal))),
+            tide.seasonal != null && /*#__PURE__*/React.createElement("span", { className: "tide-hint" }, tideLabel(tide.seasonal), tideArrow(tide.direction))),
           tide.seasonal != null && /*#__PURE__*/React.createElement(React.Fragment, null,
             /*#__PURE__*/React.createElement("div", { className: "tide-bar-track" },
               /*#__PURE__*/React.createElement("div", { className: "tide-bar-fill", style: { width: `${Math.max(0,Math.min(100,tide.seasonal*100))}%` } })),
@@ -1844,7 +1865,7 @@ function Journal({
     className: "chip"
   }, "\uD83C\uDF21\uFE0F ", item.weather.airTemp, "\xB0C"), item.tide?.seasonal != null && /*#__PURE__*/React.createElement("span", {
     className: "chip chip-tide"
-  }, "\uD83C\uDF0A ", tidePct(item.tide.seasonal) + "%", " \xB7 ", tideLabel(item.tide.seasonal)), item.weather?.moon && /*#__PURE__*/React.createElement("span", {
+  }, "\uD83C\uDF0A ", tidePct(item.tide.seasonal) + "%", " \xB7 ", tideLabel(item.tide.seasonal), tideArrow(item.tide.direction)), item.weather?.moon && /*#__PURE__*/React.createElement("span", {
     className: "chip"
   }, item.weather.moon), item.spotId && spotName(item.spotId) && /*#__PURE__*/React.createElement("span", {
     className: "chip chip-spot"
@@ -2047,7 +2068,7 @@ function TripDetail({
       className: "mini-catch-species"
     }, c.species), /*#__PURE__*/React.createElement("div", {
       className: "mini-catch-time"
-    }, fmtTime(c.timestamp), c.size ? ` · ${c.size}` : "", c.tide?.seasonal != null ? ` · 🌊 ${tidePct(c.tide.seasonal) + "%"}` : "")), /*#__PURE__*/React.createElement("span", {
+    }, fmtTime(c.timestamp), c.size ? ` · ${c.size}` : "", c.tide?.seasonal != null ? ` · 🌊 ${tidePct(c.tide.seasonal) + "%"}${tideArrow(c.tide.direction)}` : "")), /*#__PURE__*/React.createElement("span", {
       style: {
         color: "#ccc",
         fontSize: 16
@@ -2241,7 +2262,7 @@ function CatchDetail({
       color: "var(--water-light)",
       fontStyle: "italic"
     }
-  }, tideLabel(norm))), norm != null && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+  }, tideLabel(norm), tideArrow(c.tide.direction))), norm != null && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     className: "modal-tide-bar"
   }, /*#__PURE__*/React.createElement("div", {
     className: "modal-tide-fill",
@@ -2330,7 +2351,7 @@ function ObsDetail({
         /*#__PURE__*/React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" } },
           norm != null && /*#__PURE__*/React.createElement("span", { style: { fontSize: 21, fontWeight: 700, color: "var(--water)" } }, tidePct(norm), "%"),
           o.tide.valueCM != null && /*#__PURE__*/React.createElement("span", { style: { fontSize: 11, color: "#888" } }, o.tide.valueCM, " cm above CD"),
-          norm != null && /*#__PURE__*/React.createElement("span", { style: { fontSize: 11, color: "var(--water-light)", fontStyle: "italic" } }, tideLabel(norm))),
+          norm != null && /*#__PURE__*/React.createElement("span", { style: { fontSize: 11, color: "var(--water-light)", fontStyle: "italic" } }, tideLabel(norm), tideArrow(o.tide.direction))),
         norm != null && /*#__PURE__*/React.createElement(React.Fragment, null,
           /*#__PURE__*/React.createElement("div", { className: "modal-tide-bar" },
             /*#__PURE__*/React.createElement("div", { className: "modal-tide-fill", style: { width: `${Math.max(0,Math.min(100,norm*100))}%` } })),
