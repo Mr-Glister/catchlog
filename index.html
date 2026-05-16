@@ -670,12 +670,12 @@ ${items}</body></html>`;
 // ── Line types & method derivation ───────────────────────────────────────────
 
 const FLY_LINES = ["Float", "Slow Int", "Fast Int", "Sink3", "Sink5", "Sink7"];
-const SPIN_LINES = ["Wobbler", "Shad", "Softjerk"];
+const SPIN_LINES = ["Wobbler", "Shad", "Sandeel", "Softjerk"];
 const ALL_LINES = [...FLY_LINES, ...SPIN_LINES];
 const TEMP_OPTIONS = Array.from({
   length: 19
 }, (_, i) => `${i + 7} °C`); // 7–25 °C
-const TARGET_SPECIES = ["Sea Trout", "Sea Bass", "Garfish"];
+const TARGET_SPECIES = ["Salmon", "Sea Trout", "Sea Bass", "Garfish", "Mackerel", "Mullet"];
 function deriveMethod(tripSpots) {
   const lines = tripSpots.map(s => s.lineType).filter(Boolean);
   if (!lines.length) return null;
