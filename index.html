@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v1.2</title>
+  <title>The Catch Log v1.5</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -225,6 +225,7 @@ const css = `
   .spot-group-header { display: flex; align-items: center; gap: 10px; padding: 9px 0 7px; border-bottom: 1px solid var(--ink); margin-bottom: 9px; }
   .spot-group-name { font-family: 'Inter', sans-serif; font-size: 14px; font-weight: 600; letter-spacing: -0.01em; }
   .spot-group-meta { font-size: 11px; color: var(--text-3); font-family: 'Source Code Pro', monospace; }
+  .spot-photo { width: 100%; aspect-ratio: 16/9; object-fit: cover; border-radius: 3px; margin-bottom: 8px; display: block; }
   .spot-items { display: flex; flex-direction: column; gap: 6px; }
   .mini-catch { display: flex; align-items: center; gap: 10px; background: var(--paper-2); border: 1px solid var(--rule); border-radius: 3px; padding: 9px 12px; cursor: pointer; transition: border-color .15s; }
   .mini-catch:hover { border-color: var(--rule-strong); }
@@ -575,10 +576,10 @@ const tripsCSV = (trips, spots, catches, obs) => {
   })].join("\n");
 };
 const spotsCSV = (spots, trips) => {
-  const h = row(["spot_id", "trip_id", "trip_name", "name", "timestamp", "gps_lat", "gps_lon", "line_type", "water_temp", "notes"]);
+  const h = row(["spot_id", "trip_id", "trip_name", "name", "timestamp", "gps_lat", "gps_lon", "line_type", "water_temp", "has_spot_photo", "notes"]);
   return [h, ...spots.map(s => {
     const t = trips.find(x => x.id === s.tripId);
-    return row([s.id, s.tripId, t?.name || "", s.name || "", s.timestamp, s.gps?.lat ?? "", s.gps?.lon ?? "", s.lineType || "", s.waterTemp || "", s.notes || ""]);
+    return row([s.id, s.tripId, t?.name || "", s.name || "", s.timestamp, s.gps?.lat ?? "", s.gps?.lon ?? "", s.lineType || "", s.waterTemp || "", s.photo ? "1" : "0", s.notes || ""]);
   })].join("\n");
 };
 const catchesCSV = (catches, spots, trips) => {
@@ -642,24 +643,30 @@ function restoreFromFile(file, onDone) {
   };
   reader.readAsText(file);
 }
-function exportPhotos(catches) {
-  const withPhotos = catches.filter(c => c.fishPhoto || c.flyPhoto);
-  if (!withPhotos.length) { alert("No photos to export."); return; }
+function exportPhotos(catches, spots) {
+  const catchPhotos = catches.filter(c => c.fishPhoto || c.flyPhoto);
+  const spotPhotos = (spots || []).filter(s => s.photo);
+  if (!catchPhotos.length && !spotPhotos.length) { alert("No photos to export."); return; }
   const today = new Date().toISOString().slice(0, 10);
-  const items = withPhotos.map(c => {
+  const spotItems = spotPhotos.map(s => {
+    return `<div class="item"><p class="label">${s.id} · spot · ${s.name || "Unnamed"} · ${s.timestamp.slice(0,10)}</p><img src="${s.photo}" /></div>`;
+  }).join("\n");
+  const items = catchPhotos.map(c => {
     const parts = [];
     if (c.fishPhoto) parts.push(`<div class="item"><p class="label">${c.id} · fish · ${c.species} · ${c.timestamp.slice(0,10)}</p><img src="${c.fishPhoto}" /></div>`);
     if (c.flyPhoto)  parts.push(`<div class="item"><p class="label">${c.id} · fly · ${c.species} · ${c.timestamp.slice(0,10)}</p><img src="${c.flyPhoto}" /></div>`);
     return parts.join("\n");
   }).join("\n");
+  const allItems = [spotItems, items].filter(Boolean).join("\n");
+  const totalCount = catchPhotos.length + spotPhotos.length;
   const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>CatchLog Photos ${today}</title>
 <style>body{font-family:monospace;background:#1a1a18;color:#f5f0e8;padding:20px;}
 .item{margin-bottom:32px;border-bottom:1px solid #333;padding-bottom:24px;}
 .label{font-size:11px;letter-spacing:1px;color:#b87333;margin-bottom:8px;}
 img{max-width:480px;width:100%;border-radius:4px;display:block;}</style></head>
 <body><h2 style="font-family:serif;color:#d4944a">CatchLog Photos — ${today}</h2>
-<p style="font-size:11px;opacity:.5">${withPhotos.length} catches · right-click any image to save</p>
-${items}</body></html>`;
+<p style="font-size:11px;opacity:.5">${totalCount} items · right-click any image to save</p>
+${allItems}</body></html>`;
   const blob = new Blob([html], { type: "text/html" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -669,13 +676,30 @@ ${items}</body></html>`;
 
 // ── Line types & method derivation ───────────────────────────────────────────
 
+// Shared photo compression — max 800px, JPEG 0.7
+function compressPhoto(file, cb) {
+  const img = new Image();
+  const url = URL.createObjectURL(file);
+  img.onload = () => {
+    const MAX = 800;
+    const scale = Math.min(1, MAX / Math.max(img.width, img.height));
+    const w = Math.round(img.width * scale), h = Math.round(img.height * scale);
+    const canvas = document.createElement("canvas");
+    canvas.width = w; canvas.height = h;
+    canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+    cb(canvas.toDataURL("image/jpeg", 0.7));
+    URL.revokeObjectURL(url);
+  };
+  img.src = url;
+}
+
 const FLY_LINES = ["Float", "Slow Int", "Fast Int", "Sink3", "Sink5", "Sink7"];
-const SPIN_LINES = ["Wobbler", "Shad", "Sandeel", "Softjerk"];
+const SPIN_LINES = ["Wobbler", "Shad", "Softjerk"];
 const ALL_LINES = [...FLY_LINES, ...SPIN_LINES];
 const TEMP_OPTIONS = Array.from({
   length: 19
 }, (_, i) => `${i + 7} °C`); // 7–25 °C
-const TARGET_SPECIES = ["Salmon", "Sea Trout", "Sea Bass", "Garfish", "Mackerel", "Mullet"];
+const TARGET_SPECIES = ["Sea Trout", "Sea Bass", "Garfish"];
 function deriveMethod(tripSpots) {
   const lines = tripSpots.map(s => s.lineType).filter(Boolean);
   if (!lines.length) return null;
@@ -812,9 +836,38 @@ function FishLog() {
     className: "header-top"
   }, /*#__PURE__*/React.createElement("div", {
     className: "header-title"
-  }, "The ", /*#__PURE__*/React.createElement("span", null, "Catch"), " Log"), /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("svg", {
+    xmlns: "http://www.w3.org/2000/svg",
+    viewBox: "0 0 230 52",
+    height: "38",
+    style: { display: "block", overflow: "visible" }
+  },
+    /*#__PURE__*/React.createElement("text", {
+      fontFamily: "'Inter', system-ui, sans-serif",
+      fontWeight: "700",
+      fontSize: "10",
+      letterSpacing: "3",
+      fill: "rgba(255,255,255,.5)",
+      x: "1", y: "11"
+    }, "THE"),
+    /*#__PURE__*/React.createElement("text", {
+      fontFamily: "'Inter', system-ui, sans-serif",
+      fontWeight: "700",
+      fontSize: "24",
+      letterSpacing: "-0.5",
+      fill: "#ffffff",
+      x: "0", y: "36"
+    }, "CATCH LOG"),
+    /*#__PURE__*/React.createElement("path", {
+      d: "M0,44 Q57,36 115,44 Q173,52 230,44",
+      stroke: "white",
+      strokeWidth: "1.5",
+      fill: "none",
+      opacity: "0.55"
+    })
+  )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v1.2 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v1.5 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -864,7 +917,8 @@ function FishLog() {
     onAddCatch: addCatch,
     onAddObs: addObs,
     logMode: logMode,
-    setLogMode: setLogMode
+    setLogMode: setLogMode,
+    spots: spots
   }), tab === "journal" && /*#__PURE__*/React.createElement(Journal, {
     catches: catches,
     observations: observations,
@@ -981,6 +1035,8 @@ function TripsList({
   const [lineType, setLineType] = useState("");
   const [targetSpecies, setTargetSpecies] = useState("");
   const [spotNotes, setSpotNotes] = useState("");
+  const [spotPhoto, setSpotPhoto] = useState(null);
+  const spotPhotoRef = useRef();
   const [gps, setGps] = useState(null);
   const [gpsStatus, setGpsStatus] = useState("idle");
   const getGPS = () => {
@@ -1002,6 +1058,7 @@ function TripsList({
       gps,
       waterTemp: waterTemp ? parseInt(waterTemp) : null,
       lineType,
+      photo: spotPhoto,
       notes: spotNotes.trim()
     }, {
       targetSpecies: targetSpecies.trim()
@@ -1012,6 +1069,7 @@ function TripsList({
     setLineType("");
     setTargetSpecies("");
     setSpotNotes("");
+    setSpotPhoto(null);
     setGps(null);
     setGpsStatus("idle");
   };
@@ -1031,6 +1089,26 @@ function TripsList({
   }, /*#__PURE__*/React.createElement("div", {
     className: "field-group-title moss"
   }, "First Spot"), /*#__PURE__*/React.createElement("div", {
+    className: "photo-grid",
+    style: { padding: "12px 14px" }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "photo-slot",
+    style: { aspectRatio: "16/9" },
+    onClick: () => spotPhotoRef.current.click()
+  }, spotPhoto ? /*#__PURE__*/React.createElement("img", {
+    src: spotPhoto,
+    alt: "spot"
+  }) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    className: "photo-slot-icon"
+  }, "\uD83D\uDCF7"), /*#__PURE__*/React.createElement("div", {
+    className: "photo-slot-label"
+  }, "Spot Photo \xB7 optional")), /*#__PURE__*/React.createElement("input", {
+    ref: spotPhotoRef,
+    type: "file",
+    accept: "image/*",
+    capture: "environment",
+    onChange: e => { const f = e.target.files[0]; if (f) compressPhoto(f, setSpotPhoto); e.target.value = ""; }
+  }))), /*#__PURE__*/React.createElement("div", {
     className: "field-row"
   }, /*#__PURE__*/React.createElement("span", {
     className: "field-icon"
@@ -1050,7 +1128,7 @@ function TripsList({
   }, "GPS"), gpsStatus === "idle" && /*#__PURE__*/React.createElement("button", {
     className: "gps-btn",
     onClick: getGPS
-  }, "Get Fix"), gpsStatus === "loading" && /*#__PURE__*/React.createElement("span", {
+  }, "Get GPS"), gpsStatus === "loading" && /*#__PURE__*/React.createElement("span", {
     className: "status-badge status-loading"
   }, "Acquiring\u2026"), gpsStatus === "error" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
     className: "status-badge status-error"
@@ -1178,7 +1256,7 @@ function TripsList({
     const ts = tripSpots(t),
       tc = tripCatches(t),
       to = tripObs(t);
-    const thumb = tc.find(c => c.fishPhoto)?.fishPhoto || null;
+    const thumb = tc.find(c => c.fishPhoto)?.fishPhoto || ts.find(s => s.photo)?.photo || null;
     const derivedMethod = deriveMethod(ts);
     return /*#__PURE__*/React.createElement("div", {
       key: t.id,
@@ -1234,7 +1312,8 @@ function LogTab({
   onAddCatch,
   onAddObs,
   logMode,
-  setLogMode
+  setLogMode,
+  spots
 }) {
   const mode = logMode;
   const setMode = setLogMode;
@@ -1301,7 +1380,8 @@ function LogTab({
     onSave: onAddObs
   }), mode === "spot" && /*#__PURE__*/React.createElement(AddSpotForm, {
     activeTrip: activeTrip,
-    onSave: onAddSpot
+    onSave: onAddSpot,
+    spots: spots
   }));
 }
 
@@ -1309,12 +1389,19 @@ function LogTab({
 
 function AddSpotForm({
   activeTrip,
-  onSave
+  onSave,
+  spots
 }) {
+  // Find last spot from this trip to pre-fill line type and water temp
+  const lastSpot = spots && spots.length > 0
+    ? [...spots].filter(s => s.tripId === activeTrip.id).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0]
+    : null;
   const [name, setName] = useState("");
-  const [waterTemp, setWaterTemp] = useState("");
-  const [lineType, setLineType] = useState("");
+  const [waterTemp, setWaterTemp] = useState(lastSpot?.waterTemp ? `${lastSpot.waterTemp} °C` : "");
+  const [lineType, setLineType] = useState(lastSpot?.lineType || "");
   const [notes, setNotes] = useState("");
+  const [photo, setPhoto] = useState(null);
+  const photoRef = useRef();
   const [gps, setGps] = useState(null);
   const [gpsStatus, setGpsStatus] = useState("idle");
   const getGPS = () => {
@@ -1339,12 +1426,14 @@ function AddSpotForm({
       gps,
       waterTemp: waterTemp ? parseInt(waterTemp) : null,
       lineType,
+      photo,
       notes: notes.trim()
     });
     setName("");
     setWaterTemp("");
     setLineType("");
     setNotes("");
+    setPhoto(null);
     setGps(null);
     setGpsStatus("idle");
   };
@@ -1353,6 +1442,26 @@ function AddSpotForm({
   }, /*#__PURE__*/React.createElement("div", {
     className: "field-group-title"
   }, "New Spot"), /*#__PURE__*/React.createElement("div", {
+    className: "photo-grid",
+    style: { padding: "12px 14px" }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "photo-slot",
+    style: { aspectRatio: "16/9" },
+    onClick: () => photoRef.current.click()
+  }, photo ? /*#__PURE__*/React.createElement("img", {
+    src: photo,
+    alt: "spot"
+  }) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    className: "photo-slot-icon"
+  }, "\uD83D\uDCF7"), /*#__PURE__*/React.createElement("div", {
+    className: "photo-slot-label"
+  }, "Spot Photo \xB7 optional")), /*#__PURE__*/React.createElement("input", {
+    ref: photoRef,
+    type: "file",
+    accept: "image/*",
+    capture: "environment",
+    onChange: e => { const f = e.target.files[0]; if (f) compressPhoto(f, setPhoto); e.target.value = ""; }
+  }))), /*#__PURE__*/React.createElement("div", {
     className: "field-row"
   }, /*#__PURE__*/React.createElement("span", {
     className: "field-icon"
@@ -1372,7 +1481,7 @@ function AddSpotForm({
   }, "GPS"), gpsStatus === "idle" && /*#__PURE__*/React.createElement("button", {
     className: "gps-btn",
     onClick: getGPS
-  }, "Get Fix"), gpsStatus === "loading" && /*#__PURE__*/React.createElement("span", {
+  }, "Get GPS"), gpsStatus === "loading" && /*#__PURE__*/React.createElement("span", {
     className: "status-badge status-loading"
   }, "Acquiring\u2026"), gpsStatus === "error" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
     className: "status-badge status-error"
@@ -1618,7 +1727,7 @@ function CatchForm({
   }, "GPS"), gpsStatus === "idle" && /*#__PURE__*/React.createElement("button", {
     className: "gps-btn",
     onClick: () => getGPS(timestamp)
-  }, "Get Fix"), gpsStatus === "loading" && /*#__PURE__*/React.createElement("span", {
+  }, "Get GPS"), gpsStatus === "loading" && /*#__PURE__*/React.createElement("span", {
     className: "status-badge status-loading"
   }, "Acquiring\u2026"), gpsStatus === "error" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
     className: "status-badge status-error"
@@ -1822,7 +1931,7 @@ function ObsForm({
       /*#__PURE__*/React.createElement("div", { className: "field-row" },
         /*#__PURE__*/React.createElement("span", { className: "field-icon" }, "\uD83D\uDCCD"),
         /*#__PURE__*/React.createElement("span", { className: "field-label" }, "GPS"),
-        gpsStatus === "idle" && /*#__PURE__*/React.createElement("button", { className: "gps-btn", onClick: () => getGPS(timestamp) }, "Get Fix"),
+        gpsStatus === "idle" && /*#__PURE__*/React.createElement("button", { className: "gps-btn", onClick: () => getGPS(timestamp) }, "Get GPS"),
         gpsStatus === "loading" && /*#__PURE__*/React.createElement("span", { className: "status-badge status-loading" }, "Acquiring\u2026"),
         gpsStatus === "error" && /*#__PURE__*/React.createElement(React.Fragment, null,
           /*#__PURE__*/React.createElement("span", { className: "status-badge status-error" }, "Failed"),
@@ -2161,7 +2270,11 @@ function TripDetail({
         fontFamily: "'Source Code Pro',monospace",
         marginBottom: 6
       }
-    }, formatCoords(s.gps.lat, s.gps.lon)), /*#__PURE__*/React.createElement("div", {
+    }, formatCoords(s.gps.lat, s.gps.lon)), s.photo && /*#__PURE__*/React.createElement("img", {
+      src: s.photo,
+      alt: "spot",
+      className: "spot-photo"
+    }), /*#__PURE__*/React.createElement("div", {
       className: "spot-items"
     }, sc.map(c => /*#__PURE__*/React.createElement("div", {
       key: c.id,
@@ -2515,7 +2628,7 @@ function ExportTab({ trips, spots, catches, observations, onRestore }) {
   }, {
     title: "Spots",
     sub: "Each named location visited within a session.",
-    cols: ["spot_id", "trip_id", "trip_name", "name", "timestamp", "gps_lat", "gps_lon", "line_type", "water_temp", "notes"],
+    cols: ["spot_id", "trip_id", "trip_name", "name", "timestamp", "gps_lat", "gps_lon", "line_type", "water_temp", "has_spot_photo", "notes"],
     count: spots.length,
     fn: () => dlCSV(spotsCSV(spots, trips), `catchlog_spots_${today}.csv`)
   }, {
@@ -2542,10 +2655,10 @@ function ExportTab({ trips, spots, catches, observations, onRestore }) {
         className: "backup-btn primary", disabled: !totalItems,
         onClick: () => backupAll(trips, spots, catches, observations)
       }, "Backup all data"),
-      catches.some(c => c.fishPhoto || c.flyPhoto) && /*#__PURE__*/React.createElement("button", {
+      catches.some(c => c.fishPhoto || c.flyPhoto) || spots.some(s => s.photo) ? /*#__PURE__*/React.createElement("button", {
         className: "backup-btn secondary",
-        onClick: () => exportPhotos(catches)
-      }, "Export photos")),
+        onClick: () => exportPhotos(catches, spots)
+      }, "Export photos") : null),
     /*#__PURE__*/React.createElement("div", { className: "backup-divider" }),
     restoreStep === "idle" && /*#__PURE__*/React.createElement("button", {
       className: "backup-btn secondary", onClick: () => setRestoreStep("confirm")
