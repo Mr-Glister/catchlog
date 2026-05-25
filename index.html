@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v1.8</title>
+  <title>The Catch Log v1.9</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -33,7 +33,7 @@
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script>
-    const { useState, useRef, useCallback } = React;
+    const { useState, useRef, useCallback, useEffect } = React;
   </script>
   <script>
 const FONTS = `@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Source+Code+Pro:wght@300;400;500&display=swap');`;
@@ -815,6 +815,10 @@ function FishLog() {
     setSelCatch(null);
     showToast("Catch deleted");
   };
+  const updCatch = (id, updates) => {
+    mutCatches(p => p.map(c => c.id === id ? {...c, ...updates} : c));
+    setSelCatch(prev => prev && prev.id === id ? {...prev, ...updates} : prev);
+  };
   const addObs = o => {
     mutObs(p => [o, ...p]);
     setTab("journal");
@@ -867,7 +871,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v1.8 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v1.9 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -953,6 +957,7 @@ function FishLog() {
     catch: selCatch,
     onClose: () => setSelCatch(null),
     onDelete: delCatch,
+    onUpdate: updCatch,
     trips: trips,
     spots: spots
   }), selObs && /*#__PURE__*/React.createElement(ObsDetail, {
@@ -1727,9 +1732,9 @@ function CatchForm({
     getGPS,
     reset
   } = useEnv();
+  useEffect(() => { getGPS(timestamp); }, []);
   const fishRef = useRef(),
     flyRef = useRef();
-  // Compress photo to max 800px wide, JPEG quality 0.7 — keeps localStorage usage low
   const hp = s => e => {
     const f = e.target.files[0];
     if (!f) return;
@@ -2492,12 +2497,14 @@ function CatchDetail({
   catch: c,
   onClose,
   onDelete,
+  onUpdate,
   trips,
   spots
 }) {
   const norm = c.tide?.seasonal;
   const trip = trips?.find(t => t.id === c.tripId);
   const spot = spots?.find(s => s.id === c.spotId);
+  const fishRef = useRef(), flyRef = useRef();
   return /*#__PURE__*/React.createElement("div", {
     className: "modal-overlay",
     onClick: e => e.target === e.currentTarget && onClose()
@@ -2510,17 +2517,26 @@ function CatchDetail({
   }, c.species), /*#__PURE__*/React.createElement("button", {
     className: "modal-close",
     onClick: onClose
-  }, "\xD7")), (c.fishPhoto || c.flyPhoto) && /*#__PURE__*/React.createElement("div", {
-    className: "modal-photos-2"
-  }, c.fishPhoto && /*#__PURE__*/React.createElement("img", {
-    src: c.fishPhoto,
-    alt: "fish",
-    className: "modal-photo-2"
-  }), c.flyPhoto && /*#__PURE__*/React.createElement("img", {
-    src: c.flyPhoto,
-    alt: "fly",
-    className: "modal-photo-2"
-  })), /*#__PURE__*/React.createElement("div", {
+  }, "\xD7")), /*#__PURE__*/React.createElement("div", {
+    className: "photo-grid photo-grid-2",
+    style: {margin: "0 0 8px"}
+  }, [{ref: fishRef, photo: c.fishPhoto, key: "fishPhoto", label: "Fish"}, {ref: flyRef, photo: c.flyPhoto, key: "flyPhoto", label: "Fly"}].map(p => /*#__PURE__*/React.createElement("div", {
+    key: p.label,
+    className: "photo-slot",
+    onClick: () => p.ref.current.click()
+  }, p.photo ? /*#__PURE__*/React.createElement("img", {
+    src: p.photo,
+    alt: p.label
+  }) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    className: "photo-slot-icon"
+  }, "📷"), /*#__PURE__*/React.createElement("div", {
+    className: "photo-slot-label"
+  }, p.label)), /*#__PURE__*/React.createElement("input", {
+    ref: p.ref,
+    type: "file",
+    accept: "image/*",
+    onChange: e => { const f = e.target.files[0]; if (f) compressPhoto(f, d => onUpdate(c.id, {[p.key]: d})); e.target.value = ""; }
+  })))), /*#__PURE__*/React.createElement("div", {
     className: "modal-section"
   }, /*#__PURE__*/React.createElement("div", {
     className: "modal-section-title"
