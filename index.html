@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.4</title>
+  <title>The Catch Log v2.5</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -323,6 +323,32 @@ const css = `
   .cond-header { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px 10px; border-bottom: 1px solid rgba(255,255,255,.08); }
   .cond-title { font-size: 11px; letter-spacing: 2px; text-transform: uppercase; font-weight: 600; color: var(--moss); }
   .cond-close { background: none; border: none; color: #aaa; font-size: 20px; cursor: pointer; padding: 0; line-height: 1; }
+
+  /* Analytics */
+  .journal-subnav { display: flex; gap: 6px; padding: 12px 16px 8px; flex-shrink: 0; }
+  .jnav-btn { flex: 1; padding: 7px 0; border: 1px solid rgba(255,255,255,.15); background: none; color: #aaa; font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; border-radius: 3px; cursor: pointer; font-weight: 600; }
+  .jnav-btn.active { background: var(--moss); border-color: var(--moss); color: var(--ink); }
+  .stat-wrap { padding: 16px; display: flex; flex-direction: column; gap: 16px; }
+  .stat-summary { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .stat-kpi { background: rgba(255,255,255,.04); border-radius: 4px; padding: 12px; text-align: center; }
+  .stat-kpi-val { font-size: 24px; font-weight: 700; color: var(--moss); font-family: 'Source Code Pro', monospace; }
+  .stat-kpi-lbl { font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; color: #888; margin-top: 2px; }
+  .stat-card { background: rgba(255,255,255,.04); border-radius: 4px; padding: 12px; }
+  .stat-card-title { font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; color: #aaa; margin-bottom: 10px; font-weight: 600; }
+  .stat-row { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
+  .stat-lbl { font-size: 11px; color: #ccc; width: 80px; flex-shrink: 0; text-align: right; line-height: 1.2; }
+  .stat-bars { flex: 1; display: flex; flex-direction: column; gap: 3px; }
+  .stat-bar-line { display: flex; align-items: center; gap: 5px; }
+  .stat-track { flex: 1; height: 7px; background: rgba(255,255,255,.08); border-radius: 3px; overflow: hidden; }
+  .stat-fill-c { height: 100%; background: var(--moss); border-radius: 3px; transition: width .3s; }
+  .stat-fill-nc { height: 100%; background: #555; border-radius: 3px; transition: width .3s; }
+  .stat-ct { font-size: 10px; color: #888; width: 24px; text-align: right; font-family: 'Source Code Pro', monospace; flex-shrink: 0; }
+  .stat-legend { display: flex; gap: 12px; margin-bottom: 8px; }
+  .stat-legend-item { display: flex; align-items: center; gap: 5px; font-size: 10px; color: #aaa; }
+  .stat-legend-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .stat-legend-dot-c { background: var(--moss); }
+  .stat-legend-dot-nc { background: #555; }
+  .stat-empty-msg { color: #666; font-size: 12px; text-align: center; padding: 32px 16px; }
 
   /* Toast */
   .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--paper); padding: 11px 22px; border-radius: 3px; font-size: 11px; letter-spacing: 1.5px; z-index: 999; text-transform: uppercase; animation: fadeup .25s ease; font-weight: 600; }
@@ -913,7 +939,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.4 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.5 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -2324,6 +2350,207 @@ function ObsForm({
     /*#__PURE__*/React.createElement("button", { className: "save-btn", onClick: handleSave, disabled: !species.trim() }, "Record Observation"));
 }
 
+// ── Analytics helpers ─────────────────────────────────────────────────────────
+
+function StatChart({ title, buckets, cc, nc }) {
+  const totalC = cc.reduce((a, b) => a + b, 0);
+  const totalNC = nc.reduce((a, b) => a + b, 0);
+  const hasData = buckets.some((_, i) => cc[i] > 0 || nc[i] > 0);
+  if (!hasData) return null;
+  return React.createElement("div", { className: "stat-card" },
+    React.createElement("div", { className: "stat-card-title" }, title),
+    React.createElement("div", { className: "stat-legend" },
+      React.createElement("div", { className: "stat-legend-item" },
+        React.createElement("div", { className: "stat-legend-dot stat-legend-dot-c" }), "Catches"
+      ),
+      totalNC > 0 && React.createElement("div", { className: "stat-legend-item" },
+        React.createElement("div", { className: "stat-legend-dot stat-legend-dot-nc" }), "No-catch sessions"
+      )
+    ),
+    buckets.map((lbl, i) => {
+      if (cc[i] === 0 && nc[i] === 0) return null;
+      const cPct = totalC > 0 ? Math.round(cc[i] / totalC * 100) : 0;
+      const ncPct = totalNC > 0 ? Math.round(nc[i] / totalNC * 100) : 0;
+      return React.createElement("div", { key: lbl, className: "stat-row" },
+        React.createElement("div", { className: "stat-lbl" }, lbl),
+        React.createElement("div", { className: "stat-bars" },
+          React.createElement("div", { className: "stat-bar-line" },
+            React.createElement("div", { className: "stat-track" },
+              React.createElement("div", { className: "stat-fill-c", style: { width: cPct + "%" } })
+            ),
+            React.createElement("div", { className: "stat-ct" }, cc[i] || "")
+          ),
+          totalNC > 0 && React.createElement("div", { className: "stat-bar-line" },
+            React.createElement("div", { className: "stat-track" },
+              React.createElement("div", { className: "stat-fill-nc", style: { width: ncPct + "%" } })
+            ),
+            React.createElement("div", { className: "stat-ct" }, nc[i] > 0 ? nc[i] : "")
+          )
+        )
+      );
+    })
+  );
+}
+
+function Analytics({ catches, spots, trips }) {
+  // Sessions that ended with 0 catches
+  const noCatchTripIds = new Set(
+    trips.filter(t => t.endTime && !catches.some(c => c.tripId === t.id)).map(t => t.id)
+  );
+  const ncSpots = spots.filter(s => noCatchTripIds.has(s.tripId));
+
+  const timeBucket = ts => {
+    const h = new Date(ts).getHours();
+    if (h >= 4 && h < 7)  return "Dawn";
+    if (h >= 7 && h < 11) return "Morning";
+    if (h >= 11 && h < 14) return "Midday";
+    if (h >= 14 && h < 17) return "Afternoon";
+    if (h >= 17 && h < 20) return "Evening";
+    return "Night";
+  };
+  const tideBucket = val => {
+    if (val == null) return null;
+    const p = tidePct(val);
+    if (p < 20) return "Very Low";
+    if (p < 40) return "Low";
+    if (p < 60) return "Medium";
+    if (p < 80) return "High";
+    return "Very High";
+  };
+  const pressBucket = p => {
+    if (p == null) return null;
+    if (p < 1000) return "<1000";
+    if (p < 1010) return "1000–1010";
+    if (p < 1020) return "1010–1020";
+    return ">1020";
+  };
+  const moonBucket = m => {
+    if (!m) return null;
+    const s = String(m);
+    if (s.includes("New"))             return "🌑 New";
+    if (s.includes("Waxing Crescent")) return "🌒 Wax.Cres.";
+    if (s.includes("First Quarter"))   return "🌓 First Q.";
+    if (s.includes("Waxing Gibbous"))  return "🌔 Wax.Gib.";
+    if (s.includes("Full"))            return "🌕 Full";
+    if (s.includes("Waning Gibbous"))  return "🌖 Wan.Gib.";
+    if (s.includes("Last Quarter"))    return "🌗 Last Q.";
+    if (s.includes("Waning Crescent")) return "🌘 Wan.Cres.";
+    return null;
+  };
+  const tempBucket = t => {
+    if (t == null) return null;
+    const v = parseFloat(t);
+    if (isNaN(v)) return null;
+    const lo = Math.floor(v / 2) * 2;
+    return `${lo}–${lo + 2}°C`;
+  };
+  const buildCounts = (items, fn, buckets) => {
+    const counts = Object.fromEntries(buckets.map(b => [b, 0]));
+    items.forEach(item => { const b = fn(item); if (b != null && b in counts) counts[b]++; });
+    return buckets.map(b => counts[b]);
+  };
+
+  const timeBuckets  = ["Dawn", "Morning", "Midday", "Afternoon", "Evening", "Night"];
+  const tideBuckets  = ["Very Low", "Low", "Medium", "High", "Very High"];
+  const pressBuckets = ["<1000", "1000–1010", "1010–1020", ">1020"];
+  const moonBuckets  = ["🌑 New", "🌒 Wax.Cres.", "🌓 First Q.", "🌔 Wax.Gib.", "🌕 Full", "🌖 Wan.Gib.", "🌗 Last Q.", "🌘 Wan.Cres."];
+
+  const getWT = c => { const t = c.waterTemp ?? spots.find(s => s.id === c.spotId)?.waterTemp; return t; };
+  const allTemps = [...catches.map(getWT), ...ncSpots.map(s => s.waterTemp)]
+    .filter(t => t != null).map(t => parseFloat(t)).filter(t => !isNaN(t));
+  const tempBucketsAll = (() => {
+    if (!allTemps.length) return [];
+    const lo = Math.floor(Math.min(...allTemps) / 2) * 2;
+    const hi = Math.floor(Math.max(...allTemps) / 2) * 2 + 2;
+    const out = [];
+    for (let t = lo; t <= hi; t += 2) out.push(`${t}–${t + 2}°C`);
+    return out;
+  })();
+
+  const cTime  = buildCounts(catches,  c => timeBucket(c.timestamp),        timeBuckets);
+  const ncTime = buildCounts(ncSpots,  s => timeBucket(s.timestamp),        timeBuckets);
+  const cTide  = buildCounts(catches,  c => tideBucket(c.tide?.seasonal),   tideBuckets);
+  const ncTide = buildCounts(ncSpots,  s => tideBucket(s.tide?.seasonal),   tideBuckets);
+  const cPress  = buildCounts(catches, c => pressBucket(c.weather?.pressure), pressBuckets);
+  const ncPress = buildCounts(ncSpots, s => pressBucket(s.weather?.pressure), pressBuckets);
+  const cMoon  = buildCounts(catches,  c => moonBucket(c.weather?.moon),    moonBuckets);
+  const ncMoon = buildCounts(ncSpots,  s => moonBucket(s.weather?.moon),    moonBuckets);
+  const cTemp  = buildCounts(catches,  c => tempBucket(getWT(c)),           tempBucketsAll);
+  const ncTemp = buildCounts(ncSpots,  s => tempBucket(s.waterTemp),        tempBucketsAll);
+
+  // Species breakdown
+  const speciesMap = {};
+  catches.forEach(c => {
+    if (!c.species) return;
+    if (!speciesMap[c.species]) speciesMap[c.species] = { count: 0, sizes: [] };
+    speciesMap[c.species].count++;
+    const sz = c.size ? parseFloat(c.size) : NaN;
+    if (!isNaN(sz)) speciesMap[c.species].sizes.push(sz);
+  });
+  const speciesArr = Object.entries(speciesMap).sort((a, b) => b[1].count - a[1].count);
+
+  // KPIs
+  const totalCatches   = catches.length;
+  const totalSessions  = trips.filter(t => t.endTime).length;
+  const hitSessions    = trips.filter(t => t.endTime && catches.some(c => c.tripId === t.id)).length;
+  const hitRate        = totalSessions > 0 ? Math.round(hitSessions / totalSessions * 100) : 0;
+  const bestCatch      = catches.reduce((best, c) => {
+    const sz = parseFloat(c.size);
+    return !isNaN(sz) && sz > (best.sz || 0) ? { c, sz } : best;
+  }, {}).c;
+
+  if (!totalCatches && !totalSessions) {
+    return React.createElement("div", { className: "stat-empty-msg" }, "No data yet — log sessions and catches to see analytics");
+  }
+
+  return React.createElement("div", { className: "stat-wrap" },
+    React.createElement("div", { className: "stat-summary" },
+      React.createElement("div", { className: "stat-kpi" },
+        React.createElement("div", { className: "stat-kpi-val" }, totalCatches),
+        React.createElement("div", { className: "stat-kpi-lbl" }, "Catches")
+      ),
+      React.createElement("div", { className: "stat-kpi" },
+        React.createElement("div", { className: "stat-kpi-val" }, hitRate + "%"),
+        React.createElement("div", { className: "stat-kpi-lbl" }, "Hit Rate")
+      ),
+      React.createElement("div", { className: "stat-kpi" },
+        React.createElement("div", { className: "stat-kpi-val" }, totalSessions),
+        React.createElement("div", { className: "stat-kpi-lbl" }, "Sessions")
+      ),
+      React.createElement("div", { className: "stat-kpi" },
+        React.createElement("div", { className: "stat-kpi-val" }, bestCatch?.size || "—"),
+        React.createElement("div", { className: "stat-kpi-lbl" }, "Best Catch")
+      )
+    ),
+    React.createElement(StatChart, { title: "Time of Day",     buckets: timeBuckets,   cc: cTime,  nc: ncTime }),
+    React.createElement(StatChart, { title: "Tide Level",      buckets: tideBuckets,   cc: cTide,  nc: ncTide }),
+    React.createElement(StatChart, { title: "Pressure (hPa)",  buckets: pressBuckets,  cc: cPress, nc: ncPress }),
+    React.createElement(StatChart, { title: "Moon Phase",      buckets: moonBuckets,   cc: cMoon,  nc: ncMoon }),
+    tempBucketsAll.length > 0 && React.createElement(StatChart, { title: "Water Temp", buckets: tempBucketsAll, cc: cTemp, nc: ncTemp }),
+    speciesArr.length > 0 && React.createElement("div", { className: "stat-card" },
+      React.createElement("div", { className: "stat-card-title" }, "Species"),
+      speciesArr.map(([sp, { count, sizes }]) => {
+        const avg = sizes.length ? Math.round(sizes.reduce((a, b) => a + b, 0) / sizes.length) : null;
+        const max = sizes.length ? Math.max(...sizes) : null;
+        return React.createElement("div", { key: sp, className: "stat-row" },
+          React.createElement("div", { className: "stat-lbl" }, sp),
+          React.createElement("div", { className: "stat-bars" },
+            React.createElement("div", { className: "stat-bar-line" },
+              React.createElement("div", { className: "stat-track" },
+                React.createElement("div", { className: "stat-fill-c", style: { width: Math.round(count / totalCatches * 100) + "%" } })
+              ),
+              React.createElement("div", { className: "stat-ct" }, count),
+              sizes.length > 0 && React.createElement("div", {
+                style: { fontSize: 10, color: "#888", marginLeft: 6, whiteSpace: "nowrap" }
+              }, "avg ", avg, " · max ", max)
+            )
+          )
+        );
+      })
+    )
+  );
+}
+
 // ── Journal ───────────────────────────────────────────────────────────────────
 
 function Journal({
@@ -2334,6 +2561,7 @@ function Journal({
   onSelCatch,
   onSelObs
 }) {
+  const [jView, setJView] = React.useState("entries");
   const spotName = id => spots.find(s => s.id === id)?.name || null;
   const items = [...catches.map(c => ({
     ...c,
@@ -2342,18 +2570,25 @@ function Journal({
     ...o,
     _type: "obs"
   }))].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-  if (!items.length) return /*#__PURE__*/React.createElement("div", {
+  return /*#__PURE__*/React.createElement("div", {
     className: "log-wrap"
   }, /*#__PURE__*/React.createElement("div", {
+    className: "journal-subnav"
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "jnav-btn" + (jView === "entries" ? " active" : ""),
+    onClick: () => setJView("entries")
+  }, "Entries"), /*#__PURE__*/React.createElement("button", {
+    className: "jnav-btn" + (jView === "analytics" ? " active" : ""),
+    onClick: () => setJView("analytics")
+  }, "Analytics")), jView === "analytics" ? React.createElement(Analytics, {
+    catches: catches, spots: spots, trips: trips
+  }) : !items.length ? /*#__PURE__*/React.createElement("div", {
     className: "empty-state"
   }, /*#__PURE__*/React.createElement("div", {
     className: "empty-icon"
   }, ""), /*#__PURE__*/React.createElement("div", {
     className: "empty-text"
-  }, "Nothing logged yet")));
-  return /*#__PURE__*/React.createElement("div", {
-    className: "log-wrap"
-  }, items.map(item => item._type === "catch" ? /*#__PURE__*/React.createElement("div", {
+  }, "Nothing logged yet")) : items.map(item => item._type === "catch" ? /*#__PURE__*/React.createElement("div", {
     key: item.id,
     className: "catch-card",
     onClick: () => onSelCatch(item)
