@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v1.9</title>
+  <title>The Catch Log v2.0</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -153,7 +153,8 @@ const css = `
   .save-btn { width: 100%; padding: 16px; background: var(--ink); color: var(--paper);
     border: none; font-family: 'Inter', sans-serif; font-size: 11px;
     letter-spacing: 2.5px; text-transform: uppercase; cursor: pointer;
-    border-top: none; transition: background .15s; margin-top: 4px; border-radius: 3px; font-weight: 600; }
+    border-top: none; transition: background .15s; margin-top: 4px; border-radius: 3px; font-weight: 600;
+    position: sticky; bottom: 0; z-index: 50; }
   .save-btn:hover { background: var(--slate-deep); }
   .save-btn:disabled { opacity: .35; cursor: not-allowed; }
   .save-btn.green { background: var(--moss); }
@@ -290,6 +291,31 @@ const css = `
   .backup-divider { height: 1px; background: rgba(255,255,255,.1); margin: 4px 0; }
   .backup-restore-confirm { background: transparent; border: 1px solid rgba(232,160,148,.4); border-radius: 2px; padding: 12px 14px; font-size: 12px; color: #e8a094; line-height: 1.6; }
   .csv-section-title { font-size: 10px; letter-spacing: 2px; text-transform: uppercase; color: var(--text-3); padding: 6px 0 2px; font-weight: 600; }
+
+  /* Quick-action overlay */
+  .quick-overlay { position: fixed; inset: 0; z-index: 150; background: var(--ink);
+    display: flex; flex-direction: column; justify-content: center; align-items: center;
+    padding: 32px 24px; gap: 12px; }
+  .qa-heading { font-size: 9px; letter-spacing: 3px; text-transform: uppercase;
+    color: var(--moss); font-weight: 700; margin-bottom: 8px; }
+  .qa-context { font-size: 12px; color: rgba(255,255,255,.5); margin-bottom: 16px;
+    font-family: 'Source Code Pro', monospace; text-align: center; }
+  .qa-btn { width: 100%; max-width: 340px; min-height: 64px; padding: 20px 16px;
+    border: 1px solid rgba(255,255,255,.15); border-radius: 4px; background: transparent;
+    color: var(--paper); font-family: 'Inter', sans-serif; font-size: 13px;
+    font-weight: 600; letter-spacing: 1.5px; text-transform: uppercase;
+    cursor: pointer; transition: all .15s; }
+  .qa-btn:active { transform: scale(.97); }
+  .qa-btn.primary { background: var(--moss); border-color: var(--moss); min-height: 72px;
+    font-size: 15px; letter-spacing: 2px; }
+  .qa-btn.primary:active { background: #2f4639; }
+  .qa-btn.end { border-color: rgba(255,255,255,.08); color: rgba(255,255,255,.4);
+    min-height: 48px; font-size: 10px; }
+  .qa-dismiss { background: none; border: none; color: rgba(255,255,255,.35);
+    font-size: 11px; letter-spacing: 1.5px; text-transform: uppercase;
+    cursor: pointer; margin-top: 20px; font-family: 'Inter', sans-serif;
+    padding: 12px; font-weight: 500; }
+  .qa-dismiss:active { color: rgba(255,255,255,.6); }
 
   /* Toast */
   .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--paper); padding: 11px 22px; border-radius: 3px; font-size: 11px; letter-spacing: 1.5px; z-index: 999; text-transform: uppercase; animation: fadeup .25s ease; font-weight: 600; }
@@ -739,6 +765,7 @@ function FishLog() {
   const [selObs, setSelObs] = useState(null);
   const [toast, setToast] = useState(null);
   const toastRef = useRef(null);
+  const [showQuickAction, setShowQuickAction] = useState(() => trips.some(t => !t.endTime));
   const activeTrip = trips.find(t => !t.endTime) || null;
   const activeSpot = activeTrip ? [...spots].filter(s => s.tripId === activeTrip.id).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0] || null : null;
   const showToast = msg => {
@@ -779,10 +806,12 @@ function FishLog() {
     mutTrips(p => [trip, ...p]);
     mutSpots(p => [spot, ...p]);
     showToast(`Session started · ${spot.name || "New spot"}`);
+    setShowQuickAction(true);
   };
   const addSpot = s => {
     mutSpots(p => [s, ...p]);
     showToast(`Spot "${s.name || "New spot"}" added`);
+    setShowQuickAction(true);
   };
   const endTrip = () => {
     mutTrips(p => p.map(t => t.id === activeTrip.id ? {
@@ -790,6 +819,7 @@ function FishLog() {
       endTime: new Date().toISOString()
     } : t));
     showToast("Session ended");
+    setShowQuickAction(false);
   };
   const updTrip = t => mutTrips(p => p.map(x => x.id === t.id ? t : x));
   const delTrip = id => {
@@ -809,6 +839,7 @@ function FishLog() {
     mutCatches(p => [c, ...p]);
     setTab("journal");
     showToast("Catch recorded");
+    setShowQuickAction(true);
   };
   const delCatch = id => {
     mutCatches(p => p.filter(c => c.id !== id));
@@ -823,6 +854,7 @@ function FishLog() {
     mutObs(p => [o, ...p]);
     setTab("journal");
     showToast("Observation recorded");
+    setShowQuickAction(true);
   };
   const delObs = id => {
     mutObs(p => p.filter(o => o.id !== id));
@@ -871,7 +903,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v1.9 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.0 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -966,7 +998,28 @@ function FishLog() {
     onDelete: delObs,
     trips: trips,
     spots: spots
-  }), toast && /*#__PURE__*/React.createElement("div", {
+  }), activeTrip && showQuickAction && /*#__PURE__*/React.createElement("div", {
+    className: "quick-overlay"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "qa-heading"
+  }, "Live Session"), /*#__PURE__*/React.createElement("div", {
+    className: "qa-context"
+  }, activeSpot ? (activeSpot.name || "Unnamed spot") : "No spot yet", activeSpot?.waterTemp ? ` \xB7 ${activeSpot.waterTemp}\xB0C` : ""), /*#__PURE__*/React.createElement("button", {
+    className: "qa-btn primary",
+    onClick: () => { setShowQuickAction(false); setLogMode("catch"); setTab("log"); }
+  }, "Record Catch"), /*#__PURE__*/React.createElement("button", {
+    className: "qa-btn",
+    onClick: () => { setShowQuickAction(false); setLogMode("spot"); setTab("log"); }
+  }, "New Spot"), /*#__PURE__*/React.createElement("button", {
+    className: "qa-btn",
+    onClick: () => { setShowQuickAction(false); setLogMode("obs"); setTab("log"); }
+  }, "Observation"), /*#__PURE__*/React.createElement("button", {
+    className: "qa-btn end",
+    onClick: endTrip
+  }, "End Session"), /*#__PURE__*/React.createElement("button", {
+    className: "qa-dismiss",
+    onClick: () => setShowQuickAction(false)
+  }, "View tabs")), toast && /*#__PURE__*/React.createElement("div", {
     className: "toast"
   }, toast)));
 }
