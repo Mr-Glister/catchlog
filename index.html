@@ -1037,21 +1037,8 @@ function TripsList({
   const [spotNotes, setSpotNotes] = useState("");
   const [spotPhoto, setSpotPhoto] = useState(null);
   const spotPhotoRef = useRef();
-  const [gps, setGps] = useState(null);
-  const [gpsStatus, setGpsStatus] = useState("idle");
-  const getGPS = () => {
-    setGpsStatus("loading");
-    navigator.geolocation.getCurrentPosition(p => {
-      setGps({
-        lat: p.coords.latitude,
-        lon: p.coords.longitude
-      });
-      setGpsStatus("ok");
-    }, () => setGpsStatus("error"), {
-      enableHighAccuracy: true,
-      timeout: 15000
-    });
-  };
+  const [timestamp] = useState(new Date().toISOString());
+  const { gps, gpsStatus, weather, weatherStatus, tide, tideStatus, getGPS, reset: resetEnv } = useEnv();
   const handleStart = () => {
     onStartSession({
       name: spotName.trim(),
@@ -1059,6 +1046,8 @@ function TripsList({
       waterTemp: waterTemp ? parseInt(waterTemp) : null,
       lineType,
       photo: spotPhoto,
+      weather,
+      tide,
       notes: spotNotes.trim()
     }, {
       targetSpecies: targetSpecies.trim()
@@ -1070,8 +1059,7 @@ function TripsList({
     setTargetSpecies("");
     setSpotNotes("");
     setSpotPhoto(null);
-    setGps(null);
-    setGpsStatus("idle");
+    resetEnv();
   };
   const sorted = [...trips].sort((a, b) => new Date(b.startTime) - new Date(a.startTime));
   return /*#__PURE__*/React.createElement("div", {
@@ -1127,7 +1115,7 @@ function TripsList({
     className: "field-label"
   }, "GPS"), gpsStatus === "idle" && /*#__PURE__*/React.createElement("button", {
     className: "gps-btn",
-    onClick: getGPS
+    onClick: () => getGPS(timestamp)
   }, "Get GPS"), gpsStatus === "loading" && /*#__PURE__*/React.createElement("span", {
     className: "status-badge status-loading"
   }, "Acquiring\u2026"), gpsStatus === "error" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
@@ -1137,7 +1125,7 @@ function TripsList({
     style: {
       marginLeft: 6
     },
-    onClick: getGPS
+    onClick: () => getGPS(timestamp)
   }, "Retry")), gpsStatus === "ok" && gps && /*#__PURE__*/React.createElement("span", {
     className: "gps-coords"
   }, formatCoords(gps.lat, gps.lon))), /*#__PURE__*/React.createElement("div", {
@@ -1198,6 +1186,90 @@ function TripsList({
       resize: "none"
     }
   })), /*#__PURE__*/React.createElement("div", {
+    className: "field-group-title"
+  }, "Conditions", (weatherStatus === "loading" || tideStatus === "loading") && /*#__PURE__*/React.createElement("span", {
+    style: {opacity: .5, fontSize: 9}
+  }, " \xB7 fetching\u2026")), /*#__PURE__*/React.createElement("div", {
+    className: "field-row"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "field-icon"
+  }, "\ud83c\udf21\ufe0f"), /*#__PURE__*/React.createElement("span", {
+    className: "field-label"
+  }, "Air Temp"), weather?.airTemp != null ? /*#__PURE__*/React.createElement("span", {
+    className: "field-value"
+  }, weather.airTemp, " \xB0C") : /*#__PURE__*/React.createElement("span", {
+    className: "field-value",
+    style: {color: "#bbb"}
+  }, "\u2014 get GPS first")), /*#__PURE__*/React.createElement("div", {
+    className: "field-row top"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "field-icon",
+    style: {marginTop: 2}
+  }, "\ud83c\udf0a"), /*#__PURE__*/React.createElement("span", {
+    className: "field-label",
+    style: {marginTop: 2}
+  }, "Tide"), tideStatus === "idle" && /*#__PURE__*/React.createElement("span", {
+    style: {fontSize: 11, color: "#bbb"}
+  }, "\u2014 get GPS first"), tideStatus === "loading" && /*#__PURE__*/React.createElement("span", {
+    className: "status-badge status-loading"
+  }, "Loading\u2026"), tideStatus === "error" && /*#__PURE__*/React.createElement("span", {
+    className: "status-badge status-error"
+  }, "API error"), tideStatus === "unavailable" && /*#__PURE__*/React.createElement("span", {
+    className: "status-badge status-error"
+  }, "No data"), tideStatus === "ok" && tide && /*#__PURE__*/React.createElement("div", {
+    className: "tide-bar-wrap"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "tide-value-line"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "tide-normalized"
+  }, tide.seasonal != null ? tidePct(tide.seasonal) + "%" : "\u2014"), tide.valueCM != null && /*#__PURE__*/React.createElement("span", {
+    className: "tide-raw"
+  }, "(", tide.valueCM, " cm)"), tide.seasonal != null && /*#__PURE__*/React.createElement("span", {
+    className: "tide-hint"
+  }, tideLabel(tide.seasonal), tideArrow(tide.direction))), tide.seasonal != null && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    className: "tide-bar-track"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "tide-bar-fill",
+    style: {width: `${Math.max(0,Math.min(100,tide.seasonal*100))}%`}
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "tide-bar-labels"
+  }, /*#__PURE__*/React.createElement("span", null, "Typical Low", tide.mhwsCM != null ? ` (${tide.mlwsCM}cm)` : ""), /*#__PURE__*/React.createElement("span", null, "Typical High", tide.mhwsCM != null ? ` (${tide.mhwsCM}cm)` : ""))))), /*#__PURE__*/React.createElement("div", {
+    className: "field-row"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "field-icon"
+  }, "\ud83d\udd35"), /*#__PURE__*/React.createElement("span", {
+    className: "field-label"
+  }, "Pressure"), weather?.pressure != null ? /*#__PURE__*/React.createElement("span", {
+    className: "field-value"
+  }, weather.pressure, " hPa", weather.pressureLevel ? ` \xB7 ${weather.pressureLevel}` : "", weather.pressureTrend === "rising" ? " \u2191" : weather.pressureTrend === "falling" ? " \u2193" : "", weather.pressureLabel && weather.pressureTrend !== "steady" ? /*#__PURE__*/React.createElement("span", {
+    style: {fontSize: 10, color: "#999", fontStyle: "italic"}
+  }, ` (${weather.pressureLabel})`) : null) : /*#__PURE__*/React.createElement("input", {
+    className: "field-input",
+    placeholder: "e.g. 1013 hPa"
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "field-row"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "field-icon"
+  }, "\ud83d\udca8"), /*#__PURE__*/React.createElement("span", {
+    className: "field-label"
+  }, "Wind"), weather?.windSpeed != null ? /*#__PURE__*/React.createElement("span", {
+    className: "field-value"
+  }, weather.windSpeed, " m/s", weather.windDir != null ? ` \xB7 ${windCompass(weather.windDir)} (${weather.windDir}\xB0)` : "") : /*#__PURE__*/React.createElement("span", {
+    className: "field-value",
+    style: {color: "#bbb"}
+  }, "\u2014 get GPS first")), /*#__PURE__*/React.createElement("div", {
+    className: "field-row"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "field-icon"
+  }, "\ud83c\udf15"), /*#__PURE__*/React.createElement("span", {
+    className: "field-label"
+  }, "Moon"), /*#__PURE__*/React.createElement("span", {
+    className: "field-value"
+  }, weather?.moon ?? getMoonPhase(new Date()))), !gps && /*#__PURE__*/React.createElement("div", {
+    className: "info-note"
+  }, "Get GPS fix to auto-load air temp, pressure, wind & tide"), tideStatus === "ok" && /*#__PURE__*/React.createElement("div", {
+    className: "info-note"
+  }, "Tide \xA9 Kartverket/NMA (CC BY 4.0)"), /*#__PURE__*/React.createElement("div", {
     className: "field-group-title",
     style: {
       background: "#444"
