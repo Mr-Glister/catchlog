@@ -929,18 +929,7 @@ function FishLog() {
     className: "ab-spot"
   }, activeSpot ? (activeSpot.name || "Unnamed spot") : "No spot yet"), activeSpot?.waterTemp && /*#__PURE__*/React.createElement("div", {
     className: "ab-meta"
-  }, "", activeSpot.waterTemp, "\xB0C")), /*#__PURE__*/React.createElement("div", {
-    className: "ab-buttons"
-  }, /*#__PURE__*/React.createElement("button", {
-    className: "ab-btn",
-    onClick: () => {
-      setLogMode("spot");
-      setTab("log");
-    }
-  }, "+ New Spot"), /*#__PURE__*/React.createElement("button", {
-    className: "ab-btn end",
-    onClick: endTrip
-  }, "End"))), tab === "trips" && /*#__PURE__*/React.createElement(TripsList, {
+  }, "", activeSpot.waterTemp, "\xB0C"))), tab === "trips" && /*#__PURE__*/React.createElement(TripsList, {
     trips: trips,
     tripSpots: tripSpots,
     tripCatches: tripCatches,
@@ -2257,13 +2246,13 @@ function Journal({
     className: "catch-chips"
   }, item.size && /*#__PURE__*/React.createElement("span", {
     className: "chip"
-  }, "", item.size), item.weather?.airTemp != null && /*#__PURE__*/React.createElement("span", {
+  }, "", item.size), (item.waterTemp ?? spots.find(s => s.id === item.spotId)?.waterTemp) != null && /*#__PURE__*/React.createElement("span", {
     className: "chip"
-  }, "", item.weather.airTemp, "\xB0C"), item.tide?.seasonal != null && /*#__PURE__*/React.createElement("span", {
+  }, "💧 ", item.waterTemp ?? spots.find(s => s.id === item.spotId)?.waterTemp, "\xB0C"), item.weather?.pressure != null && /*#__PURE__*/React.createElement("span", {
+    className: "chip"
+  }, "", item.weather.pressure, " hPa"), item.tide?.seasonal != null && /*#__PURE__*/React.createElement("span", {
     className: "chip chip-tide"
-  }, "", tidePct(item.tide.seasonal) + "%", " \xB7 ", tideLabel(item.tide.seasonal), tideArrow(item.tide.direction)), item.weather?.moon && /*#__PURE__*/React.createElement("span", {
-    className: "chip"
-  }, item.weather.moon), item.spotId && spotName(item.spotId) && /*#__PURE__*/React.createElement("span", {
+  }, "", tidePct(item.tide.seasonal) + "%", " \xB7 ", tideLabel(item.tide.seasonal), tideArrow(item.tide.direction)), item.spotId && spotName(item.spotId) && /*#__PURE__*/React.createElement("span", {
     className: "chip chip-spot"
   }, "", spotName(item.spotId)))) : /*#__PURE__*/React.createElement("div", {
     key: item.id,
