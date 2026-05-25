@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.5</title>
+  <title>The Catch Log v2.6</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -179,7 +179,7 @@ const css = `
   .trip-active-badge { background: var(--moss); color: var(--paper); border: none; font-size: 9px; padding: 3px 9px; border-radius: 2px; letter-spacing: 1.5px; text-transform: uppercase; font-weight: 600; }
 
   /* Catch cards */
-  .catch-card { background: var(--paper-2); border: 1px solid var(--rule); border-radius: 3px; overflow: hidden; cursor: pointer; transition: all .15s; }
+  .catch-card { background: var(--paper-2); border: 1px solid var(--rule); border-left: 3px solid var(--moss); border-radius: 3px; overflow: hidden; cursor: pointer; transition: all .15s; }
   .catch-card:hover { border-color: var(--rule-strong); }
   .catch-card-header { display: flex; }
   .catch-thumb { width: 72px; height: 72px; object-fit: cover; flex-shrink: 0; background: var(--rule); display:flex;align-items:center;justify-content:center; }
@@ -324,10 +324,7 @@ const css = `
   .cond-title { font-size: 11px; letter-spacing: 2px; text-transform: uppercase; font-weight: 600; color: var(--moss); }
   .cond-close { background: none; border: none; color: #aaa; font-size: 20px; cursor: pointer; padding: 0; line-height: 1; }
 
-  /* Analytics */
-  .journal-subnav { display: flex; gap: 6px; padding: 12px 16px 8px; flex-shrink: 0; }
-  .jnav-btn { flex: 1; padding: 7px 0; border: 1px solid rgba(255,255,255,.15); background: none; color: #aaa; font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; border-radius: 3px; cursor: pointer; font-weight: 600; }
-  .jnav-btn.active { background: var(--moss); border-color: var(--moss); color: var(--ink); }
+  /* Insights */
   .stat-wrap { padding: 16px; display: flex; flex-direction: column; gap: 16px; }
   .stat-summary { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   .stat-kpi { background: rgba(255,255,255,.04); border-radius: 4px; padding: 12px; text-align: center; }
@@ -341,13 +338,9 @@ const css = `
   .stat-bar-line { display: flex; align-items: center; gap: 5px; }
   .stat-track { flex: 1; height: 7px; background: rgba(255,255,255,.08); border-radius: 3px; overflow: hidden; }
   .stat-fill-c { height: 100%; background: var(--moss); border-radius: 3px; transition: width .3s; }
-  .stat-fill-nc { height: 100%; background: #555; border-radius: 3px; transition: width .3s; }
-  .stat-ct { font-size: 10px; color: #888; width: 24px; text-align: right; font-family: 'Source Code Pro', monospace; flex-shrink: 0; }
-  .stat-legend { display: flex; gap: 12px; margin-bottom: 8px; }
-  .stat-legend-item { display: flex; align-items: center; gap: 5px; font-size: 10px; color: #aaa; }
-  .stat-legend-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-  .stat-legend-dot-c { background: var(--moss); }
-  .stat-legend-dot-nc { background: #555; }
+  .stat-ct { font-size: 10px; color: #888; width: 32px; text-align: right; font-family: 'Source Code Pro', monospace; flex-shrink: 0; }
+  .stat-filter { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .stat-filter select { flex: 1; min-width: 0; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.12); color: #ccc; padding: 7px 10px; border-radius: 3px; font-size: 11px; letter-spacing: .5px; }
   .stat-empty-msg { color: #666; font-size: 12px; text-align: center; padding: 32px 16px; }
 
   /* Toast */
@@ -873,7 +866,7 @@ function FishLog() {
   };
   const addCatch = c => {
     mutCatches(p => [c, ...p]);
-    setTab("journal");
+    setTab("logbook");
     showToast("Catch recorded");
     setShowQuickAction(true);
   };
@@ -888,7 +881,7 @@ function FishLog() {
   };
   const addObs = o => {
     mutObs(p => [o, ...p]);
-    setTab("journal");
+    setTab("logbook");
     showToast("Observation recorded");
     setShowQuickAction(true);
   };
@@ -939,18 +932,18 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.5 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.6 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
     onClick: () => { setTab("trips"); if (activeTrip) setShowQuickAction(true); }
   }, "Sessions"), /*#__PURE__*/React.createElement("button", {
-    className: `tab${tab === "log" ? " active" : ""}`,
-    onClick: () => setTab("log")
-  }, "Log"), /*#__PURE__*/React.createElement("button", {
-    className: `tab${tab === "journal" ? " active" : ""}`,
-    onClick: () => { setTab("journal"); if (activeTrip) setShowQuickAction(true); }
-  }, "Journal"), /*#__PURE__*/React.createElement("button", {
+    className: `tab${tab === "logbook" ? " active" : ""}`,
+    onClick: () => { setTab("logbook"); if (activeTrip) setShowQuickAction(true); }
+  }, "Logbook"), /*#__PURE__*/React.createElement("button", {
+    className: `tab${tab === "insights" ? " active" : ""}`,
+    onClick: () => { setTab("insights"); if (activeTrip) setShowQuickAction(true); }
+  }, "Insights"), /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "export" ? " active" : ""}`,
     onClick: () => { setTab("export"); if (activeTrip) setShowQuickAction(true); }
   }, "Export"))), activeTrip && /*#__PURE__*/React.createElement("div", {
@@ -982,13 +975,16 @@ function FishLog() {
     logMode: logMode,
     setLogMode: setLogMode,
     spots: spots
-  }), tab === "journal" && /*#__PURE__*/React.createElement(Journal, {
+  }), tab === "logbook" && /*#__PURE__*/React.createElement(Journal, {
     catches: catches,
     observations: observations,
     spots: spots,
-    trips: trips,
     onSelCatch: setSelCatch,
     onSelObs: setSelObs
+  }), tab === "insights" && /*#__PURE__*/React.createElement(Analytics, {
+    catches: catches,
+    spots: spots,
+    trips: trips
   }), tab === "export" && /*#__PURE__*/React.createElement(ExportTab, {
     trips: trips,
     spots: spots,
@@ -2244,6 +2240,7 @@ function ObsForm({
   const [notes, setNotes] = useState("");
   const [timestamp] = useState(() => new Date().toISOString());
   const { gps, gpsStatus, weather, weatherStatus, tide, tideStatus, getGPS, reset } = useEnv();
+  useEffect(() => { getGPS(timestamp); }, []);
 
   const handleSave = () => {
     if (!species.trim()) return;
@@ -2352,39 +2349,24 @@ function ObsForm({
 
 // ── Analytics helpers ─────────────────────────────────────────────────────────
 
-function StatChart({ title, buckets, cc, nc }) {
-  const totalC = cc.reduce((a, b) => a + b, 0);
-  const totalNC = nc.reduce((a, b) => a + b, 0);
-  const hasData = buckets.some((_, i) => cc[i] > 0 || nc[i] > 0);
+function StatChart({ title, buckets, values, fmt }) {
+  const maxVal = Math.max(...values, 0.001);
+  const hasData = values.some(v => v > 0);
   if (!hasData) return null;
+  const format = fmt || (v => Number.isInteger(v) ? v : v.toFixed(2));
   return React.createElement("div", { className: "stat-card" },
     React.createElement("div", { className: "stat-card-title" }, title),
-    React.createElement("div", { className: "stat-legend" },
-      React.createElement("div", { className: "stat-legend-item" },
-        React.createElement("div", { className: "stat-legend-dot stat-legend-dot-c" }), "Catches"
-      ),
-      totalNC > 0 && React.createElement("div", { className: "stat-legend-item" },
-        React.createElement("div", { className: "stat-legend-dot stat-legend-dot-nc" }), "No-catch sessions"
-      )
-    ),
-    buckets.map((lbl, i) => {
-      if (cc[i] === 0 && nc[i] === 0) return null;
-      const cPct = totalC > 0 ? Math.round(cc[i] / totalC * 100) : 0;
-      const ncPct = totalNC > 0 ? Math.round(nc[i] / totalNC * 100) : 0;
+    buckets.map(function(lbl, i) {
+      if (values[i] <= 0) return null;
+      var pct = Math.round(values[i] / maxVal * 100);
       return React.createElement("div", { key: lbl, className: "stat-row" },
         React.createElement("div", { className: "stat-lbl" }, lbl),
         React.createElement("div", { className: "stat-bars" },
           React.createElement("div", { className: "stat-bar-line" },
             React.createElement("div", { className: "stat-track" },
-              React.createElement("div", { className: "stat-fill-c", style: { width: cPct + "%" } })
+              React.createElement("div", { className: "stat-fill-c", style: { width: pct + "%" } })
             ),
-            React.createElement("div", { className: "stat-ct" }, cc[i] || "")
-          ),
-          totalNC > 0 && React.createElement("div", { className: "stat-bar-line" },
-            React.createElement("div", { className: "stat-track" },
-              React.createElement("div", { className: "stat-fill-nc", style: { width: ncPct + "%" } })
-            ),
-            React.createElement("div", { className: "stat-ct" }, nc[i] > 0 ? nc[i] : "")
+            React.createElement("div", { className: "stat-ct" }, format(values[i]))
           )
         )
       );
@@ -2393,14 +2375,34 @@ function StatChart({ title, buckets, cc, nc }) {
 }
 
 function Analytics({ catches, spots, trips }) {
-  // Sessions that ended with 0 catches
-  const noCatchTripIds = new Set(
-    trips.filter(t => t.endTime && !catches.some(c => c.tripId === t.id)).map(t => t.id)
-  );
-  const ncSpots = spots.filter(s => noCatchTripIds.has(s.tripId));
+  var useState = React.useState;
+  var speciesState = useState("all");
+  var speciesFilter = speciesState[0], setSpeciesFilter = speciesState[1];
+  var yearState = useState("all");
+  var yearFilter = yearState[0], setYearFilter = yearState[1];
 
-  const timeBucket = ts => {
-    const h = new Date(ts).getHours();
+  // All unique years from completed trips
+  var allYears = Array.from(new Set(
+    trips.filter(function(t) { return t.endTime; })
+      .map(function(t) { return new Date(t.startTime).getFullYear(); })
+  )).sort().reverse();
+
+  // All unique species from catches
+  var allSpecies = Array.from(new Set(catches.map(function(c) { return c.species; }).filter(Boolean))).sort();
+
+  // Year-filtered data
+  var yTrips = yearFilter === "all" ? trips : trips.filter(function(t) {
+    return new Date(t.startTime).getFullYear() === parseInt(yearFilter);
+  });
+  var yCatches = yearFilter === "all" ? catches : catches.filter(function(c) {
+    return new Date(c.timestamp).getFullYear() === parseInt(yearFilter);
+  });
+
+  // Species-filtered catches (on top of year filter)
+  var fc = speciesFilter === "all" ? yCatches : yCatches.filter(function(c) { return c.species === speciesFilter; });
+
+  // ── Bucketing helpers ──
+  var hourBucket = function(h) {
     if (h >= 4 && h < 7)  return "Dawn";
     if (h >= 7 && h < 11) return "Morning";
     if (h >= 11 && h < 14) return "Midday";
@@ -2408,25 +2410,26 @@ function Analytics({ catches, spots, trips }) {
     if (h >= 17 && h < 20) return "Evening";
     return "Night";
   };
-  const tideBucket = val => {
+  var timeBucket = function(ts) { return hourBucket(new Date(ts).getHours()); };
+  var tideBucket = function(val) {
     if (val == null) return null;
-    const p = tidePct(val);
+    var p = tidePct(val);
     if (p < 20) return "Very Low";
     if (p < 40) return "Low";
     if (p < 60) return "Medium";
     if (p < 80) return "High";
     return "Very High";
   };
-  const pressBucket = p => {
+  var pressBucket = function(p) {
     if (p == null) return null;
     if (p < 1000) return "<1000";
     if (p < 1010) return "1000–1010";
     if (p < 1020) return "1010–1020";
     return ">1020";
   };
-  const moonBucket = m => {
+  var moonBucket = function(m) {
     if (!m) return null;
-    const s = String(m);
+    var s = String(m);
     if (s.includes("New"))             return "🌑 New";
     if (s.includes("Waxing Crescent")) return "🌒 Wax.Cres.";
     if (s.includes("First Quarter"))   return "🌓 First Q.";
@@ -2437,117 +2440,211 @@ function Analytics({ catches, spots, trips }) {
     if (s.includes("Waning Crescent")) return "🌘 Wan.Cres.";
     return null;
   };
-  const tempBucket = t => {
+  var tempBucket = function(t) {
     if (t == null) return null;
-    const v = parseFloat(t);
+    var v = parseFloat(t);
     if (isNaN(v)) return null;
-    const lo = Math.floor(v / 2) * 2;
-    return `${lo}–${lo + 2}°C`;
+    var lo = Math.floor(v / 2) * 2;
+    return lo + "–" + (lo + 2) + "\xB0C";
   };
-  const buildCounts = (items, fn, buckets) => {
-    const counts = Object.fromEntries(buckets.map(b => [b, 0]));
-    items.forEach(item => { const b = fn(item); if (b != null && b in counts) counts[b]++; });
-    return buckets.map(b => counts[b]);
+  var buildCounts = function(items, fn, buckets) {
+    var counts = {};
+    buckets.forEach(function(b) { counts[b] = 0; });
+    items.forEach(function(item) { var b = fn(item); if (b != null && b in counts) counts[b]++; });
+    return buckets.map(function(b) { return counts[b]; });
   };
 
-  const timeBuckets  = ["Dawn", "Morning", "Midday", "Afternoon", "Evening", "Night"];
-  const tideBuckets  = ["Very Low", "Low", "Medium", "High", "Very High"];
-  const pressBuckets = ["<1000", "1000–1010", "1010–1020", ">1020"];
-  const moonBuckets  = ["🌑 New", "🌒 Wax.Cres.", "🌓 First Q.", "🌔 Wax.Gib.", "🌕 Full", "🌖 Wan.Gib.", "🌗 Last Q.", "🌘 Wan.Cres."];
+  // ── Bucket definitions ──
+  var timeBuckets  = ["Dawn", "Morning", "Midday", "Afternoon", "Evening", "Night"];
+  var tideBuckets  = ["Very Low", "Low", "Medium", "High", "Very High"];
+  var pressBuckets = ["<1000", "1000–1010", "1010–1020", ">1020"];
+  var moonBuckets  = ["🌑 New", "🌒 Wax.Cres.", "🌓 First Q.", "🌔 Wax.Gib.", "🌕 Full", "🌖 Wan.Gib.", "🌗 Last Q.", "🌘 Wan.Cres."];
 
-  const getWT = c => { const t = c.waterTemp ?? spots.find(s => s.id === c.spotId)?.waterTemp; return t; };
-  const allTemps = [...catches.map(getWT), ...ncSpots.map(s => s.waterTemp)]
-    .filter(t => t != null).map(t => parseFloat(t)).filter(t => !isNaN(t));
-  const tempBucketsAll = (() => {
+  var getWT = function(c) { return c.waterTemp != null ? c.waterTemp : (spots.find(function(s) { return s.id === c.spotId; }) || {}).waterTemp || null; };
+
+  // ── Water temp buckets (from all year-filtered data) ──
+  var allTemps = fc.map(getWT).concat(
+    spots.filter(function(s) { return yTrips.some(function(t) { return t.id === s.tripId; }); })
+      .map(function(s) { return s.waterTemp; })
+  ).filter(function(t) { return t != null; }).map(function(t) { return parseFloat(t); }).filter(function(t) { return !isNaN(t); });
+  var tempBucketsAll = (function() {
     if (!allTemps.length) return [];
-    const lo = Math.floor(Math.min(...allTemps) / 2) * 2;
-    const hi = Math.floor(Math.max(...allTemps) / 2) * 2 + 2;
-    const out = [];
-    for (let t = lo; t <= hi; t += 2) out.push(`${t}–${t + 2}°C`);
+    var lo = Math.floor(Math.min.apply(null, allTemps) / 2) * 2;
+    var hi = Math.floor(Math.max.apply(null, allTemps) / 2) * 2 + 2;
+    var out = [];
+    for (var t = lo; t <= hi; t += 2) out.push(t + "–" + (t + 2) + "\xB0C");
     return out;
   })();
 
-  const cTime  = buildCounts(catches,  c => timeBucket(c.timestamp),        timeBuckets);
-  const ncTime = buildCounts(ncSpots,  s => timeBucket(s.timestamp),        timeBuckets);
-  const cTide  = buildCounts(catches,  c => tideBucket(c.tide?.seasonal),   tideBuckets);
-  const ncTide = buildCounts(ncSpots,  s => tideBucket(s.tide?.seasonal),   tideBuckets);
-  const cPress  = buildCounts(catches, c => pressBucket(c.weather?.pressure), pressBuckets);
-  const ncPress = buildCounts(ncSpots, s => pressBucket(s.weather?.pressure), pressBuckets);
-  const cMoon  = buildCounts(catches,  c => moonBucket(c.weather?.moon),    moonBuckets);
-  const ncMoon = buildCounts(ncSpots,  s => moonBucket(s.weather?.moon),    moonBuckets);
-  const cTemp  = buildCounts(catches,  c => tempBucket(getWT(c)),           tempBucketsAll);
-  const ncTemp = buildCounts(ncSpots,  s => tempBucket(s.waterTemp),        tempBucketsAll);
+  // ── Raw catch counts (Tide) ──
+  var cTide  = buildCounts(fc, function(c) { return tideBucket(c.tide ? c.tide.seasonal : null); },     tideBuckets);
 
-  // Species breakdown
-  const speciesMap = {};
-  catches.forEach(c => {
-    if (!c.species) return;
-    if (!speciesMap[c.species]) speciesMap[c.species] = { count: 0, sizes: [] };
-    speciesMap[c.species].count++;
-    const sz = c.size ? parseFloat(c.size) : NaN;
-    if (!isNaN(sz)) speciesMap[c.species].sizes.push(sz);
+  // ── Time of Day — catches per hour ──
+  var timeHours = {};
+  timeBuckets.forEach(function(b) { timeHours[b] = 0; });
+  yTrips.filter(function(t) { return t.endTime; }).forEach(function(t) {
+    var s = new Date(t.startTime).getTime();
+    var e = new Date(t.endTime).getTime();
+    var step = 900000;
+    for (var ms = s; ms < e; ms += step) {
+      var chunk = Math.min(step, e - ms) / 3600000;
+      timeHours[hourBucket(new Date(ms).getHours())] += chunk;
+    }
   });
-  const speciesArr = Object.entries(speciesMap).sort((a, b) => b[1].count - a[1].count);
+  var cTimeCounts = buildCounts(fc, function(c) { return timeBucket(c.timestamp); }, timeBuckets);
+  var timeRates = timeBuckets.map(function(b, i) {
+    return timeHours[b] > 0 ? cTimeCounts[i] / timeHours[b] : 0;
+  });
 
-  // KPIs
-  const totalCatches   = catches.length;
-  const totalSessions  = trips.filter(t => t.endTime).length;
-  const hitSessions    = trips.filter(t => t.endTime && catches.some(c => c.tripId === t.id)).length;
-  const hitRate        = totalSessions > 0 ? Math.round(hitSessions / totalSessions * 100) : 0;
-  const bestCatch      = catches.reduce((best, c) => {
-    const sz = parseFloat(c.size);
-    return !isNaN(sz) && sz > (best.sz || 0) ? { c, sz } : best;
+  // ── Water Temp — catches per hour (temp assumed constant per spot) ──
+  var tempHours = {};
+  tempBucketsAll.forEach(function(b) { tempHours[b] = 0; });
+  yTrips.filter(function(t) { return t.endTime; }).forEach(function(t) {
+    var tripSpots = spots.filter(function(s) { return s.tripId === t.id; })
+      .sort(function(a, b) { return new Date(a.timestamp) - new Date(b.timestamp); });
+    var tripEnd = new Date(t.endTime).getTime();
+    tripSpots.forEach(function(s, idx) {
+      var start = new Date(s.timestamp).getTime();
+      var end = idx < tripSpots.length - 1 ? new Date(tripSpots[idx + 1].timestamp).getTime() : tripEnd;
+      var hours = Math.max(0, (end - start) / 3600000);
+      var b = tempBucket(s.waterTemp);
+      if (b && b in tempHours) tempHours[b] += hours;
+    });
+  });
+  var cTempCounts = buildCounts(fc, function(c) { return tempBucket(getWT(c)); }, tempBucketsAll);
+  var tempRates = tempBucketsAll.map(function(b, i) {
+    return tempHours[b] > 0 ? cTempCounts[i] / tempHours[b] : 0;
+  });
+
+  // ── Moon Phase — catches per hour (moon assumed constant per spot) ──
+  var moonHours = {};
+  moonBuckets.forEach(function(b) { moonHours[b] = 0; });
+  yTrips.filter(function(t) { return t.endTime; }).forEach(function(t) {
+    var tripSpots = spots.filter(function(s) { return s.tripId === t.id; })
+      .sort(function(a, b) { return new Date(a.timestamp) - new Date(b.timestamp); });
+    var tripEnd = new Date(t.endTime).getTime();
+    tripSpots.forEach(function(s, idx) {
+      var start = new Date(s.timestamp).getTime();
+      var end = idx < tripSpots.length - 1 ? new Date(tripSpots[idx + 1].timestamp).getTime() : tripEnd;
+      var hours = Math.max(0, (end - start) / 3600000);
+      var b = moonBucket(s.weather ? s.weather.moon : null);
+      if (b && b in moonHours) moonHours[b] += hours;
+    });
+  });
+  var cMoonCounts = buildCounts(fc, function(c) { return moonBucket(c.weather ? c.weather.moon : null); }, moonBuckets);
+  var moonRates = moonBuckets.map(function(b, i) {
+    return moonHours[b] > 0 ? cMoonCounts[i] / moonHours[b] : 0;
+  });
+
+  // ── Air Pressure — catches per hour (pressure assumed constant per spot) ──
+  var pressHours = {};
+  pressBuckets.forEach(function(b) { pressHours[b] = 0; });
+  yTrips.filter(function(t) { return t.endTime; }).forEach(function(t) {
+    var tripSpots = spots.filter(function(s) { return s.tripId === t.id; })
+      .sort(function(a, b) { return new Date(a.timestamp) - new Date(b.timestamp); });
+    var tripEnd = new Date(t.endTime).getTime();
+    tripSpots.forEach(function(s, idx) {
+      var start = new Date(s.timestamp).getTime();
+      var end = idx < tripSpots.length - 1 ? new Date(tripSpots[idx + 1].timestamp).getTime() : tripEnd;
+      var hours = Math.max(0, (end - start) / 3600000);
+      var b = pressBucket(s.weather ? s.weather.pressure : null);
+      if (b && b in pressHours) pressHours[b] += hours;
+    });
+  });
+  var cPressCounts = buildCounts(fc, function(c) { return pressBucket(c.weather ? c.weather.pressure : null); }, pressBuckets);
+  var pressRates = pressBuckets.map(function(b, i) {
+    return pressHours[b] > 0 ? cPressCounts[i] / pressHours[b] : 0;
+  });
+
+  // ── Catch rate by method ──
+  var methodHours = {};
+  yTrips.filter(function(t) { return t.endTime; }).forEach(function(t) {
+    var dur = (new Date(t.endTime) - new Date(t.startTime)) / 3600000;
+    var tripSpots = spots.filter(function(s) { return s.tripId === t.id; });
+    var lines = tripSpots.map(function(s) { return s.lineType; }).filter(Boolean);
+    if (!lines.length) return;
+    var counts = {};
+    lines.forEach(function(lt) { counts[lt] = (counts[lt] || 0) + 1; });
+    var total = lines.length;
+    Object.keys(counts).forEach(function(lt) {
+      if (!methodHours[lt]) methodHours[lt] = 0;
+      methodHours[lt] += dur * counts[lt] / total;
+    });
+  });
+  var methodCatches = {};
+  fc.forEach(function(c) {
+    var spot = spots.find(function(s) { return s.id === c.spotId; });
+    var lt = spot ? spot.lineType : null;
+    if (!lt) return;
+    methodCatches[lt] = (methodCatches[lt] || 0) + 1;
+  });
+  var allMethods = Object.keys(methodHours).filter(function(lt) { return methodHours[lt] > 0; });
+  var methodRates = allMethods.map(function(lt) { return (methodCatches[lt] || 0) / methodHours[lt]; });
+  var methodIdx = allMethods.map(function(_, i) { return i; }).sort(function(a, b) { return methodRates[b] - methodRates[a]; });
+  var methodBuckets = methodIdx.map(function(i) { return allMethods[i]; });
+  var methodValues  = methodIdx.map(function(i) { return methodRates[i]; });
+
+  // ── KPIs ──
+  var totalCatches  = fc.length;
+  var totalSessions = yTrips.filter(function(t) { return t.endTime; }).length;
+  var hitSessions   = yTrips.filter(function(t) { return t.endTime && fc.some(function(c) { return c.tripId === t.id; }); }).length;
+  var successRate   = totalSessions > 0 ? Math.round(hitSessions / totalSessions * 100) : 0;
+  var totalHours    = yTrips.filter(function(t) { return t.endTime; }).reduce(function(sum, t) {
+    return sum + (new Date(t.endTime) - new Date(t.startTime)) / 3600000;
+  }, 0);
+  var hrsPerCatch   = totalCatches > 0 ? (totalHours / totalCatches).toFixed(1) : "—";
+  var largestFish   = fc.reduce(function(best, c) {
+    var sz = parseFloat(c.size); return !isNaN(sz) && sz > (best.sz || 0) ? { c: c, sz: sz } : best;
   }, {}).c;
 
-  if (!totalCatches && !totalSessions) {
-    return React.createElement("div", { className: "stat-empty-msg" }, "No data yet — log sessions and catches to see analytics");
+  if (!catches.length && !totalSessions) {
+    return React.createElement("div", { className: "stat-empty-msg" }, "No data yet — log sessions and catches to see insights");
   }
 
   return React.createElement("div", { className: "stat-wrap" },
+    // ── Filters ──
+    React.createElement("div", { className: "stat-filter" },
+      React.createElement("select", {
+        value: yearFilter,
+        onChange: function(e) { setYearFilter(e.target.value); }
+      },
+        React.createElement("option", { value: "all" }, "All Years"),
+        allYears.map(function(y) { return React.createElement("option", { key: y, value: String(y) }, String(y)); })
+      ),
+      allSpecies.length > 1 && React.createElement("select", {
+        value: speciesFilter,
+        onChange: function(e) { setSpeciesFilter(e.target.value); }
+      },
+        React.createElement("option", { value: "all" }, "All Species"),
+        allSpecies.map(function(sp) { return React.createElement("option", { key: sp, value: sp }, sp); })
+      )
+    ),
+    // ── KPI cards ──
     React.createElement("div", { className: "stat-summary" },
       React.createElement("div", { className: "stat-kpi" },
         React.createElement("div", { className: "stat-kpi-val" }, totalCatches),
         React.createElement("div", { className: "stat-kpi-lbl" }, "Catches")
       ),
       React.createElement("div", { className: "stat-kpi" },
-        React.createElement("div", { className: "stat-kpi-val" }, hitRate + "%"),
-        React.createElement("div", { className: "stat-kpi-lbl" }, "Hit Rate")
+        React.createElement("div", { className: "stat-kpi-val" }, successRate + "%"),
+        React.createElement("div", { className: "stat-kpi-lbl" }, "Success Rate")
       ),
       React.createElement("div", { className: "stat-kpi" },
-        React.createElement("div", { className: "stat-kpi-val" }, totalSessions),
-        React.createElement("div", { className: "stat-kpi-lbl" }, "Sessions")
+        React.createElement("div", { className: "stat-kpi-val" }, largestFish ? (largestFish.size || "—") : "—"),
+        React.createElement("div", { className: "stat-kpi-lbl" }, "Largest Fish")
       ),
       React.createElement("div", { className: "stat-kpi" },
-        React.createElement("div", { className: "stat-kpi-val" }, bestCatch?.size || "—"),
-        React.createElement("div", { className: "stat-kpi-lbl" }, "Best Catch")
+        React.createElement("div", { className: "stat-kpi-val" }, hrsPerCatch + (hrsPerCatch !== "—" ? "h" : "")),
+        React.createElement("div", { className: "stat-kpi-lbl" }, "Hrs / Catch")
       )
     ),
-    React.createElement(StatChart, { title: "Time of Day",     buckets: timeBuckets,   cc: cTime,  nc: ncTime }),
-    React.createElement(StatChart, { title: "Tide Level",      buckets: tideBuckets,   cc: cTide,  nc: ncTide }),
-    React.createElement(StatChart, { title: "Pressure (hPa)",  buckets: pressBuckets,  cc: cPress, nc: ncPress }),
-    React.createElement(StatChart, { title: "Moon Phase",      buckets: moonBuckets,   cc: cMoon,  nc: ncMoon }),
-    tempBucketsAll.length > 0 && React.createElement(StatChart, { title: "Water Temp", buckets: tempBucketsAll, cc: cTemp, nc: ncTemp }),
-    speciesArr.length > 0 && React.createElement("div", { className: "stat-card" },
-      React.createElement("div", { className: "stat-card-title" }, "Species"),
-      speciesArr.map(([sp, { count, sizes }]) => {
-        const avg = sizes.length ? Math.round(sizes.reduce((a, b) => a + b, 0) / sizes.length) : null;
-        const max = sizes.length ? Math.max(...sizes) : null;
-        return React.createElement("div", { key: sp, className: "stat-row" },
-          React.createElement("div", { className: "stat-lbl" }, sp),
-          React.createElement("div", { className: "stat-bars" },
-            React.createElement("div", { className: "stat-bar-line" },
-              React.createElement("div", { className: "stat-track" },
-                React.createElement("div", { className: "stat-fill-c", style: { width: Math.round(count / totalCatches * 100) + "%" } })
-              ),
-              React.createElement("div", { className: "stat-ct" }, count),
-              sizes.length > 0 && React.createElement("div", {
-                style: { fontSize: 10, color: "#888", marginLeft: 6, whiteSpace: "nowrap" }
-              }, "avg ", avg, " · max ", max)
-            )
-          )
-        );
-      })
-    )
+    // ── Charts (ordered: Method, Temp, Tide, Time, Pressure, Moon) ──
+    methodBuckets.length > 0 && React.createElement(StatChart, { title: "Method (catches/hr)", buckets: methodBuckets, values: methodValues, fmt: function(v) { return v.toFixed(2); } }),
+    tempBucketsAll.length > 0 && React.createElement(StatChart, { title: "Water Temp (catches/hr)", buckets: tempBucketsAll, values: tempRates, fmt: function(v) { return v.toFixed(2); } }),
+    React.createElement(StatChart, { title: "Tide Level (catch count)",  buckets: tideBuckets,  values: cTide }),
+    React.createElement(StatChart, { title: "Time of Day (catches/hr)", buckets: timeBuckets,  values: timeRates, fmt: function(v) { return v.toFixed(2); } }),
+    React.createElement(StatChart, { title: "Air Pressure (catches/hr)", buckets: pressBuckets, values: pressRates, fmt: function(v) { return v.toFixed(2); } }),
+    React.createElement(StatChart, { title: "Moon Phase (catches/hr)",  buckets: moonBuckets,  values: moonRates, fmt: function(v) { return v.toFixed(2); } })
   );
 }
 
@@ -2557,11 +2654,9 @@ function Journal({
   catches,
   observations,
   spots,
-  trips,
   onSelCatch,
   onSelObs
 }) {
-  const [jView, setJView] = React.useState("entries");
   const spotName = id => spots.find(s => s.id === id)?.name || null;
   const items = [...catches.map(c => ({
     ...c,
@@ -2570,25 +2665,18 @@ function Journal({
     ...o,
     _type: "obs"
   }))].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-  return /*#__PURE__*/React.createElement("div", {
+  if (!items.length) return /*#__PURE__*/React.createElement("div", {
     className: "log-wrap"
   }, /*#__PURE__*/React.createElement("div", {
-    className: "journal-subnav"
-  }, /*#__PURE__*/React.createElement("button", {
-    className: "jnav-btn" + (jView === "entries" ? " active" : ""),
-    onClick: () => setJView("entries")
-  }, "Entries"), /*#__PURE__*/React.createElement("button", {
-    className: "jnav-btn" + (jView === "analytics" ? " active" : ""),
-    onClick: () => setJView("analytics")
-  }, "Analytics")), jView === "analytics" ? React.createElement(Analytics, {
-    catches: catches, spots: spots, trips: trips
-  }) : !items.length ? /*#__PURE__*/React.createElement("div", {
     className: "empty-state"
   }, /*#__PURE__*/React.createElement("div", {
     className: "empty-icon"
   }, ""), /*#__PURE__*/React.createElement("div", {
     className: "empty-text"
-  }, "Nothing logged yet")) : items.map(item => item._type === "catch" ? /*#__PURE__*/React.createElement("div", {
+  }, "Nothing logged yet")));
+  return /*#__PURE__*/React.createElement("div", {
+    className: "log-wrap"
+  }, items.map(item => item._type === "catch" ? /*#__PURE__*/React.createElement("div", {
     key: item.id,
     className: "catch-card",
     onClick: () => onSelCatch(item)
@@ -2614,13 +2702,7 @@ function Journal({
     }
   }, "", item.flyPattern)), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     className: "catch-date"
-  }, fmtDT(item.timestamp)), item.gps && /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 10,
-      color: "var(--water)",
-      fontFamily: "'Source Code Pro',monospace"
-    }
-  }, formatCoords(item.gps.lat, item.gps.lon))))), /*#__PURE__*/React.createElement("div", {
+  }, fmtDT(item.timestamp))))), /*#__PURE__*/React.createElement("div", {
     className: "catch-chips"
   }, item.size && /*#__PURE__*/React.createElement("span", {
     className: "chip"
@@ -2978,7 +3060,7 @@ function CatchDetail({
     style: {
       fontSize: 11
     }
-  }, fmtDT(c.timestamp))), c.gps && /*#__PURE__*/React.createElement("div", {
+  }, fmtTime(c.timestamp))), c.gps && /*#__PURE__*/React.createElement("div", {
     className: "modal-stat"
   }, /*#__PURE__*/React.createElement("div", {
     className: "modal-stat-label"
@@ -3011,13 +3093,13 @@ function CatchDetail({
     className: "modal-stat-label"
   }, "Air Temp"), /*#__PURE__*/React.createElement("div", {
     className: "modal-stat-value"
-  }, c.weather.airTemp, "\xB0C")), c.waterTemp && /*#__PURE__*/React.createElement("div", {
+  }, c.weather.airTemp, "\xB0C")), (c.waterTemp ?? spot?.waterTemp) != null && /*#__PURE__*/React.createElement("div", {
     className: "modal-stat"
   }, /*#__PURE__*/React.createElement("div", {
     className: "modal-stat-label"
   }, "Water Temp"), /*#__PURE__*/React.createElement("div", {
     className: "modal-stat-value"
-  }, c.waterTemp, "\xB0C")), c.weather?.pressure != null && /*#__PURE__*/React.createElement("div", {
+  }, c.waterTemp ?? spot?.waterTemp, "\xB0C")), c.weather?.pressure != null && /*#__PURE__*/React.createElement("div", {
     className: "modal-stat"
   }, /*#__PURE__*/React.createElement("div", {
     className: "modal-stat-label"
@@ -3137,7 +3219,7 @@ function ObsDetail({
           /*#__PURE__*/React.createElement("div", { className: "modal-stat-value" }, o.estimatedSize)),
         /*#__PURE__*/React.createElement("div", { className: "modal-stat" },
           /*#__PURE__*/React.createElement("div", { className: "modal-stat-label" }, "Time"),
-          /*#__PURE__*/React.createElement("div", { className: "modal-stat-value", style: { fontSize: 11 } }, fmtDT(o.timestamp))),
+          /*#__PURE__*/React.createElement("div", { className: "modal-stat-value", style: { fontSize: 11 } }, fmtTime(o.timestamp))),
         o.gps && /*#__PURE__*/React.createElement("div", { className: "modal-stat" },
           /*#__PURE__*/React.createElement("div", { className: "modal-stat-label" }, "GPS"),
           /*#__PURE__*/React.createElement("div", { className: "modal-stat-value", style: { fontSize: 10 } }, formatCoords(o.gps.lat, o.gps.lon))),
@@ -3153,6 +3235,9 @@ function ObsDetail({
         o.weather?.airTemp != null && /*#__PURE__*/React.createElement("div", { className: "modal-stat" },
           /*#__PURE__*/React.createElement("div", { className: "modal-stat-label" }, "Air Temp"),
           /*#__PURE__*/React.createElement("div", { className: "modal-stat-value" }, o.weather.airTemp, "\xb0C")),
+        spot?.waterTemp != null && /*#__PURE__*/React.createElement("div", { className: "modal-stat" },
+          /*#__PURE__*/React.createElement("div", { className: "modal-stat-label" }, "Water Temp"),
+          /*#__PURE__*/React.createElement("div", { className: "modal-stat-value" }, spot.waterTemp, "\xb0C")),
         o.weather?.pressure != null && /*#__PURE__*/React.createElement("div", { className: "modal-stat" },
           /*#__PURE__*/React.createElement("div", { className: "modal-stat-label" }, "Pressure"),
           /*#__PURE__*/React.createElement("div", { className: "modal-stat-value" },
