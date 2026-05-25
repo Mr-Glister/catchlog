@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.0</title>
+  <title>The Catch Log v2.1</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -722,9 +722,11 @@ function compressPhoto(file, cb) {
 const FLY_LINES = ["Float", "Slow Int", "Fast Int", "Sink3", "Sink5", "Sink7"];
 const SPIN_LINES = ["Wobbler", "Sandeel", "Shad", "Softjerk"];
 const ALL_LINES = [...FLY_LINES, ...SPIN_LINES];
-const TEMP_OPTIONS = Array.from({
-  length: 23
-}, (_, i) => `${i + 3} °C`); // 3–25 °C
+const TEMP_OPTIONS = [
+  ...Array.from({length: 5}, (_, i) => `${i + 3} °C`),
+  ...Array.from({length: 21}, (_, i) => `${(8 + i * 0.5).toFixed(1).replace(/\.0$/, '')} °C`),
+  ...Array.from({length: 7}, (_, i) => `${i + 19} °C`)
+];
 const TARGET_SPECIES = ["Sea Trout", "Sea Bass", "Salmon", "Garfish", "Mackerel", "Mullet"];
 function deriveMethod(tripSpots) {
   const lines = tripSpots.map(s => s.lineType).filter(Boolean);
@@ -903,7 +905,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.0 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.1 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -1097,11 +1099,12 @@ function TripsList({
   const spotPhotoRef = useRef();
   const [timestamp] = useState(new Date().toISOString());
   const { gps, gpsStatus, weather, weatherStatus, tide, tideStatus, getGPS, reset: resetEnv } = useEnv();
+  useEffect(() => { if (showForm) getGPS(timestamp); }, [showForm]);
   const handleStart = () => {
     onStartSession({
       name: spotName.trim(),
       gps,
-      waterTemp: waterTemp ? parseInt(waterTemp) : null,
+      waterTemp: waterTemp ? parseFloat(waterTemp) : null,
       lineType,
       photo: spotPhoto,
       weather,
@@ -1165,6 +1168,15 @@ function TripsList({
     value: spotName,
     onChange: e => setSpotName(e.target.value),
     placeholder: "Upper pool, bridge beat\u2026"
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "field-row"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "field-icon"
+  }, ""), /*#__PURE__*/React.createElement("span", {
+    className: "field-label"
+  }, "Targeting"), /*#__PURE__*/React.createElement(TargetSelect, {
+    value: targetSpecies,
+    onChange: setTargetSpecies
   })), /*#__PURE__*/React.createElement("div", {
     className: "field-row"
   }, /*#__PURE__*/React.createElement("span", {
@@ -1328,25 +1340,6 @@ function TripsList({
   }, "Get GPS fix to auto-load air temp, pressure, wind & tide"), tideStatus === "ok" && /*#__PURE__*/React.createElement("div", {
     className: "info-note"
   }, "Tide \xA9 Kartverket/NMA (CC BY 4.0)"), /*#__PURE__*/React.createElement("div", {
-    className: "field-group-title",
-    style: {
-      background: "#444"
-    }
-  }, "Session Context ", /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontWeight: 400,
-      opacity: .5
-    }
-  }, "\xB7 optional")), /*#__PURE__*/React.createElement("div", {
-    className: "field-row"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "field-icon"
-  }, ""), /*#__PURE__*/React.createElement("span", {
-    className: "field-label opt"
-  }, "Targeting"), /*#__PURE__*/React.createElement(TargetSelect, {
-    value: targetSpecies,
-    onChange: setTargetSpecies
-  })), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex"
     }
@@ -1509,6 +1502,7 @@ function LogTab({
     activeSpot: activeSpot,
     onSave: onAddObs
   }), mode === "spot" && /*#__PURE__*/React.createElement(AddSpotForm, {
+    key: spots.length,
     activeTrip: activeTrip,
     onSave: onAddSpot,
     spots: spots
@@ -1534,6 +1528,7 @@ function AddSpotForm({
   const photoRef = useRef();
   const [timestamp] = useState(new Date().toISOString());
   const { gps, gpsStatus, weather, weatherStatus, tide, tideStatus, getGPS, reset: resetEnv } = useEnv();
+  useEffect(() => { getGPS(timestamp); }, []);
   const handleSave = () => {
     onSave({
       id: `s_${Date.now()}`,
@@ -1541,7 +1536,7 @@ function AddSpotForm({
       name: name.trim(),
       timestamp,
       gps,
-      waterTemp: waterTemp ? parseInt(waterTemp) : null,
+      waterTemp: waterTemp ? parseFloat(waterTemp) : null,
       lineType,
       photo,
       weather,
@@ -1815,7 +1810,7 @@ function CatchForm({
       species: species.trim(),
       flyPattern: flyPattern.trim(),
       size: size.trim(),
-      waterTemp: waterTemp ? parseInt(waterTemp) : null,
+      waterTemp: waterTemp ? parseFloat(waterTemp) : null,
       notes: notes.trim(),
       fishPhoto,
       flyPhoto,
@@ -1885,16 +1880,16 @@ function CatchForm({
     onChange: setSpecies
   })), [{
     icon: "",
-    label: "Fly Pattern",
-    val: flyPattern,
-    set: setFlyPattern,
-    ph: "Elk Hair Caddis #14…"
-  }, {
-    icon: "",
     label: "Size",
     val: size,
     set: setSize,
     ph: "42 cm / 16 in"
+  }, {
+    icon: "",
+    label: activeSpot?.lineType && SPIN_LINES.includes(activeSpot.lineType) ? "Lure" : "Fly Pattern",
+    val: flyPattern,
+    set: setFlyPattern,
+    ph: activeSpot?.lineType && SPIN_LINES.includes(activeSpot.lineType) ? "Wobbler, shad…" : "Elk Hair Caddis #14…"
   }].map(f => /*#__PURE__*/React.createElement("div", {
     key: f.label,
     className: "field-row"
