@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.6</title>
+  <title>The Catch Log v2.7</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -327,21 +327,21 @@ const css = `
   /* Insights */
   .stat-wrap { padding: 16px; display: flex; flex-direction: column; gap: 16px; }
   .stat-summary { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-  .stat-kpi { background: rgba(255,255,255,.04); border-radius: 4px; padding: 12px; text-align: center; }
+  .stat-kpi { background: var(--paper-2); border: 1px solid rgba(0,0,0,.06); border-radius: 4px; padding: 12px; text-align: center; }
   .stat-kpi-val { font-size: 24px; font-weight: 700; color: var(--moss); font-family: 'Source Code Pro', monospace; }
-  .stat-kpi-lbl { font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; color: #888; margin-top: 2px; }
-  .stat-card { background: rgba(255,255,255,.04); border-radius: 4px; padding: 12px; }
-  .stat-card-title { font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; color: #aaa; margin-bottom: 10px; font-weight: 600; }
+  .stat-kpi-lbl { font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--text-2); margin-top: 2px; }
+  .stat-card { background: var(--paper-2); border: 1px solid rgba(0,0,0,.06); border-radius: 4px; padding: 12px; }
+  .stat-card-title { font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--text-2); margin-bottom: 10px; font-weight: 600; }
   .stat-row { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
-  .stat-lbl { font-size: 11px; color: #ccc; width: 80px; flex-shrink: 0; text-align: right; line-height: 1.2; }
+  .stat-lbl { font-size: 11px; color: var(--text); width: 80px; flex-shrink: 0; text-align: right; line-height: 1.2; }
   .stat-bars { flex: 1; display: flex; flex-direction: column; gap: 3px; }
   .stat-bar-line { display: flex; align-items: center; gap: 5px; }
-  .stat-track { flex: 1; height: 7px; background: rgba(255,255,255,.08); border-radius: 3px; overflow: hidden; }
+  .stat-track { flex: 1; height: 7px; background: rgba(0,0,0,.07); border-radius: 3px; overflow: hidden; }
   .stat-fill-c { height: 100%; background: var(--moss); border-radius: 3px; transition: width .3s; }
-  .stat-ct { font-size: 10px; color: #888; width: 32px; text-align: right; font-family: 'Source Code Pro', monospace; flex-shrink: 0; }
+  .stat-ct { font-size: 10px; color: var(--text-2); width: 32px; text-align: right; font-family: 'Source Code Pro', monospace; flex-shrink: 0; }
   .stat-filter { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  .stat-filter select { flex: 1; min-width: 0; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.12); color: #ccc; padding: 7px 10px; border-radius: 3px; font-size: 11px; letter-spacing: .5px; }
-  .stat-empty-msg { color: #666; font-size: 12px; text-align: center; padding: 32px 16px; }
+  .stat-filter select { flex: 1; min-width: 0; background: var(--paper-2); border: 1px solid rgba(0,0,0,.12); color: var(--text); padding: 7px 10px; border-radius: 3px; font-size: 11px; letter-spacing: .5px; }
+  .stat-empty-msg { color: var(--text-3); font-size: 12px; text-align: center; padding: 32px 16px; }
 
   /* Toast */
   .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--paper); padding: 11px 22px; border-radius: 3px; font-size: 11px; letter-spacing: 1.5px; z-index: 999; text-transform: uppercase; animation: fadeup .25s ease; font-weight: 600; }
@@ -852,6 +852,7 @@ function FishLog() {
   };
   const updTrip = t => mutTrips(p => p.map(x => x.id === t.id ? t : x));
   const delTrip = id => {
+    if (!confirm("Delete this session and all its data?")) return;
     mutTrips(p => p.filter(t => t.id !== id));
     setSelTrip(null);
     showToast("Trip deleted");
@@ -871,6 +872,7 @@ function FishLog() {
     setShowQuickAction(true);
   };
   const delCatch = id => {
+    if (!confirm("Delete this catch?")) return;
     mutCatches(p => p.filter(c => c.id !== id));
     setSelCatch(null);
     showToast("Catch deleted");
@@ -886,6 +888,7 @@ function FishLog() {
     setShowQuickAction(true);
   };
   const delObs = id => {
+    if (!confirm("Delete this observation?")) return;
     mutObs(p => p.filter(o => o.id !== id));
     setSelObs(null);
     showToast("Observation deleted");
@@ -932,7 +935,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.6 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.7 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -2461,6 +2464,18 @@ function Analytics({ catches, spots, trips }) {
   var moonBuckets  = ["🌑 New", "🌒 Wax.Cres.", "🌓 First Q.", "🌔 Wax.Gib.", "🌕 Full", "🌖 Wan.Gib.", "🌗 Last Q.", "🌘 Wan.Cres."];
 
   var getWT = function(c) { return c.waterTemp != null ? c.waterTemp : (spots.find(function(s) { return s.id === c.spotId; }) || {}).waterTemp || null; };
+  var getPress = function(c) {
+    var p = c.weather ? c.weather.pressure : null;
+    if (p != null) return p;
+    var spot = spots.find(function(s) { return s.id === c.spotId; });
+    return spot && spot.weather ? spot.weather.pressure : null;
+  };
+  var getMoon = function(c) {
+    var m = c.weather ? c.weather.moon : null;
+    if (m) return m;
+    var spot = spots.find(function(s) { return s.id === c.spotId; });
+    return spot && spot.weather ? spot.weather.moon : null;
+  };
 
   // ── Water temp buckets (from all year-filtered data) ──
   var allTemps = fc.map(getWT).concat(
@@ -2516,42 +2531,73 @@ function Analytics({ catches, spots, trips }) {
     return tempHours[b] > 0 ? cTempCounts[i] / tempHours[b] : 0;
   });
 
-  // ── Moon Phase — catches per hour (moon assumed constant per spot) ──
+  // ── Helper: get representative weather for a trip (from catches or spots) ──
+  var getTripWeather = function(t) {
+    var c = yCatches.find(function(c) { return c.tripId === t.id && c.weather; });
+    if (c) return c.weather;
+    var s = spots.find(function(s) { return s.tripId === t.id && s.weather; });
+    return s ? s.weather : null;
+  };
+
+  // ── Moon Phase — catches per hour ──
+  // Use spot-level weather when available (more accurate for long sessions),
+  // fall back to trip-level weather for older data where spots lack weather
   var moonHours = {};
   moonBuckets.forEach(function(b) { moonHours[b] = 0; });
   yTrips.filter(function(t) { return t.endTime; }).forEach(function(t) {
     var tripSpots = spots.filter(function(s) { return s.tripId === t.id; })
       .sort(function(a, b) { return new Date(a.timestamp) - new Date(b.timestamp); });
     var tripEnd = new Date(t.endTime).getTime();
-    tripSpots.forEach(function(s, idx) {
-      var start = new Date(s.timestamp).getTime();
-      var end = idx < tripSpots.length - 1 ? new Date(tripSpots[idx + 1].timestamp).getTime() : tripEnd;
-      var hours = Math.max(0, (end - start) / 3600000);
-      var b = moonBucket(s.weather ? s.weather.moon : null);
-      if (b && b in moonHours) moonHours[b] += hours;
-    });
+    var spotsHaveWeather = tripSpots.some(function(s) { return s.weather && s.weather.moon; });
+    if (spotsHaveWeather) {
+      // Spot-level: attribute each spot's duration to its moon phase
+      tripSpots.forEach(function(s, idx) {
+        var start = new Date(s.timestamp).getTime();
+        var end = idx < tripSpots.length - 1 ? new Date(tripSpots[idx + 1].timestamp).getTime() : tripEnd;
+        var hours = Math.max(0, (end - start) / 3600000);
+        var b = moonBucket(s.weather ? s.weather.moon : null);
+        if (b && b in moonHours) moonHours[b] += hours;
+      });
+    } else {
+      // Trip-level fallback: use weather from catches
+      var dur = (new Date(t.endTime) - new Date(t.startTime)) / 3600000;
+      var w = getTripWeather(t);
+      var b = moonBucket(w ? w.moon : null);
+      if (b && b in moonHours) moonHours[b] += dur;
+    }
   });
-  var cMoonCounts = buildCounts(fc, function(c) { return moonBucket(c.weather ? c.weather.moon : null); }, moonBuckets);
+  var cMoonCounts = buildCounts(fc, function(c) { return moonBucket(getMoon(c)); }, moonBuckets);
   var moonRates = moonBuckets.map(function(b, i) {
     return moonHours[b] > 0 ? cMoonCounts[i] / moonHours[b] : 0;
   });
 
-  // ── Air Pressure — catches per hour (pressure assumed constant per spot) ──
+  // ── Air Pressure — catches per hour ──
+  // Same hybrid approach: spot-level when available, trip-level fallback
   var pressHours = {};
   pressBuckets.forEach(function(b) { pressHours[b] = 0; });
   yTrips.filter(function(t) { return t.endTime; }).forEach(function(t) {
     var tripSpots = spots.filter(function(s) { return s.tripId === t.id; })
       .sort(function(a, b) { return new Date(a.timestamp) - new Date(b.timestamp); });
     var tripEnd = new Date(t.endTime).getTime();
-    tripSpots.forEach(function(s, idx) {
-      var start = new Date(s.timestamp).getTime();
-      var end = idx < tripSpots.length - 1 ? new Date(tripSpots[idx + 1].timestamp).getTime() : tripEnd;
-      var hours = Math.max(0, (end - start) / 3600000);
-      var b = pressBucket(s.weather ? s.weather.pressure : null);
-      if (b && b in pressHours) pressHours[b] += hours;
-    });
+    var spotsHaveWeather = tripSpots.some(function(s) { return s.weather && s.weather.pressure != null; });
+    if (spotsHaveWeather) {
+      // Spot-level: attribute each spot's duration to its pressure bucket
+      tripSpots.forEach(function(s, idx) {
+        var start = new Date(s.timestamp).getTime();
+        var end = idx < tripSpots.length - 1 ? new Date(tripSpots[idx + 1].timestamp).getTime() : tripEnd;
+        var hours = Math.max(0, (end - start) / 3600000);
+        var b = pressBucket(s.weather ? s.weather.pressure : null);
+        if (b && b in pressHours) pressHours[b] += hours;
+      });
+    } else {
+      // Trip-level fallback: use weather from catches
+      var dur = (new Date(t.endTime) - new Date(t.startTime)) / 3600000;
+      var w = getTripWeather(t);
+      var b = pressBucket(w ? w.pressure : null);
+      if (b && b in pressHours) pressHours[b] += dur;
+    }
   });
-  var cPressCounts = buildCounts(fc, function(c) { return pressBucket(c.weather ? c.weather.pressure : null); }, pressBuckets);
+  var cPressCounts = buildCounts(fc, function(c) { return pressBucket(getPress(c)); }, pressBuckets);
   var pressRates = pressBuckets.map(function(b, i) {
     return pressHours[b] > 0 ? cPressCounts[i] / pressHours[b] : 0;
   });
