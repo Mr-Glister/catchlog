@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v1.7</title>
+  <title>The Catch Log v1.8</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -467,7 +467,7 @@ function useEnv() {
     try {
       // Fetch current conditions + last 3 hours of pressure for trend
       const [rCurrent, rHistory] = await Promise.all([
-        fetch(`https://api.open-meteo.com/v1/forecast?latitude=${la}&longitude=${lo}&current=temperature_2m,surface_pressure,wind_speed_10m,wind_direction_10m&timezone=auto&forecast_days=1`),
+        fetch(`https://api.open-meteo.com/v1/forecast?latitude=${la}&longitude=${lo}&current=temperature_2m,surface_pressure,wind_speed_10m,wind_direction_10m&wind_speed_unit=ms&timezone=auto&forecast_days=1`),
         fetch(`https://api.open-meteo.com/v1/forecast?latitude=${la}&longitude=${lo}&hourly=surface_pressure&timezone=auto&past_hours=3&forecast_days=0`)
       ]);
       const d = await rCurrent.json();
@@ -867,7 +867,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v1.7 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v1.8 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
