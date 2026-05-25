@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.2</title>
+  <title>The Catch Log v2.4</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -316,6 +316,13 @@ const css = `
     cursor: pointer; margin-top: 20px; font-family: 'Inter', sans-serif;
     padding: 12px; font-weight: 500; }
   .qa-dismiss:active { color: rgba(255,255,255,.6); }
+
+  /* Conditions modal */
+  .cond-backdrop { position: fixed; inset: 0; z-index: 200; background: rgba(0,0,0,.55); display: flex; align-items: flex-start; justify-content: center; padding: 56px 16px 16px; }
+  .cond-card { background: var(--ink); border-radius: 6px; width: 100%; max-width: 440px; max-height: 80vh; overflow-y: auto; color: var(--paper); }
+  .cond-header { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px 10px; border-bottom: 1px solid rgba(255,255,255,.08); }
+  .cond-title { font-size: 11px; letter-spacing: 2px; text-transform: uppercase; font-weight: 600; color: var(--moss); }
+  .cond-close { background: none; border: none; color: #aaa; font-size: 20px; cursor: pointer; padding: 0; line-height: 1; }
 
   /* Toast */
   .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--paper); padding: 11px 22px; border-radius: 3px; font-size: 11px; letter-spacing: 1.5px; z-index: 999; text-transform: uppercase; animation: fadeup .25s ease; font-weight: 600; }
@@ -768,6 +775,7 @@ function FishLog() {
   const [toast, setToast] = useState(null);
   const toastRef = useRef(null);
   const [showQuickAction, setShowQuickAction] = useState(() => trips.some(t => !t.endTime));
+  const [showConditions, setShowConditions] = useState(false);
   const activeTrip = trips.find(t => !t.endTime) || null;
   const activeSpot = activeTrip ? [...spots].filter(s => s.tripId === activeTrip.id).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0] || null : null;
   const showToast = msg => {
@@ -905,20 +913,20 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.2 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.4 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
-    onClick: () => setTab("trips")
+    onClick: () => { setTab("trips"); if (activeTrip) setShowQuickAction(true); }
   }, "Sessions"), /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "log" ? " active" : ""}`,
     onClick: () => setTab("log")
   }, "Log"), /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "journal" ? " active" : ""}`,
-    onClick: () => setTab("journal")
+    onClick: () => { setTab("journal"); if (activeTrip) setShowQuickAction(true); }
   }, "Journal"), /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "export" ? " active" : ""}`,
-    onClick: () => setTab("export")
+    onClick: () => { setTab("export"); if (activeTrip) setShowQuickAction(true); }
   }, "Export"))), activeTrip && /*#__PURE__*/React.createElement("div", {
     className: "active-banner"
   }, /*#__PURE__*/React.createElement("div", {
@@ -936,7 +944,9 @@ function FishLog() {
     tripObs: tripObs,
     activeTrip: activeTrip,
     onSelect: setSelTrip,
-    onStartSession: startSession
+    onStartSession: startSession,
+    showConditions: showConditions,
+    setShowConditions: setShowConditions
   }), tab === "log" && /*#__PURE__*/React.createElement(LogTab, {
     activeTrip: activeTrip,
     activeSpot: activeSpot,
@@ -1005,12 +1015,17 @@ function FishLog() {
     className: "qa-btn",
     onClick: () => { setShowQuickAction(false); setLogMode("obs"); setTab("log"); }
   }, "Observation"), /*#__PURE__*/React.createElement("button", {
+    className: "qa-btn",
+    onClick: () => setShowConditions(true)
+  }, "Live Conditions"), /*#__PURE__*/React.createElement("button", {
     className: "qa-btn end",
     onClick: endTrip
   }, "End Session"), /*#__PURE__*/React.createElement("button", {
     className: "qa-dismiss",
     onClick: () => setShowQuickAction(false)
-  }, "View tabs")), toast && /*#__PURE__*/React.createElement("div", {
+  }, "View tabs")), showConditions && /*#__PURE__*/React.createElement(ConditionsModal, {
+    onClose: () => setShowConditions(false)
+  }), toast && /*#__PURE__*/React.createElement("div", {
     className: "toast"
   }, toast)));
 }
@@ -1069,6 +1084,128 @@ function SpeciesSelect({
     value: s
   }, s))));
 }
+function ConditionsModal({ onClose }) {
+  const [ts] = useState(new Date().toISOString());
+  const { gps, gpsStatus, weather, tide, tideStatus, getGPS, reset } = useEnv();
+  useEffect(() => { getGPS(ts); }, []);
+  return /*#__PURE__*/React.createElement("div", {
+    className: "cond-backdrop",
+    onClick: () => { reset(); onClose(); }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "cond-card",
+    onClick: e => e.stopPropagation()
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "cond-header"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "cond-title"
+  }, "Live Conditions"), /*#__PURE__*/React.createElement("button", {
+    className: "cond-close",
+    onClick: () => { reset(); onClose(); }
+  }, "\xD7")), /*#__PURE__*/React.createElement("div", {
+    className: "field-group",
+    style: {borderRadius: 0, margin: 0}
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "field-row"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "field-icon"
+  }, ""), /*#__PURE__*/React.createElement("span", {
+    className: "field-label"
+  }, "GPS"), gpsStatus === "idle" && /*#__PURE__*/React.createElement("button", {
+    className: "gps-btn",
+    onClick: () => getGPS(ts)
+  }, "Get GPS"), gpsStatus === "loading" && /*#__PURE__*/React.createElement("span", {
+    className: "status-badge status-loading"
+  }, "Acquiring…"), gpsStatus === "error" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
+    className: "status-badge status-error"
+  }, "Failed"), /*#__PURE__*/React.createElement("button", {
+    className: "gps-btn",
+    style: {marginLeft: 6},
+    onClick: () => getGPS(ts)
+  }, "Retry")), gpsStatus === "ok" && gps && /*#__PURE__*/React.createElement("span", {
+    className: "gps-coords"
+  }, formatCoords(gps.lat, gps.lon))), /*#__PURE__*/React.createElement("div", {
+    className: "field-row"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "field-icon"
+  }, "🌡️"), /*#__PURE__*/React.createElement("span", {
+    className: "field-label"
+  }, "Air Temp"), weather?.airTemp != null ? /*#__PURE__*/React.createElement("span", {
+    className: "field-value"
+  }, weather.airTemp, " \xB0C") : /*#__PURE__*/React.createElement("span", {
+    className: "field-value",
+    style: {color: "#bbb"}
+  }, "— get GPS first")), /*#__PURE__*/React.createElement("div", {
+    className: "field-row top"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "field-icon",
+    style: {marginTop: 2}
+  }, "🌊"), /*#__PURE__*/React.createElement("span", {
+    className: "field-label",
+    style: {marginTop: 2}
+  }, "Tide"), tideStatus === "idle" && /*#__PURE__*/React.createElement("span", {
+    style: {fontSize: 11, color: "#bbb"}
+  }, "— get GPS first"), tideStatus === "loading" && /*#__PURE__*/React.createElement("span", {
+    className: "status-badge status-loading"
+  }, "Loading…"), tideStatus === "error" && /*#__PURE__*/React.createElement("span", {
+    className: "status-badge status-error"
+  }, "API error"), tideStatus === "unavailable" && /*#__PURE__*/React.createElement("span", {
+    className: "status-badge status-error"
+  }, "No data"), tideStatus === "ok" && tide && /*#__PURE__*/React.createElement("div", {
+    className: "tide-bar-wrap"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "tide-value-line"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "tide-normalized"
+  }, tide.seasonal != null ? tidePct(tide.seasonal) + "%" : "—"), tide.valueCM != null && /*#__PURE__*/React.createElement("span", {
+    className: "tide-raw"
+  }, "(", tide.valueCM, " cm)"), tide.seasonal != null && /*#__PURE__*/React.createElement("span", {
+    className: "tide-hint"
+  }, tideLabel(tide.seasonal), tideArrow(tide.direction))), tide.seasonal != null && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    className: "tide-bar-track"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "tide-bar-fill",
+    style: {width: `${Math.max(0,Math.min(100,tide.seasonal*100))}%`}
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "tide-bar-labels"
+  }, /*#__PURE__*/React.createElement("span", null, "Typical Low", tide.mhwsCM != null ? ` (${tide.mlwsCM}cm)` : ""), /*#__PURE__*/React.createElement("span", null, "Typical High", tide.mhwsCM != null ? ` (${tide.mhwsCM}cm)` : ""))))), /*#__PURE__*/React.createElement("div", {
+    className: "field-row"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "field-icon"
+  }, "🔵"), /*#__PURE__*/React.createElement("span", {
+    className: "field-label"
+  }, "Pressure"), weather?.pressure != null ? /*#__PURE__*/React.createElement("span", {
+    className: "field-value"
+  }, weather.pressure, " hPa", weather.pressureLevel ? ` \xB7 ${weather.pressureLevel}` : "", weather.pressureTrend === "rising" ? " ↑" : weather.pressureTrend === "falling" ? " ↓" : "", weather.pressureLabel && weather.pressureTrend !== "steady" ? /*#__PURE__*/React.createElement("span", {
+    style: {fontSize: 10, color: "#999", fontStyle: "italic"}
+  }, ` (${weather.pressureLabel})`) : null) : /*#__PURE__*/React.createElement("span", {
+    className: "field-value",
+    style: {color: "#bbb"}
+  }, "— get GPS first")), /*#__PURE__*/React.createElement("div", {
+    className: "field-row"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "field-icon"
+  }, "💨"), /*#__PURE__*/React.createElement("span", {
+    className: "field-label"
+  }, "Wind"), weather?.windSpeed != null ? /*#__PURE__*/React.createElement("span", {
+    className: "field-value"
+  }, weather.windSpeed, " m/s", weather.windDir != null ? ` \xB7 ${windCompass(weather.windDir)} (${weather.windDir}\xB0)` : "") : /*#__PURE__*/React.createElement("span", {
+    className: "field-value",
+    style: {color: "#bbb"}
+  }, "— get GPS first")), /*#__PURE__*/React.createElement("div", {
+    className: "field-row"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "field-icon"
+  }, "🌕"), /*#__PURE__*/React.createElement("span", {
+    className: "field-label"
+  }, "Moon"), /*#__PURE__*/React.createElement("span", {
+    className: "field-value"
+  }, weather?.moon ?? getMoonPhase(new Date()))), !gps && /*#__PURE__*/React.createElement("div", {
+    className: "info-note"
+  }, "Get GPS fix to auto-load air temp, pressure, wind & tide"), tideStatus === "ok" && /*#__PURE__*/React.createElement("div", {
+    className: "info-note"
+  }, "Tide \xA9 Kartverket/NMA (CC BY 4.0)"))));
+}
+
 function TripsList({
   trips,
   tripSpots,
@@ -1076,7 +1213,9 @@ function TripsList({
   tripObs,
   activeTrip,
   onSelect,
-  onStartSession
+  onStartSession,
+  showConditions,
+  setShowConditions
 }) {
   const [showForm, setShowForm] = useState(false);
   const [spotName, setSpotName] = useState("");
@@ -1122,7 +1261,11 @@ function TripsList({
       marginTop: 0
     },
     onClick: () => setShowForm(true)
-  }, "+ Start New Session"), showForm && !activeTrip && /*#__PURE__*/React.createElement("div", {
+  }, "+ Start New Session"), !showForm && /*#__PURE__*/React.createElement("button", {
+    className: "save-btn",
+    style: {borderRadius: 6, borderTop: "none", marginTop: 8},
+    onClick: () => setShowConditions(true)
+  }, "Live Conditions"), showForm && !activeTrip && /*#__PURE__*/React.createElement("div", {
     className: "field-group"
   }, /*#__PURE__*/React.createElement("div", {
     className: "field-group-title moss"
