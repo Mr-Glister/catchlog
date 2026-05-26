@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.7</title>
+  <title>The Catch Log v2.8</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -319,10 +319,10 @@ const css = `
 
   /* Conditions modal */
   .cond-backdrop { position: fixed; inset: 0; z-index: 200; background: rgba(0,0,0,.55); display: flex; align-items: flex-start; justify-content: center; padding: 56px 16px 16px; }
-  .cond-card { background: var(--ink); border-radius: 6px; width: 100%; max-width: 440px; max-height: 80vh; overflow-y: auto; color: var(--paper); }
-  .cond-header { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px 10px; border-bottom: 1px solid rgba(255,255,255,.08); }
+  .cond-card { background: var(--paper); border-radius: 6px; width: 100%; max-width: 440px; max-height: 80vh; overflow-y: auto; color: var(--text); }
+  .cond-header { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px 10px; border-bottom: 1px solid var(--rule); background: var(--ink); border-radius: 6px 6px 0 0; }
   .cond-title { font-size: 11px; letter-spacing: 2px; text-transform: uppercase; font-weight: 600; color: var(--moss); }
-  .cond-close { background: none; border: none; color: #aaa; font-size: 20px; cursor: pointer; padding: 0; line-height: 1; }
+  .cond-close { background: none; border: none; color: var(--paper); font-size: 20px; cursor: pointer; padding: 0; line-height: 1; }
 
   /* Insights */
   .stat-wrap { padding: 16px; display: flex; flex-direction: column; gap: 16px; }
@@ -363,7 +363,7 @@ const fmtDT = iso => new Date(iso).toLocaleString("en-US", {
   hour: "2-digit",
   minute: "2-digit"
 });
-const fmtTime = iso => new Date(iso).toLocaleTimeString("en-US", {
+const fmtTime = iso => new Date(iso).toLocaleTimeString("en-GB", {
   hour: "2-digit",
   minute: "2-digit"
 });
@@ -496,12 +496,33 @@ async function fetchTideData(lat, lon, isoTs) {
     direction = wls[1].v > wls[0].v ? "rising" : "falling";
   }
   const seasonal = mhwsCM != null && mlwsCM != null ? normalizeTide(closest.v, mlwsCM, mhwsCM) : null;
+
+  // ── Next HW / LW via datatype=tab (next 14 hours) ──
+  let nextHigh = null, nextLow = null;
+  try {
+    const tabFrom = new Date(cd);
+    const tabTo   = new Date(cd.getTime() + 14 * 3600000);
+    const txtTab = await proxyFetch(`${BASE}?lat=${ls}&lon=${lo}&fromtime=${toKartverketTime(tabFrom)}&totime=${toKartverketTime(tabTo)}&datatype=tab&refcode=cd&lang=en&dst=0&tide_request=locationdata`);
+    const docTab = new DOMParser().parseFromString(txtTab, "text/xml");
+    const tabEls = [...docTab.querySelectorAll("waterlevel")].map(el => ({
+      t: new Date(el.getAttribute("time").replace("T", " ")),
+      v: parseFloat(el.getAttribute("value")),
+      flag: (el.getAttribute("flag") || "").toUpperCase()
+    })).filter(x => !isNaN(x.v) && !isNaN(x.t.getTime()) && x.t > cd);
+    nextHigh = tabEls.find(x => x.flag === "HIGH") || null;
+    nextLow  = tabEls.find(x => x.flag === "LOW") || null;
+  } catch (e) {
+    console.warn("tide tab fetch failed", e);
+  }
+
   return {
     valueCM: closest.v,
     seasonal,
     direction,
     mhwsCM,
-    mlwsCM
+    mlwsCM,
+    nextHigh,
+    nextLow
   };
 }
 
@@ -517,19 +538,26 @@ function useEnv() {
   const fetchEnv = useCallback(async (la, lo, ts) => {
     setWeatherStatus("loading");
     try {
-      // Fetch current conditions + last 3 hours of pressure for trend
+      // Fetch current conditions + last 12 hours of pressure for trend + sparkline
       const [rCurrent, rHistory] = await Promise.all([
         fetch(`https://api.open-meteo.com/v1/forecast?latitude=${la}&longitude=${lo}&current=temperature_2m,surface_pressure,wind_speed_10m,wind_direction_10m&wind_speed_unit=ms&timezone=auto&forecast_days=1`),
-        fetch(`https://api.open-meteo.com/v1/forecast?latitude=${la}&longitude=${lo}&hourly=surface_pressure&timezone=auto&past_hours=3&forecast_days=0`)
+        fetch(`https://api.open-meteo.com/v1/forecast?latitude=${la}&longitude=${lo}&hourly=surface_pressure&timezone=auto&past_hours=12&forecast_days=0`)
       ]);
       const d = await rCurrent.json();
       const dh = await rHistory.json();
       const pressure = d.current?.surface_pressure != null ? Math.round(d.current.surface_pressure * 10) / 10 : null;
-      // Get pressure 3 hours ago from hourly data (first entry)
+      // Build hourly pressure history for sparkline (last 12 values before current hour)
+      let pressureHistory = null;
+      if (dh.hourly?.surface_pressure?.length >= 2) {
+        pressureHistory = dh.hourly.surface_pressure
+          .filter(v => v != null)
+          .map(v => Math.round(v * 10) / 10);
+      }
+      // Trend: compare oldest available hour vs current pressure
       let pressureTrend = null;
       let pressureLabel = null;
-      if (pressure != null && dh.hourly?.surface_pressure?.length >= 2) {
-        const oldPressure = dh.hourly.surface_pressure[0];
+      if (pressure != null && pressureHistory && pressureHistory.length >= 2) {
+        const oldPressure = pressureHistory[0];
         const diff = pressure - oldPressure;
         const absDiff = Math.abs(diff);
         const dir = diff > 0.5 ? "rising" : diff < -0.5 ? "falling" : "steady";
@@ -549,6 +577,7 @@ function useEnv() {
         pressureLevel,
         pressureTrend,
         pressureLabel,
+        pressureHistory,
         windSpeed: d.current?.wind_speed_10m != null ? Math.round(d.current.wind_speed_10m * 10) / 10 : null,
         windDir: d.current?.wind_direction_10m != null ? Math.round(d.current.wind_direction_10m) : null,
         moon: getMoonPhase(new Date())
@@ -935,7 +964,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.7 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.8 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -1192,43 +1221,94 @@ function ConditionsModal({ onClose }) {
     style: {width: `${Math.max(0,Math.min(100,tide.seasonal*100))}%`}
   })), /*#__PURE__*/React.createElement("div", {
     className: "tide-bar-labels"
-  }, /*#__PURE__*/React.createElement("span", null, "Typical Low", tide.mhwsCM != null ? ` (${tide.mlwsCM}cm)` : ""), /*#__PURE__*/React.createElement("span", null, "Typical High", tide.mhwsCM != null ? ` (${tide.mhwsCM}cm)` : ""))))), /*#__PURE__*/React.createElement("div", {
-    className: "field-row"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "field-icon"
-  }, "🔵"), /*#__PURE__*/React.createElement("span", {
-    className: "field-label"
-  }, "Pressure"), weather?.pressure != null ? /*#__PURE__*/React.createElement("span", {
-    className: "field-value"
-  }, weather.pressure, " hPa", weather.pressureLevel ? ` \xB7 ${weather.pressureLevel}` : "", weather.pressureTrend === "rising" ? " ↑" : weather.pressureTrend === "falling" ? " ↓" : "", weather.pressureLabel && weather.pressureTrend !== "steady" ? /*#__PURE__*/React.createElement("span", {
-    style: {fontSize: 10, color: "#999", fontStyle: "italic"}
-  }, ` (${weather.pressureLabel})`) : null) : /*#__PURE__*/React.createElement("span", {
-    className: "field-value",
-    style: {color: "#bbb"}
-  }, "— get GPS first")), /*#__PURE__*/React.createElement("div", {
-    className: "field-row"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "field-icon"
-  }, "💨"), /*#__PURE__*/React.createElement("span", {
-    className: "field-label"
-  }, "Wind"), weather?.windSpeed != null ? /*#__PURE__*/React.createElement("span", {
-    className: "field-value"
-  }, weather.windSpeed, " m/s", weather.windDir != null ? ` \xB7 ${windCompass(weather.windDir)} (${weather.windDir}\xB0)` : "") : /*#__PURE__*/React.createElement("span", {
-    className: "field-value",
-    style: {color: "#bbb"}
-  }, "— get GPS first")), /*#__PURE__*/React.createElement("div", {
-    className: "field-row"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "field-icon"
-  }, "🌕"), /*#__PURE__*/React.createElement("span", {
-    className: "field-label"
-  }, "Moon"), /*#__PURE__*/React.createElement("span", {
-    className: "field-value"
-  }, weather?.moon ?? getMoonPhase(new Date()))), !gps && /*#__PURE__*/React.createElement("div", {
-    className: "info-note"
-  }, "Get GPS fix to auto-load air temp, pressure, wind & tide"), tideStatus === "ok" && /*#__PURE__*/React.createElement("div", {
-    className: "info-note"
-  }, "Tide \xA9 Kartverket/NMA (CC BY 4.0)"))));
+  }, /*#__PURE__*/React.createElement("span", null, "Typical Low", tide.mhwsCM != null ? ` (${tide.mlwsCM}cm)` : ""), /*#__PURE__*/React.createElement("span", null, "Typical High", tide.mhwsCM != null ? ` (${tide.mhwsCM}cm)` : ""))),
+    (tide.nextHigh || tide.nextLow) && (function() {
+      var items = [
+        tide.nextHigh && { t: tide.nextHigh.t, el: /*#__PURE__*/React.createElement("span", { key: "h" }, "▲ High ", fmtTime(tide.nextHigh.t.toISOString()), tide.nextHigh.v != null ? " · " + Math.round(tide.nextHigh.v) + "cm" : "") },
+        tide.nextLow && { t: tide.nextLow.t, el: /*#__PURE__*/React.createElement("span", { key: "l" }, "▼ Low ", fmtTime(tide.nextLow.t.toISOString()), tide.nextLow.v != null ? " · " + Math.round(tide.nextLow.v) + "cm" : "") }
+      ].filter(Boolean).sort(function(a, b) { return a.t - b.t; });
+      return /*#__PURE__*/React.createElement("div", { style: { fontSize: 11, color: "var(--text-3)", marginTop: 6, display: "flex", gap: 14 } },
+        items.map(function(i) { return i.el; }));
+    }()))),
+  // Pressure
+  /*#__PURE__*/React.createElement("div", { className: "field-row" },
+    /*#__PURE__*/React.createElement("span", { className: "field-icon" }, "🔵"),
+    /*#__PURE__*/React.createElement("span", { className: "field-label" }, "Pressure"),
+    weather?.pressure != null ? /*#__PURE__*/React.createElement("span", { className: "field-value" },
+      weather.pressure, " hPa", weather.pressureLevel ? " \xB7 " + weather.pressureLevel : "",
+      weather.pressureTrend === "rising" ? " ↑" : weather.pressureTrend === "falling" ? " ↓" : "",
+      weather.pressureLabel && weather.pressureTrend !== "steady" ? /*#__PURE__*/React.createElement("span", {
+        style: {fontSize: 10, color: "#999", fontStyle: "italic"}
+      }, " (" + weather.pressureLabel + ")") : null
+    ) : /*#__PURE__*/React.createElement("span", { className: "field-value", style: {color: "#bbb"} }, "— get GPS first")),
+  // Pressure sparkline (12h history)
+  weather?.pressureHistory?.length >= 2 && (function() {
+    var pts = weather.pressureHistory;
+    var n = pts.length;
+    var LM = 28, W = 220, CW = W - LM, H = 60, PT = 4, PB = 18;
+    var minV = Math.round(Math.min.apply(null, pts) - 1);
+    var maxV = Math.round(Math.max.apply(null, pts) + 1);
+    var range = maxV - minV || 1;
+    var xs = pts.map(function(_, i) { return LM + Math.round(i * CW / (n - 1)); });
+    var ys = pts.map(function(v) { return Math.round(H - PB - (v - minV) / range * (H - PT - PB) - 2); });
+    var poly = xs.map(function(x, i) { return x + "," + ys[i]; }).join(" ");
+    var cx = xs[n - 1], cy = ys[n - 1];
+    var yTop = PT + 2, yBot = H - PB - 2;
+    var axisY = yBot + 10;
+    var nowDate = new Date();
+    var ticks = [0, 3, 6, 9, 12].map(function(h) {
+      var frac = 1 - h / 12;
+      var t = new Date(nowDate.getTime() - h * 3600000);
+      var label = h === 0 ? "now" : t.getHours() + ":00";
+      return { x: Math.round(LM + frac * CW), label: label };
+    });
+    var toY = function(v) { return Math.round(H - PB - (v - minV) / range * (H - PT - PB) - 2); };
+    var thresholds = [
+      { v: 1015, color: "var(--warn)", label: "High" },
+      { v: 1005, color: "var(--slate-light)", label: "Low" }
+    ].filter(function(th) { return th.v > minV && th.v < maxV; });
+    return /*#__PURE__*/React.createElement("div", { style: { padding: "0 14px 8px", marginLeft: 105 } },
+      /*#__PURE__*/React.createElement("svg", {
+        viewBox: "0 0 " + W + " " + H,
+        style: { width: "100%", display: "block", overflow: "visible" }
+      },
+        /*#__PURE__*/React.createElement("text", { x: LM - 4, y: yTop + 3, fontSize: 7, fill: "var(--text-3)", textAnchor: "end" }, maxV),
+        /*#__PURE__*/React.createElement("text", { x: LM - 4, y: yBot + 3, fontSize: 7, fill: "var(--text-3)", textAnchor: "end" }, minV),
+        /*#__PURE__*/React.createElement("line", { x1: LM, y1: yTop, x2: W, y2: yTop, stroke: "var(--rule)", strokeWidth: "0.5" }),
+        /*#__PURE__*/React.createElement("line", { x1: LM, y1: yBot, x2: W, y2: yBot, stroke: "var(--rule)", strokeWidth: "0.5" }),
+        thresholds.map(function(th) {
+          var ty = toY(th.v);
+          return /*#__PURE__*/React.createElement("g", { key: th.label },
+            /*#__PURE__*/React.createElement("line", { x1: LM, y1: ty, x2: W, y2: ty, stroke: th.color, strokeWidth: "0.7", strokeDasharray: "3,2", opacity: 0.7 }),
+            /*#__PURE__*/React.createElement("text", { x: LM + 2, y: ty - 2, fontSize: 6, fill: th.color, textAnchor: "start" }, th.label)
+          );
+        }),
+        /*#__PURE__*/React.createElement("polyline", {
+          points: poly, fill: "none", stroke: "var(--slate)", strokeWidth: "2",
+          strokeLinejoin: "round", strokeLinecap: "round"
+        }),
+        /*#__PURE__*/React.createElement("circle", { cx: cx, cy: cy, r: 3, fill: "var(--slate)" }),
+        ticks.map(function(t) {
+          return /*#__PURE__*/React.createElement("text", { key: t.label, x: t.x, y: axisY, fontSize: 7, fill: "var(--text-3)", textAnchor: "middle" }, t.label);
+        })
+      )
+    );
+  })(),
+  // Wind
+  /*#__PURE__*/React.createElement("div", { className: "field-row" },
+    /*#__PURE__*/React.createElement("span", { className: "field-icon" }, "💨"),
+    /*#__PURE__*/React.createElement("span", { className: "field-label" }, "Wind"),
+    weather?.windSpeed != null ? /*#__PURE__*/React.createElement("span", { className: "field-value" },
+      weather.windSpeed, " m/s", weather.windDir != null ? " \xB7 " + windCompass(weather.windDir) + " (" + weather.windDir + "\xB0)" : ""
+    ) : /*#__PURE__*/React.createElement("span", { className: "field-value", style: {color: "#bbb"} }, "— get GPS first")),
+  // Moon
+  /*#__PURE__*/React.createElement("div", { className: "field-row" },
+    /*#__PURE__*/React.createElement("span", { className: "field-icon" }, "🌕"),
+    /*#__PURE__*/React.createElement("span", { className: "field-label" }, "Moon"),
+    /*#__PURE__*/React.createElement("span", { className: "field-value" }, weather?.moon ?? getMoonPhase(new Date()))),
+  // Info notes
+  !gps && /*#__PURE__*/React.createElement("div", { className: "info-note" }, "Get GPS fix to auto-load air temp, pressure, wind & tide"),
+  tideStatus === "ok" && /*#__PURE__*/React.createElement("div", { className: "info-note" }, "Tide \xA9 Kartverket/NMA (CC BY 4.0)"))));
 }
 
 function TripsList({
@@ -1870,7 +1950,7 @@ function AddSpotForm({
     style: {width: `${Math.max(0,Math.min(100,tide.seasonal*100))}%`}
   })), /*#__PURE__*/React.createElement("div", {
     className: "tide-bar-labels"
-  }, /*#__PURE__*/React.createElement("span", null, "Typical Low", tide.mhwsCM != null ? ` (${tide.mlwsCM}cm)` : ""), /*#__PURE__*/React.createElement("span", null, "Typical High", tide.mhwsCM != null ? ` (${tide.mhwsCM}cm)` : "")))))  , /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("span", null, "Typical Low", tide.mhwsCM != null ? ` (${tide.mlwsCM}cm)` : ""), /*#__PURE__*/React.createElement("span", null, "Typical High", tide.mhwsCM != null ? ` (${tide.mhwsCM}cm)` : ""))))), /*#__PURE__*/React.createElement("div", {
     className: "field-row"
   }, /*#__PURE__*/React.createElement("span", {
     className: "field-icon"
@@ -2352,15 +2432,18 @@ function ObsForm({
 
 // ── Analytics helpers ─────────────────────────────────────────────────────────
 
-function StatChart({ title, buckets, values, fmt }) {
+function StatChart({ title, buckets, values, fmt, hours }) {
   const maxVal = Math.max(...values, 0.001);
-  const hasData = values.some(v => v > 0);
+  // Show chart if any bucket has data (catches > 0, or hours fished > 0)
+  const hasData = hours ? hours.some(h => h > 0) : values.some(v => v > 0);
   if (!hasData) return null;
   const format = fmt || (v => Number.isInteger(v) ? v : v.toFixed(2));
   return React.createElement("div", { className: "stat-card" },
     React.createElement("div", { className: "stat-card-title" }, title),
     buckets.map(function(lbl, i) {
-      if (values[i] <= 0) return null;
+      // Show row if user fished in this bucket (hours > 0), even if catches = 0
+      var show = hours ? hours[i] > 0 : values[i] > 0;
+      if (!show) return null;
       var pct = Math.round(values[i] / maxVal * 100);
       return React.createElement("div", { key: lbl, className: "stat-row" },
         React.createElement("div", { className: "stat-lbl" }, lbl),
@@ -2685,12 +2768,12 @@ function Analytics({ catches, spots, trips }) {
       )
     ),
     // ── Charts (ordered: Method, Temp, Tide, Time, Pressure, Moon) ──
-    methodBuckets.length > 0 && React.createElement(StatChart, { title: "Method (catches/hr)", buckets: methodBuckets, values: methodValues, fmt: function(v) { return v.toFixed(2); } }),
-    tempBucketsAll.length > 0 && React.createElement(StatChart, { title: "Water Temp (catches/hr)", buckets: tempBucketsAll, values: tempRates, fmt: function(v) { return v.toFixed(2); } }),
+    methodBuckets.length > 0 && React.createElement(StatChart, { title: "Method (catches/hr)", buckets: methodBuckets, values: methodValues, fmt: function(v) { return v.toFixed(2); }, hours: methodBuckets.map(function(b) { return methodHours[b] || 0; }) }),
+    tempBucketsAll.length > 0 && React.createElement(StatChart, { title: "Water Temp (catches/hr)", buckets: tempBucketsAll, values: tempRates, fmt: function(v) { return v.toFixed(2); }, hours: tempBucketsAll.map(function(b) { return tempHours[b] || 0; }) }),
     React.createElement(StatChart, { title: "Tide Level (catch count)",  buckets: tideBuckets,  values: cTide }),
-    React.createElement(StatChart, { title: "Time of Day (catches/hr)", buckets: timeBuckets,  values: timeRates, fmt: function(v) { return v.toFixed(2); } }),
-    React.createElement(StatChart, { title: "Air Pressure (catches/hr)", buckets: pressBuckets, values: pressRates, fmt: function(v) { return v.toFixed(2); } }),
-    React.createElement(StatChart, { title: "Moon Phase (catches/hr)",  buckets: moonBuckets,  values: moonRates, fmt: function(v) { return v.toFixed(2); } })
+    React.createElement(StatChart, { title: "Time of Day (catches/hr)", buckets: timeBuckets,  values: timeRates, fmt: function(v) { return v.toFixed(2); }, hours: timeBuckets.map(function(b) { return timeHours[b] || 0; }) }),
+    React.createElement(StatChart, { title: "Air Pressure (catches/hr)", buckets: pressBuckets, values: pressRates, fmt: function(v) { return v.toFixed(2); }, hours: pressBuckets.map(function(b) { return pressHours[b] || 0; }) }),
+    React.createElement(StatChart, { title: "Moon Phase (catches/hr)",  buckets: moonBuckets,  values: moonRates, fmt: function(v) { return v.toFixed(2); }, hours: moonBuckets.map(function(b) { return moonHours[b] || 0; }) })
   );
 }
 
