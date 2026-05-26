@@ -327,20 +327,23 @@ const css = `
   /* Insights */
   .stat-wrap { padding: 16px; display: flex; flex-direction: column; gap: 16px; }
   .stat-summary { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-  .stat-kpi { background: var(--paper-2); border: 1px solid rgba(0,0,0,.06); border-radius: 4px; padding: 12px; text-align: center; }
-  .stat-kpi-val { font-size: 24px; font-weight: 700; color: var(--moss); font-family: 'Source Code Pro', monospace; }
-  .stat-kpi-lbl { font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--text-2); margin-top: 2px; }
-  .stat-card { background: var(--paper-2); border: 1px solid rgba(0,0,0,.06); border-radius: 4px; padding: 12px; }
-  .stat-card-title { font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--text-2); margin-bottom: 10px; font-weight: 600; }
-  .stat-row { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
-  .stat-lbl { font-size: 11px; color: var(--text); width: 80px; flex-shrink: 0; text-align: right; line-height: 1.2; }
-  .stat-bars { flex: 1; display: flex; flex-direction: column; gap: 3px; }
+  .stat-kpi { background: var(--paper-2); border: 1px solid var(--rule); border-radius: 3px; padding: 14px 12px; text-align: center; }
+  .stat-kpi-val { font-size: 22px; font-weight: 700; color: var(--ink); font-family: 'Source Code Pro', monospace; }
+  .stat-kpi-lbl { font-size: 9px; letter-spacing: 2px; text-transform: uppercase; color: var(--text-3); margin-top: 4px; font-weight: 600; }
+  .stat-card { background: var(--paper-2); border: 1px solid var(--rule); border-radius: 3px; overflow: hidden; }
+  .stat-card-title { font-size: 10px; letter-spacing: 2px; text-transform: uppercase; color: var(--text-2); padding: 13px 14px 10px; border-bottom: 1px solid var(--rule); font-weight: 600; }
+  .stat-row { display: flex; align-items: center; gap: 8px; padding: 9px 14px; border-bottom: 1px solid var(--rule); }
+  .stat-row:last-child { border-bottom: none; }
+  .stat-lbl { font-size: 11px; color: var(--text); width: 80px; flex-shrink: 0; text-align: right; line-height: 1.2; font-weight: 500; }
+  .stat-bars { flex: 1; display: flex; flex-direction: column; gap: 0; }
   .stat-bar-line { display: flex; align-items: center; gap: 5px; }
-  .stat-track { flex: 1; height: 7px; background: rgba(0,0,0,.07); border-radius: 3px; overflow: hidden; }
-  .stat-fill-c { height: 100%; background: var(--moss); border-radius: 3px; transition: width .3s; }
+  .stat-track { flex: 1; height: 6px; background: var(--rule); border-radius: 0 3px 3px 0; overflow: hidden; }
+  .stat-fill-c { height: 100%; background: var(--moss); border-radius: 0 3px 3px 0; transition: width .3s; }
+  .stat-fill-h { height: 100%; background: var(--text-2); border-radius: 0 3px 3px 0; opacity: 0.4; transition: width .3s; }
   .stat-ct { font-size: 10px; color: var(--text-2); width: 32px; text-align: right; font-family: 'Source Code Pro', monospace; flex-shrink: 0; }
+  .stat-ct-h { font-size: 9px; color: var(--text-3); width: 32px; text-align: right; font-family: 'Source Code Pro', monospace; flex-shrink: 0; }
   .stat-filter { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  .stat-filter select { flex: 1; min-width: 0; background: var(--paper-2); border: 1px solid rgba(0,0,0,.12); color: var(--text); padding: 7px 10px; border-radius: 3px; font-size: 11px; letter-spacing: .5px; }
+  .stat-filter select { flex: 1; min-width: 0; background: var(--paper-2); border: 1px solid var(--rule); color: var(--text); padding: 8px 10px; border-radius: 3px; font-size: 11px; letter-spacing: .5px; font-weight: 500; }
   .stat-empty-msg { color: var(--text-3); font-size: 12px; text-align: center; padding: 32px 16px; }
 
   /* Toast */
@@ -1368,7 +1371,7 @@ function TripsList({
     onClick: () => setShowForm(true)
   }, "+ Start New Session"), !showForm && /*#__PURE__*/React.createElement("button", {
     className: "save-btn",
-    style: {borderRadius: 6, borderTop: "none", marginTop: 8},
+    style: {borderRadius: 6, borderTop: "none", marginTop: 0},
     onClick: () => setShowConditions(true)
   }, "Live Conditions"), showForm && !activeTrip && /*#__PURE__*/React.createElement("div", {
     className: "field-group"
@@ -2433,18 +2436,19 @@ function ObsForm({
 // ── Analytics helpers ─────────────────────────────────────────────────────────
 
 function StatChart({ title, buckets, values, fmt, hours }) {
-  const maxVal = Math.max(...values, 0.001);
-  // Show chart if any bucket has data (catches > 0, or hours fished > 0)
-  const hasData = hours ? hours.some(h => h > 0) : values.some(v => v > 0);
+  var maxVal = Math.max.apply(null, values.concat([0.001]));
+  var maxHrs = hours ? Math.max.apply(null, hours.concat([0.001])) : 0;
+  var hasData = hours ? hours.some(function(h) { return h > 0; }) : values.some(function(v) { return v > 0; });
   if (!hasData) return null;
-  const format = fmt || (v => Number.isInteger(v) ? v : v.toFixed(2));
+  var format = fmt || function(v) { return Number.isInteger(v) ? v : v.toFixed(2); };
+  var fmtH = function(h) { return h < 1 ? (h * 60).toFixed(0) + "m" : h.toFixed(1) + "h"; };
   return React.createElement("div", { className: "stat-card" },
     React.createElement("div", { className: "stat-card-title" }, title),
     buckets.map(function(lbl, i) {
-      // Show row if user fished in this bucket (hours > 0), even if catches = 0
       var show = hours ? hours[i] > 0 : values[i] > 0;
       if (!show) return null;
       var pct = Math.round(values[i] / maxVal * 100);
+      var pctH = hours ? Math.round(hours[i] / maxHrs * 100) : 0;
       return React.createElement("div", { key: lbl, className: "stat-row" },
         React.createElement("div", { className: "stat-lbl" }, lbl),
         React.createElement("div", { className: "stat-bars" },
@@ -2453,6 +2457,12 @@ function StatChart({ title, buckets, values, fmt, hours }) {
               React.createElement("div", { className: "stat-fill-c", style: { width: pct + "%" } })
             ),
             React.createElement("div", { className: "stat-ct" }, format(values[i]))
+          ),
+          hours && React.createElement("div", { className: "stat-bar-line" },
+            React.createElement("div", { className: "stat-track" },
+              React.createElement("div", { className: "stat-fill-h", style: { width: pctH + "%" } })
+            ),
+            React.createElement("div", { className: "stat-ct-h" }, fmtH(hours[i]))
           )
         )
       );
@@ -2489,12 +2499,12 @@ function Analytics({ catches, spots, trips }) {
 
   // ── Bucketing helpers ──
   var hourBucket = function(h) {
-    if (h >= 4 && h < 7)  return "Dawn";
-    if (h >= 7 && h < 11) return "Morning";
-    if (h >= 11 && h < 14) return "Midday";
-    if (h >= 14 && h < 17) return "Afternoon";
-    if (h >= 17 && h < 20) return "Evening";
-    return "Night";
+    if (h >= 4 && h < 7)  return "04–07";
+    if (h >= 7 && h < 11) return "07–11";
+    if (h >= 11 && h < 14) return "11–14";
+    if (h >= 14 && h < 17) return "14–17";
+    if (h >= 17 && h < 20) return "17–20";
+    return "20–04";
   };
   var timeBucket = function(ts) { return hourBucket(new Date(ts).getHours()); };
   var tideBucket = function(val) {
@@ -2541,7 +2551,7 @@ function Analytics({ catches, spots, trips }) {
   };
 
   // ── Bucket definitions ──
-  var timeBuckets  = ["Dawn", "Morning", "Midday", "Afternoon", "Evening", "Night"];
+  var timeBuckets  = ["04–07", "07–11", "11–14", "14–17", "17–20", "20–04"];
   var tideBuckets  = ["Very Low", "Low", "Medium", "High", "Very High"];
   var pressBuckets = ["<1000", "1000–1010", "1010–1020", ">1020"];
   var moonBuckets  = ["🌑 New", "🌒 Wax.Cres.", "🌓 First Q.", "🌔 Wax.Gib.", "🌕 Full", "🌖 Wan.Gib.", "🌗 Last Q.", "🌘 Wan.Cres."];
