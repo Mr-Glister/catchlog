@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.8</title>
+  <title>The Catch Log v2.9</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -35,6 +35,75 @@
   <script>
     const { useState, useRef, useCallback, useEffect } = React;
   </script>
+
+  <!-- Firebase cloud sync -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+  <script>
+    firebase.initializeApp({
+      apiKey: "AIzaSyCYedlMhYZTuU4RuVwhHEM4y7OINwMykho",
+      authDomain: "catchlog-8bc3b.firebaseapp.com",
+      projectId: "catchlog-8bc3b",
+      storageBucket: "catchlog-8bc3b.firebasestorage.app",
+      messagingSenderId: "288406766723",
+      appId: "1:288406766723:web:0798dd9b11a13f44ff47b6"
+    });
+    var fbAuth = firebase.auth();
+    var fbDb   = firebase.firestore();
+
+    function cloudDoc(uid) {
+      return fbDb.doc('users/' + uid + '/catchlog/data');
+    }
+    function cloudPull(uid) {
+      return cloudDoc(uid).get().then(function(snap) {
+        return snap.exists ? snap.data() : null;
+      });
+    }
+    function cloudPush(uid) {
+      return cloudDoc(uid).set({
+        trips:        JSON.parse(localStorage.getItem('fl_trips_v3')  || '[]'),
+        spots:        JSON.parse(localStorage.getItem('fl_spots_v2')  || '[]'),
+        catches:      JSON.parse(localStorage.getItem('fl_catches_v3')|| '[]'),
+        observations: JSON.parse(localStorage.getItem('fl_obs_v2')    || '[]'),
+        lastUpdated:  Date.now()
+      });
+    }
+    var _cloudLoading = false;
+    var _cloudSyncTimer = null;
+    var _onCloudSync = null;
+    function cloudSchedulePush() {
+      if (_cloudLoading) return;
+      var user = fbAuth.currentUser;
+      if (!user) return;
+      clearTimeout(_cloudSyncTimer);
+      _cloudSyncTimer = setTimeout(function() {
+        if (_onCloudSync) _onCloudSync('loading', null);
+        cloudPush(user.uid).then(function() {
+          if (_onCloudSync) _onCloudSync('synced', new Date());
+        }).catch(function(e) {
+          console.error('Cloud sync error:', e);
+          if (_onCloudSync) _onCloudSync('error', null);
+        });
+      }, 2000);
+    }
+    function cloudSignIn() {
+      return fbAuth.signInWithPopup(new firebase.auth.GoogleAuthProvider());
+    }
+    function cloudSignOut() {
+      return fbAuth.signOut();
+    }
+    // Intercept all localStorage writes to CatchLog keys → schedule auto-push
+    (function() {
+      var KEYS = ['fl_trips_v3', 'fl_spots_v2', 'fl_catches_v3', 'fl_obs_v2'];
+      var orig = localStorage.setItem.bind(localStorage);
+      localStorage.setItem = function(key, value) {
+        orig(key, value);
+        if (KEYS.indexOf(key) !== -1) cloudSchedulePush();
+      };
+    })();
+  </script>
+
   <script>
 const FONTS = `@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Source+Code+Pro:wght@300;400;500&display=swap');`;
 const css = `
@@ -289,6 +358,13 @@ const css = `
   .backup-btn.danger:hover { border-color: #e8a094; }
   .backup-btn:disabled { opacity: .3; cursor: not-allowed; }
   .backup-divider { height: 1px; background: rgba(255,255,255,.1); margin: 4px 0; }
+  .cloud-user { font-size: 12px; color: rgba(255,255,255,.8); letter-spacing: 0.2px; }
+  .cloud-status { font-size: 11px; color: rgba(255,255,255,.5); display: flex; align-items: center; gap: 7px; }
+  .cloud-dot { width: 7px; height: 7px; border-radius: 50%; background: rgba(255,255,255,.2); flex-shrink: 0; }
+  .cloud-dot.synced { background: #7dbf7d; }
+  .cloud-dot.loading { background: #d4944a; animation: cloud-pulse 1s ease-in-out infinite; }
+  .cloud-dot.error { background: #e8a094; }
+  @keyframes cloud-pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
   .backup-restore-confirm { background: transparent; border: 1px solid rgba(232,160,148,.4); border-radius: 2px; padding: 12px 14px; font-size: 12px; color: #e8a094; line-height: 1.6; }
   .csv-section-title { font-size: 10px; letter-spacing: 2px; text-transform: uppercase; color: var(--text-3); padding: 6px 0 2px; font-weight: 600; }
 
@@ -827,6 +903,9 @@ function FishLog() {
   const toastRef = useRef(null);
   const [showQuickAction, setShowQuickAction] = useState(() => trips.some(t => !t.endTime));
   const [showConditions, setShowConditions] = useState(false);
+  const [cloudUser, setCloudUser] = useState(() => fbAuth.currentUser);
+  const [cloudStatus, setCloudStatus] = useState('idle');
+  const [cloudLastSynced, setCloudLastSynced] = useState(null);
   const activeTrip = trips.find(t => !t.endTime) || null;
   const activeSpot = activeTrip ? [...spots].filter(s => s.tripId === activeTrip.id).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0] || null : null;
   const showToast = msg => {
@@ -845,6 +924,48 @@ function FishLog() {
   const mutSpots = mut(setSpots, SK.spots);
   const mutCatches = mut(setCatches, SK.catches);
   const mutObs = mut(setObservations, SK.obs);
+
+  // Keep React sync status in step with background pushes
+  useEffect(function() {
+    _onCloudSync = function(status, date) {
+      setCloudStatus(status);
+      if (date) setCloudLastSynced(date);
+    };
+    return function() { _onCloudSync = null; };
+  }, []);
+
+  // Cloud sync — listen for auth state changes
+  useEffect(function() {
+    return fbAuth.onAuthStateChanged(function(user) {
+      setCloudUser(user);
+      if (!user) { setCloudStatus('idle'); return; }
+      setCloudStatus('loading');
+      _cloudLoading = true;
+      cloudPull(user.uid).then(function(remote) {
+        if (remote && remote.trips) {
+          // Cloud has data — load it into localStorage and React state
+          localStorage.setItem('fl_trips_v3',   JSON.stringify(remote.trips        || []));
+          localStorage.setItem('fl_spots_v2',   JSON.stringify(remote.spots        || []));
+          localStorage.setItem('fl_catches_v3', JSON.stringify(remote.catches      || []));
+          localStorage.setItem('fl_obs_v2',     JSON.stringify(remote.observations || []));
+          setTrips(remote.trips        || []);
+          setSpots(remote.spots        || []);
+          setCatches(remote.catches    || []);
+          setObservations(remote.observations || []);
+        } else {
+          // First sign-in — push existing local data up to cloud
+          cloudPush(user.uid);
+        }
+        _cloudLoading = false;
+        setCloudLastSynced(new Date());
+        setCloudStatus('synced');
+      }).catch(function(e) {
+        _cloudLoading = false;
+        console.error('Cloud load error:', e);
+        setCloudStatus('error');
+      });
+    });
+  }, []);
 
   // Starting a session creates both a trip AND the first spot atomically
   const startSession = (spotData, tripMeta) => {
@@ -967,7 +1088,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.8 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.9 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -1025,7 +1146,10 @@ function FishLog() {
     spots: spots,
     catches: catches,
     observations: observations,
-    onRestore: restoreAll
+    onRestore: restoreAll,
+    cloudUser: cloudUser,
+    cloudStatus: cloudStatus,
+    cloudLastSynced: cloudLastSynced
   }), selTrip && /*#__PURE__*/React.createElement(TripDetail, {
     trip: selTrip,
     onClose: () => setSelTrip(null),
@@ -3411,7 +3535,7 @@ function ObsDetail({
 
 // ── Export tab ────────────────────────────────────────────────────────────────
 
-function ExportTab({ trips, spots, catches, observations, onRestore }) {
+function ExportTab({ trips, spots, catches, observations, onRestore, cloudUser, cloudStatus, cloudLastSynced }) {
   const [restoreStep, setRestoreStep] = useState("idle");
   const restoreRef = useRef();
   const today = new Date().toISOString().slice(0, 10);
@@ -3450,9 +3574,36 @@ function ExportTab({ trips, spots, catches, observations, onRestore }) {
   return /*#__PURE__*/React.createElement("div", { className: "export-wrap" },
 
   /*#__PURE__*/React.createElement("div", { className: "backup-panel" },
+    /*#__PURE__*/React.createElement("div", { className: "backup-panel-title" }, "\u2601 Cloud Backup"),
+    cloudUser
+      ? /*#__PURE__*/React.createElement(React.Fragment, null,
+          /*#__PURE__*/React.createElement("div", { className: "cloud-user" }, cloudUser.displayName || cloudUser.email),
+          /*#__PURE__*/React.createElement("div", { className: "cloud-status" },
+            /*#__PURE__*/React.createElement("div", { className: "cloud-dot " + cloudStatus }),
+            cloudStatus === "loading" ? "Syncing\u2026"
+              : cloudStatus === "error"  ? "Sync error \u2014 check your connection"
+              : cloudLastSynced
+                ? "Synced at " + cloudLastSynced.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })
+                : "Synced"),
+          /*#__PURE__*/React.createElement("button", {
+            className: "backup-btn secondary",
+            style: { maxWidth: 110 },
+            onClick: function() { cloudSignOut(); }
+          }, "Sign out"))
+      : /*#__PURE__*/React.createElement(React.Fragment, null,
+          /*#__PURE__*/React.createElement("div", { className: "backup-panel-sub" },
+            "Sign in with Google to automatically save your data to the cloud. Each person\u2019s data is private \u2014 only you can access yours."),
+          /*#__PURE__*/React.createElement("button", {
+            className: "backup-btn primary",
+            onClick: function() { cloudSignIn().catch(function(e) { alert("Sign-in failed: " + e.message); }); }
+          }, "Sign in with Google"))),
+
+  /*#__PURE__*/React.createElement("div", { className: "backup-panel" },
     /*#__PURE__*/React.createElement("div", { className: "backup-panel-title" }, "Data Backup"),
     /*#__PURE__*/React.createElement("div", { className: "backup-panel-sub" },
-      "All your data lives in this browser\u2019s local storage. Export a backup regularly and keep it somewhere safe (iCloud, Google Drive). A backup includes everything \u2014 sessions, spots, catches, observations and photos."),
+      cloudUser
+        ? "Your data is backed up automatically. You can also export a local copy as a safety net."
+        : "All your data lives in this browser\u2019s local storage. Export a backup regularly and keep it somewhere safe (iCloud, Google Drive). A backup includes everything \u2014 sessions, spots, catches, observations and photos."),
     /*#__PURE__*/React.createElement("div", { className: "backup-btn-row" },
       /*#__PURE__*/React.createElement("button", {
         className: "backup-btn primary", disabled: !totalItems,
