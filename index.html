@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.9.1</title>
+  <title>The Catch Log v2.9.2</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -94,12 +94,17 @@
       return fbAuth.signOut();
     }
     // Intercept all localStorage writes to CatchLog keys → schedule auto-push
+    // Also stamp cl_lastUpdated so we can compare against cloud on sign-in
+    var _origLocalStorageSet;
     (function() {
       var KEYS = ['fl_trips_v3', 'fl_spots_v2', 'fl_catches_v3', 'fl_obs_v2'];
-      var orig = localStorage.setItem.bind(localStorage);
+      _origLocalStorageSet = localStorage.setItem.bind(localStorage);
       localStorage.setItem = function(key, value) {
-        orig(key, value);
-        if (KEYS.indexOf(key) !== -1) cloudSchedulePush();
+        _origLocalStorageSet(key, value);
+        if (KEYS.indexOf(key) !== -1 && !_cloudLoading) {
+          _origLocalStorageSet('cl_lastUpdated', String(Date.now()));
+          cloudSchedulePush();
+        }
       };
     })();
   </script>
@@ -947,18 +952,25 @@ function FishLog() {
       setCloudStatus('loading');
       _cloudLoading = true;
       cloudPull(user.uid).then(function(remote) {
-        if (remote && remote.trips) {
-          // Cloud has data — load it into localStorage and React state
-          localStorage.setItem('fl_trips_v3',   JSON.stringify(remote.trips        || []));
-          localStorage.setItem('fl_spots_v2',   JSON.stringify(remote.spots        || []));
-          localStorage.setItem('fl_catches_v3', JSON.stringify(remote.catches      || []));
-          localStorage.setItem('fl_obs_v2',     JSON.stringify(remote.observations || []));
+        var localTs  = parseInt(localStorage.getItem('cl_lastUpdated') || '0', 10);
+        var cloudTs  = remote && remote.lastUpdated ? remote.lastUpdated : 0;
+        var localEmpty = !load(SK.trips).length && !load(SK.catches).length;
+        // Load from cloud only if: cloud has data AND (local is empty OR cloud is
+        // definitively newer with a known local timestamp)
+        var useCloud = remote && remote.trips && remote.trips.length > 0 &&
+                       (localEmpty || (localTs > 0 && cloudTs > localTs));
+        if (useCloud) {
+          // Cloud is the most recent copy — load it
+          _origLocalStorageSet('fl_trips_v3',   JSON.stringify(remote.trips        || []));
+          _origLocalStorageSet('fl_spots_v2',   JSON.stringify(remote.spots        || []));
+          _origLocalStorageSet('fl_catches_v3', JSON.stringify(remote.catches      || []));
+          _origLocalStorageSet('fl_obs_v2',     JSON.stringify(remote.observations || []));
           setTrips(remote.trips        || []);
           setSpots(remote.spots        || []);
           setCatches(remote.catches    || []);
           setObservations(remote.observations || []);
         } else {
-          // First sign-in — push existing local data up to cloud
+          // Local is same age, newer, or unknown — push local up to cloud
           cloudPush(user.uid);
         }
         _cloudLoading = false;
@@ -1093,7 +1105,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.9.1 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.9.2 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
