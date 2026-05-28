@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.9</title>
+  <title>The Catch Log v2.9.1</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -515,9 +515,14 @@ async function fetchTideData(lat, lon, isoTs) {
   const proxyFetch = async url => {
     for (const proxy of proxies) {
       try {
-        const r = await fetch(proxy + encodeURIComponent(url), {
-          signal: AbortSignal.timeout(8000)
-        });
+        const ac = new AbortController();
+        const timer = setTimeout(() => ac.abort(), 8000);
+        let r;
+        try {
+          r = await fetch(proxy + encodeURIComponent(url), { signal: ac.signal });
+        } finally {
+          clearTimeout(timer);
+        }
         if (r.ok) {
           const t = await r.text();
           if (t.includes("<")) return t;
@@ -1088,7 +1093,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.9 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.9.1 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,

@@ -1,4 +1,4 @@
-const CACHE = 'catchlog-v29';
+const CACHE = 'catchlog-v29-1';
 const ASSETS = [
   '/catchlog/',
   '/catchlog/index.html',
