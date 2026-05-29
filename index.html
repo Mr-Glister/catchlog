@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.9.4</title>
+  <title>The Catch Log v2.9.5</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -629,16 +629,16 @@ function useEnv() {
     try {
       // Fetch current conditions + last 24 hours of pressure for trend + sparkline
       const [rCurrent, rHistory] = await Promise.all([
-        fetch(`https://api.open-meteo.com/v1/forecast?latitude=${la}&longitude=${lo}&current=temperature_2m,surface_pressure,wind_speed_10m,wind_direction_10m&wind_speed_unit=ms&timezone=auto&forecast_days=1`),
-        fetch(`https://api.open-meteo.com/v1/forecast?latitude=${la}&longitude=${lo}&hourly=surface_pressure&timezone=auto&past_hours=24&forecast_days=0`)
+        fetch(`https://api.open-meteo.com/v1/forecast?latitude=${la}&longitude=${lo}&current=temperature_2m,pressure_msl,wind_speed_10m,wind_direction_10m&wind_speed_unit=ms&timezone=auto&forecast_days=1`),
+        fetch(`https://api.open-meteo.com/v1/forecast?latitude=${la}&longitude=${lo}&hourly=pressure_msl&timezone=auto&past_hours=24&forecast_days=0`)
       ]);
       const d = await rCurrent.json();
       const dh = await rHistory.json();
-      const pressure = d.current?.surface_pressure != null ? Math.round(d.current.surface_pressure * 10) / 10 : null;
+      const pressure = d.current?.pressure_msl != null ? Math.round(d.current.pressure_msl * 10) / 10 : null;
       // Build hourly pressure history for sparkline (last 24h + current = 25 values max)
       let pressureHistory = null;
       if (dh.hourly?.surface_pressure?.length >= 2) {
-        pressureHistory = dh.hourly.surface_pressure
+        pressureHistory = dh.hourly.pressure_msl
           .filter(v => v != null)
           .slice(-25)  // cap to 24h window regardless of what API returns
           .map(v => Math.round(v * 10) / 10);
@@ -1106,7 +1106,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.9.4 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.9.5 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
