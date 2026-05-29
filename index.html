@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.9.5</title>
+  <title>The Catch Log v2.10</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -627,31 +627,90 @@ function useEnv() {
   const fetchEnv = useCallback(async (la, lo, ts) => {
     setWeatherStatus("loading");
     try {
-      // Fetch current conditions + last 24 hours of pressure for trend + sparkline
-      const [rCurrent, rHistory] = await Promise.all([
-        fetch(`https://api.open-meteo.com/v1/forecast?latitude=${la}&longitude=${lo}&current=temperature_2m,pressure_msl,wind_speed_10m,wind_direction_10m&wind_speed_unit=ms&timezone=auto&forecast_days=1`),
-        fetch(`https://api.open-meteo.com/v1/forecast?latitude=${la}&longitude=${lo}&hourly=pressure_msl&timezone=auto&past_hours=24&forecast_days=0`)
-      ]);
-      const d = await rCurrent.json();
-      const dh = await rHistory.json();
-      const pressure = d.current?.pressure_msl != null ? Math.round(d.current.pressure_msl * 10) / 10 : null;
-      // Build hourly pressure history for sparkline (last 24h + current = 25 values max)
-      let pressureHistory = null;
-      if (dh.hourly?.surface_pressure?.length >= 2) {
-        pressureHistory = dh.hourly.pressure_msl
-          .filter(v => v != null)
-          .slice(-25)  // cap to 24h window regardless of what API returns
-          .map(v => Math.round(v * 10) / 10);
+      // --- Current conditions from met.no Locationforecast (Norwegian model, sea-level pressure) ---
+      const metResp = await fetch(
+        `https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=${la}&lon=${lo}`
+      );
+      const metData = await metResp.json();
+      // Pick the timeseries entry whose time is closest to now
+      // (timeseries[0] is the model-run start, which can be 1-2 hours in the past)
+      const series = metData.properties?.timeseries || [];
+      const nowMs = Date.now();
+      let best = series[0];
+      for (let i = 1; i < series.length; i++) {
+        const d = Math.abs(new Date(series[i].time).getTime() - nowMs);
+        if (d < Math.abs(new Date(best.time).getTime() - nowMs)) best = series[i];
+        else break; // entries are chronological, once gap grows we've passed "now"
       }
-      // Trend: always compare current vs 12 hours ago (regardless of 24h display window)
+      const instant = best?.data?.instant?.details;
+      const pressure = instant?.air_pressure_at_sea_level != null
+        ? Math.round(instant.air_pressure_at_sea_level * 10) / 10
+        : null;
+      const airTemp = instant?.air_temperature != null
+        ? Math.round(instant.air_temperature * 10) / 10
+        : null;
+      const windSpeed = instant?.wind_speed != null
+        ? Math.round(instant.wind_speed * 10) / 10
+        : null;
+      const windDir = instant?.wind_from_direction != null
+        ? Math.round(instant.wind_from_direction)
+        : null;
+
+      // --- 24h pressure history from Frost API ---
+      // Route through corsproxy.io: corsproxy.io's own CORS policy allows the
+      // Authorization header (Access-Control-Allow-Headers: *), so the browser
+      // preflight succeeds against corsproxy.io, which then forwards the header
+      // to Frost. client_secret intentionally omitted.
+      let pressureHistory = null;
+      try {
+        const FROST_ID = '15f1c5d3-8ff3-4f4e-a7e2-8f358ae24cc3';
+        const frostAuth = 'Basic ' + btoa(FROST_ID + ':');
+        const frostGet = async (path) => {
+          const proxied = 'https://corsproxy.io/?' + encodeURIComponent('https://frost.met.no' + path);
+          const ac = new AbortController();
+          const tid = setTimeout(() => ac.abort(), 10000);
+          try {
+            const r = await fetch(proxied, { headers: { Authorization: frostAuth }, signal: ac.signal });
+            if (r.ok) return r.json();
+            throw new Error('Frost HTTP ' + r.status);
+          } finally {
+            clearTimeout(tid);
+          }
+        };
+        // Step 1: find nearest station with pressure observations
+        const geomParam = encodeURIComponent(`nearest(POINT(${lo} ${la}))`);
+        const srcData = await frostGet(`/sources/v0.jsonld?geometry=${geomParam}&elements=air_pressure_at_sea_level`);
+        const stId = srcData.data?.[0]?.id;
+        if (stId) {
+          // Step 2: fetch last 24h of hourly pressure observations
+          const tTo = new Date();
+          const tFrom = new Date(tTo.getTime() - 24 * 3600000);
+          const isoFrom = tFrom.toISOString().slice(0, 19) + 'Z';
+          const isoTo   = tTo.toISOString().slice(0, 19) + 'Z';
+          const obsData = await frostGet(`/observations/v0.jsonld?sources=${stId}&elements=air_pressure_at_sea_level&referencetime=${isoFrom}/${isoTo}&timeresolutions=PT1H`);
+          if (obsData.data?.length >= 2) {
+            const frostPts = obsData.data
+              .map(r => r.observations?.[0]?.value)
+              .filter(v => v != null)
+              .map(v => Math.round(v * 10) / 10);
+            // Append current met.no value so sparkline extends to "now"
+            pressureHistory = pressure != null ? [...frostPts, pressure] : frostPts;
+          }
+        }
+      } catch (fe) {
+        console.warn('Frost API unavailable, sparkline hidden:', fe.message);
+      }
+
+      // Trend: compare current vs 3 hours ago (reflects what is happening now,
+      // not a 12h average). Thresholds: rapid ≥1.5 hPa/3h, slow ≥0.5 hPa/3h.
       let pressureTrend = null;
       let pressureLabel = null;
       if (pressure != null && pressureHistory && pressureHistory.length >= 2) {
-        const oldPressure = pressureHistory[Math.max(0, pressureHistory.length - 13)];
+        const oldPressure = pressureHistory[Math.max(0, pressureHistory.length - 4)];
         const diff = pressure - oldPressure;
         const absDiff = Math.abs(diff);
-        const dir = diff > 0.5 ? "rising" : diff < -0.5 ? "falling" : "steady";
-        const speed = absDiff >= 3 ? "rapidly" : absDiff >= 1 ? "slowly" : "";
+        const dir = diff > 0.3 ? "rising" : diff < -0.3 ? "falling" : "steady";
+        const speed = absDiff >= 1.5 ? "rapidly" : absDiff >= 0.5 ? "slowly" : "";
         pressureTrend = dir;
         pressureLabel = dir === "steady" ? "Steady" : speed ? `${speed.charAt(0).toUpperCase() + speed.slice(1)} ${dir}` : dir.charAt(0).toUpperCase() + dir.slice(1);
       }
@@ -662,18 +721,19 @@ function useEnv() {
         pressure >= 1005 ? "Normal" :
         pressure >= 995  ? "Low" : "Very Low";
       setWeather({
-        airTemp: d.current?.temperature_2m != null ? Math.round(d.current.temperature_2m * 10) / 10 : null,
+        airTemp,
         pressure,
         pressureLevel,
         pressureTrend,
         pressureLabel,
         pressureHistory,
-        windSpeed: d.current?.wind_speed_10m != null ? Math.round(d.current.wind_speed_10m * 10) / 10 : null,
-        windDir: d.current?.wind_direction_10m != null ? Math.round(d.current.wind_direction_10m) : null,
+        windSpeed,
+        windDir,
         moon: getMoonPhase(new Date())
       });
       setWeatherStatus("ok");
-    } catch {
+    } catch (e) {
+      console.warn('fetchEnv weather error', e);
       setWeatherStatus("error");
     }
     setTideStatus("loading");
@@ -1106,7 +1166,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.9.5 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.10 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,

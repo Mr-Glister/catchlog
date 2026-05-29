@@ -1,4 +1,4 @@
-const CACHE = 'catchlog-v29-5';
+const CACHE = 'catchlog-v29-11';
 const ASSETS = [
   '/catchlog/',
   '/catchlog/index.html',
@@ -28,7 +28,7 @@ self.addEventListener('fetch', e => {
   // Network first for API calls (tide, weather), cache first for app assets
   const url = new URL(e.request.url);
   const isApi = url.hostname.includes('kartverket') ||
-                url.hostname.includes('open-meteo') ||
+                url.hostname.includes('met.no') ||
                 url.hostname.includes('allorigins');
 
   if (isApi) {
