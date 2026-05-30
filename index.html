@@ -564,11 +564,11 @@ async function fetchTideData(lat, lon, isoTs) {
       }
     }
   }
-  const txt2 = await proxyFetch(`${BASE}?lat=${ls}&lon=${lo}&fromtime=${toKartverketTime(from)}&totime=${toKartverketTime(to)}&datatype=pre&refcode=cd&lang=en&interval=10&dst=0&tide_request=locationdata`);
+  const txt2 = await proxyFetch(`${BASE}?lat=${ls}&lon=${lo}&fromtime=${toKartverketTime(from)}&totime=${toKartverketTime(to)}&datatype=pre&refcode=cd&lang=en&interval=10&dst=1&tide_request=locationdata`);
   // Parse all waterlevel readings to derive direction
   const doc2 = new DOMParser().parseFromString(txt2, "text/xml");
   const wls = [...doc2.querySelectorAll("waterlevel")].map(el => ({
-    t: new Date(el.getAttribute("time").replace("T", " ")),
+    t: new Date(el.getAttribute("time")),
     v: parseFloat(el.getAttribute("value"))
   })).filter(x => !isNaN(x.v) && !isNaN(x.t.getTime())).sort((a, b) => a.t - b.t);
   if (!wls.length) return null;
@@ -591,10 +591,10 @@ async function fetchTideData(lat, lon, isoTs) {
   try {
     const tabFrom = new Date(cd);
     const tabTo   = new Date(cd.getTime() + 14 * 3600000);
-    const txtTab = await proxyFetch(`${BASE}?lat=${ls}&lon=${lo}&fromtime=${toKartverketTime(tabFrom)}&totime=${toKartverketTime(tabTo)}&datatype=tab&refcode=cd&lang=en&dst=0&tide_request=locationdata`);
+    const txtTab = await proxyFetch(`${BASE}?lat=${ls}&lon=${lo}&fromtime=${toKartverketTime(tabFrom)}&totime=${toKartverketTime(tabTo)}&datatype=tab&refcode=cd&lang=en&dst=1&tide_request=locationdata`);
     const docTab = new DOMParser().parseFromString(txtTab, "text/xml");
     const tabEls = [...docTab.querySelectorAll("waterlevel")].map(el => ({
-      t: new Date(el.getAttribute("time").replace("T", " ")),
+      t: new Date(el.getAttribute("time")),
       v: parseFloat(el.getAttribute("value")),
       flag: (el.getAttribute("flag") || "").toUpperCase()
     })).filter(x => !isNaN(x.v) && !isNaN(x.t.getTime()) && x.t > cd);
@@ -631,6 +631,7 @@ function useEnv() {
       const metResp = await fetch(
         `https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=${la}&lon=${lo}`
       );
+      if (!metResp.ok) throw new Error('met.no HTTP ' + metResp.status);
       const metData = await metResp.json();
       // Pick the timeseries entry whose time is closest to now
       // (timeseries[0] is the model-run start, which can be 1-2 hours in the past)
@@ -690,6 +691,7 @@ function useEnv() {
           const obsData = await frostGet(`/observations/v0.jsonld?sources=${stId}&elements=air_pressure_at_sea_level&referencetime=${isoFrom}/${isoTo}&timeresolutions=PT1H`);
           if (obsData.data?.length >= 2) {
             const frostPts = obsData.data
+              .sort((a, b) => new Date(a.referenceTime) - new Date(b.referenceTime))
               .map(r => r.observations?.[0]?.value)
               .filter(v => v != null)
               .map(v => Math.round(v * 10) / 10);
@@ -1545,7 +1547,7 @@ function TripsList({
       waterTemp: waterTemp ? parseFloat(waterTemp) : null,
       lineType,
       photo: spotPhoto,
-      weather,
+      weather: weather ? (({pressureHistory, ...w}) => w)(weather) : null,
       tide,
       notes: spotNotes.trim()
     }, {
@@ -1980,7 +1982,7 @@ function AddSpotForm({
       waterTemp: waterTemp ? parseFloat(waterTemp) : null,
       lineType,
       photo,
-      weather,
+      weather: weather ? (({pressureHistory, ...w}) => w)(weather) : null,
       tide,
       notes: notes.trim()
     });
@@ -2255,7 +2257,7 @@ function CatchForm({
       fishPhoto,
       flyPhoto,
       gps,
-      weather,
+      weather: weather ? (({pressureHistory, ...w}) => w)(weather) : null,
       tide,
       tripId: activeTrip?.id || null,
       spotId: activeSpot?.id || null
@@ -2537,7 +2539,7 @@ function ObsForm({
       estimatedSize: estSize.trim(),
       notes: notes.trim(),
       gps,
-      weather,
+      weather: weather ? (({pressureHistory, ...w}) => w)(weather) : null,
       tide,
       tripId: activeTrip?.id || null,
       spotId: activeSpot?.id || null

@@ -1,4 +1,4 @@
-const CACHE = 'catchlog-v29-12';
+const CACHE = 'catchlog-v29-14';
 const ASSETS = [
   '/catchlog/',
   '/catchlog/index.html',
@@ -29,7 +29,8 @@ self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
   const isApi = url.hostname.includes('kartverket') ||
                 url.hostname.includes('met.no') ||
-                url.hostname.includes('allorigins');
+                url.hostname.includes('allorigins') ||
+                url.hostname.includes('corsproxy');
 
   if (isApi) {
     // Network only for live data — don't cache API responses
