@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.14</title>
+  <title>The Catch Log v2.15</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -1167,7 +1167,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.14 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.15 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -2242,6 +2242,7 @@ function CatchForm({
       URL.revokeObjectURL(url);
     };
     img.src = url;
+    e.target.value = "";
   };
   const handleSave = () => {
     if (!species.trim()) return;
@@ -2697,6 +2698,10 @@ function Analytics({ catches, spots, trips }) {
   // Species-filtered catches (on top of year filter)
   var fc = speciesFilter === "all" ? yCatches : yCatches.filter(function(c) { return c.species === speciesFilter; });
 
+  // When a species filter is active, narrow sessions to those targeting that species
+  var kpiTrips = speciesFilter === "all" ? yTrips
+    : yTrips.filter(function(t) { return t.targetSpecies === speciesFilter || fc.some(function(c) { return c.tripId === t.id; }); });
+
   // ── Bucketing helpers ──
   var hourBucket = function(h) {
     if (h >= 4 && h < 7)  return "04–07";
@@ -2772,7 +2777,7 @@ function Analytics({ catches, spots, trips }) {
 
   // ── Water temp buckets (from all year-filtered data) ──
   var allTemps = fc.map(getWT).concat(
-    spots.filter(function(s) { return yTrips.some(function(t) { return t.id === s.tripId; }); })
+    spots.filter(function(s) { return kpiTrips.some(function(t) { return t.id === s.tripId; }); })
       .map(function(s) { return s.waterTemp; })
   ).filter(function(t) { return t != null; }).map(function(t) { return parseFloat(t); }).filter(function(t) { return !isNaN(t); });
   var tempBucketsAll = (function() {
@@ -2790,7 +2795,7 @@ function Analytics({ catches, spots, trips }) {
   // ── Time of Day — catches per hour ──
   var timeHours = {};
   timeBuckets.forEach(function(b) { timeHours[b] = 0; });
-  yTrips.filter(function(t) { return t.endTime; }).forEach(function(t) {
+  kpiTrips.filter(function(t) { return t.endTime; }).forEach(function(t) {
     var s = new Date(t.startTime).getTime();
     var e = new Date(t.endTime).getTime();
     var step = 900000;
@@ -2807,7 +2812,7 @@ function Analytics({ catches, spots, trips }) {
   // ── Water Temp — catches per hour (temp assumed constant per spot) ──
   var tempHours = {};
   tempBucketsAll.forEach(function(b) { tempHours[b] = 0; });
-  yTrips.filter(function(t) { return t.endTime; }).forEach(function(t) {
+  kpiTrips.filter(function(t) { return t.endTime; }).forEach(function(t) {
     var tripSpots = spots.filter(function(s) { return s.tripId === t.id; })
       .sort(function(a, b) { return new Date(a.timestamp) - new Date(b.timestamp); });
     var tripEnd = new Date(t.endTime).getTime();
@@ -2837,7 +2842,7 @@ function Analytics({ catches, spots, trips }) {
   // fall back to trip-level weather for older data where spots lack weather
   var moonHours = {};
   moonBuckets.forEach(function(b) { moonHours[b] = 0; });
-  yTrips.filter(function(t) { return t.endTime; }).forEach(function(t) {
+  kpiTrips.filter(function(t) { return t.endTime; }).forEach(function(t) {
     var tripSpots = spots.filter(function(s) { return s.tripId === t.id; })
       .sort(function(a, b) { return new Date(a.timestamp) - new Date(b.timestamp); });
     var tripEnd = new Date(t.endTime).getTime();
@@ -2868,7 +2873,7 @@ function Analytics({ catches, spots, trips }) {
   // Same hybrid approach: spot-level when available, trip-level fallback
   var pressHours = {};
   pressBuckets.forEach(function(b) { pressHours[b] = 0; });
-  yTrips.filter(function(t) { return t.endTime; }).forEach(function(t) {
+  kpiTrips.filter(function(t) { return t.endTime; }).forEach(function(t) {
     var tripSpots = spots.filter(function(s) { return s.tripId === t.id; })
       .sort(function(a, b) { return new Date(a.timestamp) - new Date(b.timestamp); });
     var tripEnd = new Date(t.endTime).getTime();
@@ -2897,7 +2902,7 @@ function Analytics({ catches, spots, trips }) {
 
   // ── Catch rate by method ──
   var methodHours = {};
-  yTrips.filter(function(t) { return t.endTime; }).forEach(function(t) {
+  kpiTrips.filter(function(t) { return t.endTime; }).forEach(function(t) {
     var dur = (new Date(t.endTime) - new Date(t.startTime)) / 3600000;
     var tripSpots = spots.filter(function(s) { return s.tripId === t.id; });
     var lines = tripSpots.map(function(s) { return s.lineType; }).filter(Boolean);
@@ -2925,10 +2930,10 @@ function Analytics({ catches, spots, trips }) {
 
   // ── KPIs ──
   var totalCatches  = fc.length;
-  var totalSessions = yTrips.filter(function(t) { return t.endTime; }).length;
-  var hitSessions   = yTrips.filter(function(t) { return t.endTime && fc.some(function(c) { return c.tripId === t.id; }); }).length;
+  var totalSessions = kpiTrips.filter(function(t) { return t.endTime; }).length;
+  var hitSessions   = kpiTrips.filter(function(t) { return t.endTime && fc.some(function(c) { return c.tripId === t.id; }); }).length;
   var successRate   = totalSessions > 0 ? Math.round(hitSessions / totalSessions * 100) : 0;
-  var totalHours    = yTrips.filter(function(t) { return t.endTime; }).reduce(function(sum, t) {
+  var totalHours    = kpiTrips.filter(function(t) { return t.endTime; }).reduce(function(sum, t) {
     return sum + (new Date(t.endTime) - new Date(t.startTime)) / 3600000;
   }, 0);
   var hrsPerCatch   = totalCatches > 0 ? (totalHours / totalCatches).toFixed(1) : "—";
@@ -3098,12 +3103,14 @@ function TripDetail({
   const [editEnd, setEditEnd] = useState(toLocalDT(t.endTime));
   const derivedMethod = deriveMethod(spots);
   const currentEndISO = editEnd ? new Date(editEnd).toISOString() : null;
-  const dirty = editTarget !== t.targetSpecies || editNotes !== t.notes || currentEndISO !== t.endTime;
+  const dirty = (editTarget || "") !== (t.targetSpecies || "")
+    || (editNotes || "") !== (t.notes || "")
+    || toLocalDT(currentEndISO) !== toLocalDT(t.endTime);
   const save = () => onUpdate({
     ...t,
     targetSpecies: editTarget,
     notes: editNotes,
-    endTime: currentEndISO
+    endTime: currentEndISO || t.endTime
   });
   return /*#__PURE__*/React.createElement("div", {
     className: "modal-overlay",
@@ -3723,7 +3730,7 @@ function ExportTab({ trips, spots, catches, observations, onRestore, cloudUser, 
       })),
     restoreStep === "done" && /*#__PURE__*/React.createElement("div", {
       style: { fontSize: 11, color: "#7dbf7d", letterSpacing: 1 }
-    }, "Restore complete \u2014 reload the app to see your data.")),
+    }, "Restore complete \u2014 your data is ready.")),
 
   /*#__PURE__*/React.createElement("div", { className: "csv-section-title" }, "CSV Export \u2014 for spreadsheet analysis"),
   sheets.map(s => /*#__PURE__*/React.createElement("div", { key: s.title, className: "export-card" },
