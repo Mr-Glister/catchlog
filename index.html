@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.13</title>
+  <title>The Catch Log v2.14</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -867,10 +867,6 @@ function restoreFromFile(file, onDone) {
       if (!data.trips || !data.spots || !data.catches || !data.observations) {
         alert("Invalid backup file — missing expected data."); return;
       }
-      localStorage.setItem("fl_trips_v3",  JSON.stringify(data.trips));
-      localStorage.setItem("fl_spots_v2",  JSON.stringify(data.spots));
-      localStorage.setItem("fl_catches_v3", JSON.stringify(data.catches));
-      localStorage.setItem("fl_obs_v2",    JSON.stringify(data.observations));
       onDone(data);
     } catch { alert("Could not read backup file. Make sure it's a valid CatchLog JSON backup."); }
   };
@@ -1087,6 +1083,9 @@ function FishLog() {
   const delTrip = id => {
     if (!confirm("Delete this session and all its data?")) return;
     mutTrips(p => p.filter(t => t.id !== id));
+    mutSpots(p => p.filter(s => s.tripId !== id));
+    mutCatches(p => p.filter(c => c.tripId !== id));
+    mutObs(p => p.filter(o => o.tripId !== id));
     setSelTrip(null);
     showToast("Trip deleted");
   };
@@ -1168,7 +1167,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.13 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.14 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
