@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.10</title>
+  <title>The Catch Log v2.11</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -1166,7 +1166,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.10 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.11 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -1442,7 +1442,7 @@ function ConditionsModal({ onClose }) {
     weather?.pressure != null ? /*#__PURE__*/React.createElement("span", { className: "field-value" },
       weather.pressure, " hPa", weather.pressureLevel ? " \xB7 " + weather.pressureLevel : "",
       weather.pressureTrend === "rising" ? " ↑" : weather.pressureTrend === "falling" ? " ↓" : "",
-      weather.pressureLabel && weather.pressureTrend !== "steady" ? /*#__PURE__*/React.createElement("span", {
+      weather.pressureLabel ? /*#__PURE__*/React.createElement("span", {
         style: {fontSize: 10, color: "#999", fontStyle: "italic"}
       }, " (" + weather.pressureLabel + ")") : null
     ) : /*#__PURE__*/React.createElement("span", { className: "field-value", style: {color: "#bbb"} }, "— get GPS first")),
@@ -1597,7 +1597,6 @@ function TripsList({
     ref: spotPhotoRef,
     type: "file",
     accept: "image/*",
-    capture: "environment",
     onChange: e => { const f = e.target.files[0]; if (f) compressPhoto(f, setSpotPhoto); e.target.value = ""; }
   }))), /*#__PURE__*/React.createElement("div", {
     className: "field-row"
@@ -1753,7 +1752,7 @@ function TripsList({
     className: "field-label"
   }, "Pressure"), weather?.pressure != null ? /*#__PURE__*/React.createElement("span", {
     className: "field-value"
-  }, weather.pressure, " hPa", weather.pressureLevel ? ` \xB7 ${weather.pressureLevel}` : "", weather.pressureTrend === "rising" ? " \u2191" : weather.pressureTrend === "falling" ? " \u2193" : "", weather.pressureLabel && weather.pressureTrend !== "steady" ? /*#__PURE__*/React.createElement("span", {
+  }, weather.pressure, " hPa", weather.pressureLevel ? ` \xB7 ${weather.pressureLevel}` : "", weather.pressureTrend === "rising" ? " \u2191" : weather.pressureTrend === "falling" ? " \u2193" : "", weather.pressureLabel ? /*#__PURE__*/React.createElement("span", {
     style: {fontSize: 10, color: "#999", fontStyle: "italic"}
   }, ` (${weather.pressureLabel})`) : null) : /*#__PURE__*/React.createElement("input", {
     className: "field-input",
@@ -2014,7 +2013,6 @@ function AddSpotForm({
     ref: photoRef,
     type: "file",
     accept: "image/*",
-    capture: "environment",
     onChange: e => { const f = e.target.files[0]; if (f) compressPhoto(f, setPhoto); e.target.value = ""; }
   }))), /*#__PURE__*/React.createElement("div", {
     className: "field-row"
@@ -2163,7 +2161,7 @@ function AddSpotForm({
     className: "field-label"
   }, "Pressure"), weather?.pressure != null ? /*#__PURE__*/React.createElement("span", {
     className: "field-value"
-  }, weather.pressure, " hPa", weather.pressureLevel ? ` \xB7 ${weather.pressureLevel}` : "", weather.pressureTrend === "rising" ? " \u2191" : weather.pressureTrend === "falling" ? " \u2193" : "", weather.pressureLabel && weather.pressureTrend !== "steady" ? /*#__PURE__*/React.createElement("span", {
+  }, weather.pressure, " hPa", weather.pressureLevel ? ` \xB7 ${weather.pressureLevel}` : "", weather.pressureTrend === "rising" ? " \u2191" : weather.pressureTrend === "falling" ? " \u2193" : "", weather.pressureLabel ? /*#__PURE__*/React.createElement("span", {
     style: {fontSize: 10, color: "#999", fontStyle: "italic"}
   }, ` (${weather.pressureLabel})`) : null) : /*#__PURE__*/React.createElement("input", {
     className: "field-input",
@@ -2305,7 +2303,6 @@ function CatchForm({
     ref: ref,
     type: "file",
     accept: "image/*",
-    capture: "environment",
     onChange: hp(setter)
   })))), /*#__PURE__*/React.createElement("div", {
     className: "field-group"
@@ -2465,7 +2462,7 @@ function CatchForm({
   }, weather.pressure, " hPa",
     weather.pressureLevel ? ` · ${weather.pressureLevel}` : "",
     weather.pressureTrend === "rising" ? " ↑" : weather.pressureTrend === "falling" ? " ↓" : "",
-    weather.pressureLabel && weather.pressureTrend !== "steady" ? /*#__PURE__*/React.createElement("span", { style: { fontSize: 10, color: "#999", fontStyle: "italic" } }, ` (${weather.pressureLabel})`) : null
+    weather.pressureLabel ? /*#__PURE__*/React.createElement("span", { style: { fontSize: 10, color: "#999", fontStyle: "italic" } }, ` (${weather.pressureLabel})`) : null
   ) : /*#__PURE__*/React.createElement("input", {
     className: "field-input",
     placeholder: "e.g. 1013 hPa"
@@ -2614,7 +2611,7 @@ function ObsForm({
               weather.pressure, " hPa",
               weather.pressureLevel ? ` · ${weather.pressureLevel}` : "",
               weather.pressureTrend === "rising" ? " ↑" : weather.pressureTrend === "falling" ? " ↓" : "",
-              weather.pressureLabel && weather.pressureTrend !== "steady" ? /*#__PURE__*/React.createElement("span", { style: { fontSize: 10, color: "#999", fontStyle: "italic" } }, ` (${weather.pressureLabel})`) : null)
+              weather.pressureLabel ? /*#__PURE__*/React.createElement("span", { style: { fontSize: 10, color: "#999", fontStyle: "italic" } }, ` (${weather.pressureLabel})`) : null)
           : /*#__PURE__*/React.createElement("span", { className: "field-value", style:{color:"#ccc"} }, "\u2014")),
       /*#__PURE__*/React.createElement("div", { className: "field-row" },
         /*#__PURE__*/React.createElement("span", { className: "field-icon" }, "\uD83D\uDCA8"),
@@ -3259,11 +3256,25 @@ function TripDetail({
         fontFamily: "'Source Code Pro',monospace",
         marginBottom: 6
       }
-    }, formatCoords(s.gps.lat, s.gps.lon)), s.photo && /*#__PURE__*/React.createElement("img", {
-      src: s.photo,
-      alt: "spot",
-      className: "spot-photo"
-    }), s.weather && /*#__PURE__*/React.createElement("div", {
+    }, formatCoords(s.gps.lat, s.gps.lon)), (function() {
+      var inputId = "sp-photo-" + s.id;
+      return /*#__PURE__*/React.createElement("div", null,
+        /*#__PURE__*/React.createElement("input", {
+          id: inputId, type: "file", accept: "image/*", style: { display: "none" },
+          onChange: function(e) { var f = e.target.files[0]; if (f) compressPhoto(f, function(d) { onUpdSpot(Object.assign({}, s, { photo: d })); }); e.target.value = ""; }
+        }),
+        s.photo
+          ? /*#__PURE__*/React.createElement("img", {
+              src: s.photo, alt: "spot", className: "spot-photo",
+              style: { cursor: "pointer" },
+              onClick: function() { document.getElementById(inputId).click(); }
+            })
+          : /*#__PURE__*/React.createElement("span", {
+              onClick: function() { document.getElementById(inputId).click(); },
+              style: { fontSize: 10, color: "var(--text-3)", cursor: "pointer", display: "inline-block", marginBottom: 6 }
+            }, "📷 Add spot photo")
+      );
+    })(), s.weather && /*#__PURE__*/React.createElement("div", {
       style: {fontSize: 10, color: "#999", marginBottom: 6, lineHeight: 1.6, fontFamily: "'Source Code Pro',monospace"}
     }, [s.weather.airTemp != null ? `${s.weather.airTemp}\xB0C air` : null, s.weather.pressure != null ? `${s.weather.pressure} hPa${s.weather.pressureLevel ? ` ${s.weather.pressureLevel}` : ""}` : null, s.weather.windSpeed != null ? `${s.weather.windSpeed} m/s ${windCompass(s.weather.windDir)}` : null, s.tide?.seasonal != null ? `Tide ${tidePct(s.tide.seasonal)}%${tideArrow(s.tide.direction)}` : null, s.weather.moon || null].filter(Boolean).join(" \xB7 ")), /*#__PURE__*/React.createElement("div", {
       className: "spot-items"
@@ -3449,7 +3460,7 @@ function CatchDetail({
   }, c.weather.pressure, " hPa",
     c.weather.pressureLevel ? ` · ${c.weather.pressureLevel}` : "",
     c.weather.pressureTrend === "rising" ? " ↑" : c.weather.pressureTrend === "falling" ? " ↓" : "",
-    c.weather.pressureLabel && c.weather.pressureTrend !== "steady" ? /*#__PURE__*/React.createElement("span", { style: { fontSize: 10, color: "#999", fontStyle: "italic", display: "block" } }, c.weather.pressureLabel) : null
+    c.weather.pressureLabel ? /*#__PURE__*/React.createElement("span", { style: { fontSize: 10, color: "#999", fontStyle: "italic", display: "block" } }, c.weather.pressureLabel) : null
   )), c.weather?.windSpeed != null && /*#__PURE__*/React.createElement("div", {
     className: "modal-stat"
   }, /*#__PURE__*/React.createElement("div", {
@@ -3585,7 +3596,7 @@ function ObsDetail({
             o.weather.pressure, " hPa",
             o.weather.pressureLevel ? ` · ${o.weather.pressureLevel}` : "",
             o.weather.pressureTrend === "rising" ? " ↑" : o.weather.pressureTrend === "falling" ? " ↓" : "",
-            o.weather.pressureLabel && o.weather.pressureTrend !== "steady" ? /*#__PURE__*/React.createElement("span", { style: { fontSize: 10, color: "#999", fontStyle: "italic", display: "block" } }, o.weather.pressureLabel) : null)),
+            o.weather.pressureLabel ? /*#__PURE__*/React.createElement("span", { style: { fontSize: 10, color: "#999", fontStyle: "italic", display: "block" } }, o.weather.pressureLabel) : null)),
         o.weather?.windSpeed != null && /*#__PURE__*/React.createElement("div", { className: "modal-stat" },
           /*#__PURE__*/React.createElement("div", { className: "modal-stat-label" }, "Wind"),
           /*#__PURE__*/React.createElement("div", { className: "modal-stat-value" }, o.weather.windSpeed, " m/s", o.weather.windDir != null ? ` ${windCompass(o.weather.windDir)}` : "")),
