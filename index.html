@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.17</title>
+  <title>The Catch Log v2.18</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -187,7 +187,7 @@ const css = `
   .field-group { background: var(--paper-2); border: 1px solid var(--rule); border-radius: 3px; overflow: hidden; }
   .field-group-title { background: transparent; color: var(--text-3); font-size: 10px; letter-spacing: 2px;
     text-transform: uppercase; padding: 13px 14px 10px; display: flex; align-items: center; gap: 8px;
-    border-bottom: 1px solid var(--rule); font-weight: 600; }
+    border-bottom: 1px solid var(--rule); font-weight: 600; position: relative; }
   .field-group-title.moss { color: var(--moss); }
   .field-row { display: flex; align-items: center; padding: 12px 14px; gap: 10px; border-bottom: 1px solid var(--rule); }
   .field-row:last-child { border-bottom: none; }
@@ -236,6 +236,10 @@ const css = `
   .save-btn:disabled { opacity: .35; cursor: not-allowed; }
   .save-btn.green { background: var(--moss); }
   .save-btn.green:hover { background: #2f4639; }
+  .form-x { position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+    background: none; border: none; color: var(--text-3); font-size: 16px;
+    cursor: pointer; padding: 4px 8px; line-height: 1; font-family: inherit; }
+  .form-x:active { color: var(--text); }
 
   /* Lists & empty states */
   .log-wrap { padding: 14px; display: flex; flex-direction: column; gap: 10px; }
@@ -393,8 +397,9 @@ const css = `
   .qa-btn.primary { background: var(--moss); border-color: var(--moss); min-height: 72px;
     font-size: 15px; letter-spacing: 2px; }
   .qa-btn.primary:active { background: #2f4639; }
-  .qa-btn.end { border-color: rgba(255,255,255,.08); color: rgba(255,255,255,.4);
-    min-height: 48px; font-size: 10px; }
+  .qa-btn.end { border-color: rgba(180,70,60,.5); color: rgba(255,255,255,.55);
+    min-height: 48px; font-size: 10px; background: rgba(140,50,42,.35); }
+  .qa-btn.end:active { background: rgba(140,50,42,.55); }
   .qa-dismiss { background: none; border: none; color: rgba(255,255,255,.35);
     font-size: 11px; letter-spacing: 1.5px; text-transform: uppercase;
     cursor: pointer; margin-top: 20px; font-family: 'Inter', sans-serif;
@@ -1480,7 +1485,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.17 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.18 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -1522,7 +1527,8 @@ function FishLog() {
     onAddObs: addObs,
     logMode: logMode,
     setLogMode: setLogMode,
-    spots: spots
+    spots: spots,
+    onCancel: () => { setTab("trips"); setShowQuickAction(true); }
   }), tab === "logbook" && /*#__PURE__*/React.createElement(Journal, {
     catches: catches,
     observations: observations,
@@ -1893,7 +1899,10 @@ function TripsList({
     className: "field-group"
   }, /*#__PURE__*/React.createElement("div", {
     className: "field-group-title moss"
-  }, "First Spot"), /*#__PURE__*/React.createElement("div", {
+  }, "First Spot", /*#__PURE__*/React.createElement("button", {
+    className: "form-x",
+    onClick: () => setShowForm(false)
+  }, "\xD7")), /*#__PURE__*/React.createElement("div", {
     className: "photo-grid",
     style: { padding: "12px 14px" }
   }, /*#__PURE__*/React.createElement("div", {
@@ -1911,6 +1920,7 @@ function TripsList({
     ref: spotPhotoRef,
     type: "file",
     accept: "image/*",
+    capture: "environment",
     onChange: e => { const f = e.target.files[0]; if (f) compressPhoto(f, setSpotPhoto); e.target.value = ""; }
   }))), /*#__PURE__*/React.createElement("div", {
     className: "field-row"
@@ -2010,7 +2020,10 @@ function TripsList({
       padding: "2px 0",
       resize: "none"
     }
-  })), /*#__PURE__*/React.createElement("div", {
+  })), /*#__PURE__*/React.createElement("button", {
+    className: "save-btn green",
+    onClick: handleStart
+  }, "Start Session"), /*#__PURE__*/React.createElement("div", {
     className: "field-group-title"
   }, "Conditions", (weatherStatus === "loading" || tideStatus === "loading") && /*#__PURE__*/React.createElement("span", {
     style: {opacity: .5, fontSize: 9}
@@ -2094,31 +2107,7 @@ function TripsList({
     className: "info-note"
   }, "Get GPS fix to auto-load air temp, pressure, wind & tide"), tideStatus === "ok" && /*#__PURE__*/React.createElement("div", {
     className: "info-note"
-  }, "Tide \xA9 Kartverket/NMA (CC BY 4.0)"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex"
-    }
-  }, /*#__PURE__*/React.createElement("button", {
-    className: "save-btn green",
-    style: {
-      borderRadius: 0,
-      flex: 1,
-      marginTop: 0,
-      borderTop: "none",
-      padding: "14px"
-    },
-    onClick: handleStart
-  }, "Start Session"), /*#__PURE__*/React.createElement("button", {
-    onClick: () => setShowForm(false),
-    style: {
-      padding: "14px 18px",
-      background: "transparent",
-      border: "none",
-      cursor: "pointer",
-      color: "#aaa",
-      fontSize: 20
-    }
-  }, "\xD7"))), sorted.length === 0 && !showForm && /*#__PURE__*/React.createElement("div", {
+  }, "Tide \xA9 Kartverket/NMA (CC BY 4.0)")), sorted.length === 0 && !showForm && /*#__PURE__*/React.createElement("div", {
     className: "empty-state"
   }, /*#__PURE__*/React.createElement("div", {
     className: "empty-icon"
@@ -2191,7 +2180,8 @@ function LogTab({
   onAddObs,
   logMode,
   setLogMode,
-  spots
+  spots,
+  onCancel
 }) {
   const mode = logMode;
   const setMode = setLogMode;
@@ -2248,7 +2238,19 @@ function LogTab({
       color: mode === m ? "var(--paper)" : "#888",
       transition: "all .2s"
     }
-  }, label))), mode === "catch" && /*#__PURE__*/React.createElement(CatchForm, {
+  }, label)), onCancel && /*#__PURE__*/React.createElement("button", {
+    onClick: onCancel,
+    style: {
+      padding: "9px 10px",
+      fontSize: 16,
+      background: "none",
+      border: "1px solid var(--mist)",
+      borderRadius: 4,
+      cursor: "pointer",
+      color: "#888",
+      lineHeight: 1
+    }
+  }, "\xD7")), mode === "catch" && /*#__PURE__*/React.createElement(CatchForm, {
     activeTrip: activeTrip,
     activeSpot: activeSpot,
     onSave: onAddCatch
@@ -2327,6 +2329,7 @@ function AddSpotForm({
     ref: photoRef,
     type: "file",
     accept: "image/*",
+    capture: "environment",
     onChange: e => { const f = e.target.files[0]; if (f) compressPhoto(f, setPhoto); e.target.value = ""; }
   }))), /*#__PURE__*/React.createElement("div", {
     className: "field-row"
@@ -2604,6 +2607,7 @@ function CatchForm({
     ref: ref,
     type: "file",
     accept: "image/*",
+    capture: "environment",
     onChange: hp(setter)
   })))), /*#__PURE__*/React.createElement("div", {
     className: "field-group"
