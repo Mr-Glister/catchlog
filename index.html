@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.18</title>
+  <title>The Catch Log v2.19</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -469,8 +469,10 @@ const durStr = (s, e) => {
   return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`;
 };
 function toKartverketTime(d) {
+  // Kartverket API always interprets input as CET (UTC+1)
+  const cet = new Date(d.getTime() + 3600000);
   const p = n => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+  return `${cet.getUTCFullYear()}-${p(cet.getUTCMonth() + 1)}-${p(cet.getUTCDate())}T${p(cet.getUTCHours())}:${p(cet.getUTCMinutes())}`;
 }
 function normalizeTide(v, lat, hat) {
   const r = hat - lat;
@@ -572,7 +574,7 @@ async function fetchTideData(lat, lon, isoTs) {
       }
     }
   }
-  const txt2 = await proxyFetch(`${BASE}?lat=${ls}&lon=${lo}&fromtime=${toKartverketTime(from)}&totime=${toKartverketTime(to)}&datatype=pre&refcode=cd&lang=en&interval=10&dst=1&tide_request=locationdata`);
+  const txt2 = await proxyFetch(`${BASE}?lat=${ls}&lon=${lo}&fromtime=${toKartverketTime(from)}&totime=${toKartverketTime(to)}&datatype=pre&refcode=cd&lang=en&interval=10&tide_request=locationdata`);
   // Parse all waterlevel readings to derive direction
   const doc2 = new DOMParser().parseFromString(txt2, "text/xml");
   const wls = [...doc2.querySelectorAll("waterlevel")].map(el => ({
@@ -599,7 +601,7 @@ async function fetchTideData(lat, lon, isoTs) {
   try {
     const tabFrom = new Date(cd);
     const tabTo   = new Date(cd.getTime() + 14 * 3600000);
-    const txtTab = await proxyFetch(`${BASE}?lat=${ls}&lon=${lo}&fromtime=${toKartverketTime(tabFrom)}&totime=${toKartverketTime(tabTo)}&datatype=tab&refcode=cd&lang=en&dst=1&tide_request=locationdata`);
+    const txtTab = await proxyFetch(`${BASE}?lat=${ls}&lon=${lo}&fromtime=${toKartverketTime(tabFrom)}&totime=${toKartverketTime(tabTo)}&datatype=tab&refcode=cd&lang=en&tide_request=locationdata`);
     const docTab = new DOMParser().parseFromString(txtTab, "text/xml");
     const tabEls = [...docTab.querySelectorAll("waterlevel")].map(el => ({
       t: new Date(el.getAttribute("time")),
@@ -1485,7 +1487,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.18 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.19 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
