@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.20</title>
+  <title>The Catch Log v2.21</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -63,11 +63,13 @@
       });
     }
     function cloudPush(uid) {
+      var photoUrls; try { photoUrls = JSON.parse(localStorage.getItem('cl_photo_urls') || '{}'); } catch(e) { photoUrls = {}; }
       return cloudDoc(uid).set({
         trips:        JSON.parse(localStorage.getItem('fl_trips_v3')  || '[]'),
         spots:        JSON.parse(localStorage.getItem('fl_spots_v2')  || '[]'),
         catches:      JSON.parse(localStorage.getItem('fl_catches_v3')|| '[]'),
         observations: JSON.parse(localStorage.getItem('fl_obs_v2')    || '[]'),
+        photoUrls:    photoUrls,
         lastUpdated:  Date.now()
       });
     }
@@ -1242,6 +1244,34 @@ function cloudDownloadPhotos(photoUrls) {
   });
 }
 
+// Re-fetch any missing photo URLs from Firebase Storage (recovery after cloudPush wipe)
+function cloudRecoverPhotoUrls(uid) {
+  var spots, catches;
+  try { spots = JSON.parse(localStorage.getItem('fl_spots_v2') || '[]'); } catch(e) { spots = []; }
+  try { catches = JSON.parse(localStorage.getItem('fl_catches_v3') || '[]'); } catch(e) { catches = []; }
+  var urlMap; try { urlMap = JSON.parse(localStorage.getItem('cl_photo_urls') || '{}'); } catch(e) { urlMap = {}; }
+  var ids = [];
+  spots.forEach(function(s) { if (isPhotoId(s.photo) && !urlMap[s.photo]) ids.push(s.photo); });
+  catches.forEach(function(c) {
+    if (isPhotoId(c.fishPhoto) && !urlMap[c.fishPhoto]) ids.push(c.fishPhoto);
+    if (isPhotoId(c.flyPhoto) && !urlMap[c.flyPhoto]) ids.push(c.flyPhoto);
+  });
+  if (!ids.length) return;
+  var chain = Promise.resolve();
+  ids.forEach(function(id) {
+    chain = chain.then(function() {
+      return fbStorage.ref('users/' + uid + '/photos/' + id + '.jpg').getDownloadURL().then(function(url) {
+        urlMap[id] = url;
+      }).catch(function() {});
+    });
+  });
+  chain.then(function() {
+    _origLocalStorageSet('cl_photo_urls', JSON.stringify(urlMap));
+    cloudDownloadPhotos(urlMap);
+    cloudDoc(uid).update({ photoUrls: urlMap }).catch(function() {});
+  });
+}
+
 // ── Line types & method derivation ───────────────────────────────────────────
 
 const FLY_LINES = ["Float", "Slow Int", "Fast Int", "Sink3", "Sink5", "Sink7"];
@@ -1352,6 +1382,7 @@ function FishLog() {
           setCatches(remote.catches    || []);
           setObservations(remote.observations || []);
           cloudDownloadPhotos(remote.photoUrls);
+          if (typeof cloudRecoverPhotoUrls === 'function') cloudRecoverPhotoUrls(user.uid);
         } else {
           // Local is same age, newer, or unknown — push local up to cloud
           cloudPush(user.uid);
@@ -1502,7 +1533,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.20 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.21 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -3360,12 +3391,12 @@ function Journal({
   const tabBtn = active => ({
     flex: 1, padding: "9px 4px", fontSize: 9, fontWeight: 700, letterSpacing: .8, textTransform: "uppercase",
     border: "1px solid var(--mist)", borderRadius: 4, cursor: "pointer",
-    background: active ? "var(--slate)" : "white", color: active ? "var(--paper)" : "#888", transition: "all .2s"
+    background: active ? "var(--moss)" : "white", color: active ? "var(--paper)" : "#888", transition: "all .2s"
   });
   return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     className: "log-wrap"
   }, /*#__PURE__*/React.createElement("div", {
-    style: { display: "flex", gap: 6, padding: "12px 14px 0" }
+    style: { display: "flex", gap: 6, padding: "0 0 4px" }
   }, /*#__PURE__*/React.createElement("button", {
     style: tabBtn(journalTab === "catches"), onClick: () => setJournalTab("catches")
   }, "Catches"), /*#__PURE__*/React.createElement("button", {
@@ -3445,16 +3476,14 @@ function Journal({
       background: "white", cursor: loc.rep.gps ? "pointer" : "default"
     }
   }, /*#__PURE__*/React.createElement("span", {
-    style: { fontSize: 20 }
-  }, "📍"), /*#__PURE__*/React.createElement("div", {
+    style: { color: "var(--slate)", fontSize: 18, fontWeight: 600, lineHeight: 1 }
+  }, "›"), /*#__PURE__*/React.createElement("div", {
     style: { flex: 1 }
   }, /*#__PURE__*/React.createElement("div", {
     style: { fontFamily: "'Inter',sans-serif", fontWeight: 600, fontSize: 14, color: "var(--ink)" }
   }, loc.name), /*#__PURE__*/React.createElement("div", {
     style: { fontSize: 11, color: "var(--text-3)", marginTop: 3, fontFamily: "'Source Code Pro',monospace" }
-  }, loc.sessionCount, " session", loc.sessionCount !== 1 ? "s" : "", " \xB7 ", loc.catchCount, " catch", loc.catchCount !== 1 ? "es" : "", " \xB7 last ", fmtDT(loc.lastVisit))), loc.rep.gps && /*#__PURE__*/React.createElement("span", {
-    style: { color: "var(--text-3)", fontSize: 18 }
-  }, "›"))))), selHistorySpot && /*#__PURE__*/React.createElement(SpotHistory, {
+  }, loc.sessionCount, " session", loc.sessionCount !== 1 ? "s" : "", " \xB7 ", loc.catchCount, " catch", loc.catchCount !== 1 ? "es" : "", " \xB7 last ", fmtDT(loc.lastVisit))))))), selHistorySpot && /*#__PURE__*/React.createElement(SpotHistory, {
     spot: selHistorySpot,
     allSpots: spots,
     allCatches: catches,
