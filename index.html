@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.19</title>
+  <title>The Catch Log v2.20</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -468,6 +468,21 @@ const durStr = (s, e) => {
   const m = Math.round((new Date(e) - new Date(s)) / 60000);
   return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`;
 };
+function geoDistM(lat1, lon1, lat2, lon2) {
+  const R = 6371000, dLat = (lat2 - lat1) * Math.PI / 180, dLon = (lon2 - lon1) * Math.PI / 180;
+  const x = dLon * Math.cos((lat1 + lat2) * Math.PI / 360);
+  return R * Math.sqrt(dLat * dLat + x * x);
+}
+function nearestSpotName(gps, allSpots) {
+  if (!gps) return null;
+  let best = null, bestD = 100;
+  for (const s of allSpots) {
+    if (!s.gps || !s.name) continue;
+    const d = geoDistM(gps.lat, gps.lon, s.gps.lat, s.gps.lon);
+    if (d < bestD) { bestD = d; best = s.name; }
+  }
+  return best;
+}
 function toKartverketTime(d) {
   // Kartverket API always interprets input as CET (UTC+1)
   const cet = new Date(d.getTime() + 3600000);
@@ -1487,20 +1502,20 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.19 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.20 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
-    onClick: () => { setTab("trips"); if (activeTrip) setShowQuickAction(true); }
+    onClick: () => { setTab("trips"); window.scrollTo(0,0); if (activeTrip) setShowQuickAction(true); }
   }, "Sessions"), /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "logbook" ? " active" : ""}`,
-    onClick: () => { setTab("logbook"); if (activeTrip) setShowQuickAction(true); }
+    onClick: () => { setTab("logbook"); window.scrollTo(0,0); if (activeTrip) setShowQuickAction(true); }
   }, "Logbook"), /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "insights" ? " active" : ""}`,
-    onClick: () => { setTab("insights"); if (activeTrip) setShowQuickAction(true); }
+    onClick: () => { setTab("insights"); window.scrollTo(0,0); if (activeTrip) setShowQuickAction(true); }
   }, "Insights"), /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "export" ? " active" : ""}`,
-    onClick: () => { setTab("export"); if (activeTrip) setShowQuickAction(true); }
+    onClick: () => { setTab("export"); window.scrollTo(0,0); if (activeTrip) setShowQuickAction(true); }
   }, "Export"))), activeTrip && /*#__PURE__*/React.createElement("div", {
     className: "active-banner"
   }, /*#__PURE__*/React.createElement("div", {
@@ -1514,6 +1529,7 @@ function FishLog() {
   }, "", activeSpot.waterTemp, "\xB0C"))), tab === "trips" && /*#__PURE__*/React.createElement(TripsList, {
     trips: trips,
     tripSpots: tripSpots,
+    spots: spots,
     tripCatches: tripCatches,
     tripObs: tripObs,
     activeTrip: activeTrip,
@@ -1535,6 +1551,7 @@ function FishLog() {
     catches: catches,
     observations: observations,
     spots: spots,
+    trips: trips,
     onSelCatch: setSelCatch,
     onSelObs: setSelObs
   }), tab === "insights" && /*#__PURE__*/React.createElement(Analytics, {
@@ -1558,6 +1575,10 @@ function FishLog() {
     spots: tripSpots(selTrip),
     catches: tripCatches(selTrip),
     observations: tripObs(selTrip),
+    allSpots: spots,
+    allCatches: catches,
+    allObs: observations,
+    allTrips: trips,
     onSelCatch: c => {
       setSelTrip(null);
       setSelCatch(c);
@@ -1841,6 +1862,7 @@ function ConditionsModal({ onClose }) {
 function TripsList({
   trips,
   tripSpots,
+  spots,
   tripCatches,
   tripObs,
   activeTrip,
@@ -1860,6 +1882,7 @@ function TripsList({
   const [timestamp] = useState(new Date().toISOString());
   const { gps, gpsStatus, weather, weatherStatus, tide, tideStatus, getGPS, reset: resetEnv } = useEnv();
   useEffect(() => { if (showForm) getGPS(timestamp); }, [showForm]);
+  useEffect(() => { if (gps && spotName === "") { const n = nearestSpotName(gps, spots); if (n) setSpotName(n); } }, [gps]);
   const handleStart = () => {
     onStartSession({
       name: spotName.trim(),
@@ -2288,6 +2311,7 @@ function AddSpotForm({
   const [timestamp] = useState(new Date().toISOString());
   const { gps, gpsStatus, weather, weatherStatus, tide, tideStatus, getGPS, reset: resetEnv } = useEnv();
   useEffect(() => { getGPS(timestamp); }, []);
+  useEffect(() => { if (gps && name === "") { const n = nearestSpotName(gps, spots); if (n) setName(n); } }, [gps]);
   const handleSave = () => {
     onSave({
       id: `s_${Date.now()}`,
@@ -3303,9 +3327,12 @@ function Journal({
   catches,
   observations,
   spots,
+  trips,
   onSelCatch,
   onSelObs
 }) {
+  const [journalTab, setJournalTab] = useState("catches");
+  const [selHistorySpot, setSelHistorySpot] = useState(null);
   const spotName = id => spots.find(s => s.id === id)?.name || null;
   const items = [...catches.map(c => ({
     ...c,
@@ -3314,18 +3341,42 @@ function Journal({
     ...o,
     _type: "obs"
   }))].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-  if (!items.length) return /*#__PURE__*/React.createElement("div", {
+  const locationGroups = [];
+  for (const s of spots) {
+    if (!s.name) continue;
+    if (s.gps) {
+      const grp = locationGroups.find(g => g.gps && geoDistM(g.gps.lat, g.gps.lon, s.gps.lat, s.gps.lon) < 100);
+      if (grp) grp.visits.push(s); else locationGroups.push({ gps: s.gps, visits: [s] });
+    } else {
+      locationGroups.push({ gps: null, visits: [s] });
+    }
+  }
+  const locs = locationGroups.map(g => {
+    const byDate = [...g.visits].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    const catchCount = catches.filter(c => g.visits.some(v => v.id === c.spotId)).length;
+    const sessionCount = new Set(g.visits.map(v => v.tripId)).size;
+    return { rep: byDate[0], name: byDate[0].name, lastVisit: byDate[0].timestamp, catchCount, sessionCount };
+  }).sort((a, b) => new Date(b.lastVisit) - new Date(a.lastVisit));
+  const tabBtn = active => ({
+    flex: 1, padding: "9px 4px", fontSize: 9, fontWeight: 700, letterSpacing: .8, textTransform: "uppercase",
+    border: "1px solid var(--mist)", borderRadius: 4, cursor: "pointer",
+    background: active ? "var(--slate)" : "white", color: active ? "var(--paper)" : "#888", transition: "all .2s"
+  });
+  return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     className: "log-wrap"
   }, /*#__PURE__*/React.createElement("div", {
+    style: { display: "flex", gap: 6, padding: "12px 14px 0" }
+  }, /*#__PURE__*/React.createElement("button", {
+    style: tabBtn(journalTab === "catches"), onClick: () => setJournalTab("catches")
+  }, "Catches"), /*#__PURE__*/React.createElement("button", {
+    style: tabBtn(journalTab === "spots"), onClick: () => setJournalTab("spots")
+  }, "Spots")), journalTab === "catches" ? (items.length === 0 ? /*#__PURE__*/React.createElement("div", {
     className: "empty-state"
   }, /*#__PURE__*/React.createElement("div", {
     className: "empty-icon"
   }, ""), /*#__PURE__*/React.createElement("div", {
     className: "empty-text"
-  }, "Nothing logged yet")));
-  return /*#__PURE__*/React.createElement("div", {
-    className: "log-wrap"
-  }, items.map(item => item._type === "catch" ? /*#__PURE__*/React.createElement("div", {
+  }, "Nothing logged yet")) : items.map(item => item._type === "catch" ? /*#__PURE__*/React.createElement("div", {
     key: item.id,
     className: "catch-card",
     onClick: () => onSelCatch(item)
@@ -3379,7 +3430,102 @@ function Journal({
     className: "obs-count"
   }, "\xD7 ", item.count)), /*#__PURE__*/React.createElement("div", {
     className: "obs-meta"
-  }, /*#__PURE__*/React.createElement("span", null, fmtDT(item.timestamp)), item.estimatedSize && /*#__PURE__*/React.createElement("span", null, "", item.estimatedSize), item.spotId && spotName(item.spotId) && /*#__PURE__*/React.createElement("span", null, "", spotName(item.spotId))))));
+  }, /*#__PURE__*/React.createElement("span", null, fmtDT(item.timestamp)), item.estimatedSize && /*#__PURE__*/React.createElement("span", null, "", item.estimatedSize), item.spotId && spotName(item.spotId) && /*#__PURE__*/React.createElement("span", null, "", spotName(item.spotId)))))) : (locs.length === 0 ? /*#__PURE__*/React.createElement("div", {
+    className: "empty-state"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "empty-icon"
+  }, "📍"), /*#__PURE__*/React.createElement("div", {
+    className: "empty-text"
+  }, "No spots logged yet")) : locs.map(loc => /*#__PURE__*/React.createElement("div", {
+    key: loc.rep.id,
+    onClick: () => loc.rep.gps && setSelHistorySpot(loc.rep),
+    style: {
+      display: "flex", alignItems: "center", gap: 12,
+      padding: "12px 14px", borderBottom: "1px solid var(--rule)",
+      background: "white", cursor: loc.rep.gps ? "pointer" : "default"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: { fontSize: 20 }
+  }, "📍"), /*#__PURE__*/React.createElement("div", {
+    style: { flex: 1 }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: { fontFamily: "'Inter',sans-serif", fontWeight: 600, fontSize: 14, color: "var(--ink)" }
+  }, loc.name), /*#__PURE__*/React.createElement("div", {
+    style: { fontSize: 11, color: "var(--text-3)", marginTop: 3, fontFamily: "'Source Code Pro',monospace" }
+  }, loc.sessionCount, " session", loc.sessionCount !== 1 ? "s" : "", " \xB7 ", loc.catchCount, " catch", loc.catchCount !== 1 ? "es" : "", " \xB7 last ", fmtDT(loc.lastVisit))), loc.rep.gps && /*#__PURE__*/React.createElement("span", {
+    style: { color: "var(--text-3)", fontSize: 18 }
+  }, "›"))))), selHistorySpot && /*#__PURE__*/React.createElement(SpotHistory, {
+    spot: selHistorySpot,
+    allSpots: spots,
+    allCatches: catches,
+    allObs: observations,
+    allTrips: trips,
+    onClose: () => setSelHistorySpot(null)
+  }));
+}
+
+// ── Spot history modal ────────────────────────────────────────────────────────
+
+function SpotHistory({ spot, allSpots, allCatches, allObs, allTrips, onClose }) {
+  const nearby = allSpots.filter(s => s.gps && geoDistM(spot.gps.lat, spot.gps.lon, s.gps.lat, s.gps.lon) < 100);
+  const nearbyIds = new Set(nearby.map(s => s.id));
+  const mc = allCatches.filter(c => nearbyIds.has(c.spotId));
+  const mo = allObs.filter(o => nearbyIds.has(o.spotId));
+  const tripMap = Object.fromEntries(allTrips.map(t => [t.id, t]));
+  const tripIds = [...new Set(nearby.map(s => s.tripId))].filter(id => tripMap[id])
+    .sort((a, b) => new Date(tripMap[b].startTime) - new Date(tripMap[a].startTime));
+  const summary = `${tripIds.length} session${tripIds.length !== 1 ? "s" : ""} \xB7 ${mc.length} catch${mc.length !== 1 ? "es" : ""} \xB7 ${mo.length} observation${mo.length !== 1 ? "s" : ""}`;
+  return /*#__PURE__*/React.createElement("div", {
+    className: "modal-overlay",
+    style: { alignItems: "center", padding: "20px" },
+    onClick: e => e.target === e.currentTarget && onClose()
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "modal",
+    style: { borderRadius: 8 }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "modal-header"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "modal-title"
+  }, spot.name || "Unnamed spot"), /*#__PURE__*/React.createElement("button", {
+    className: "modal-close",
+    onClick: onClose
+  }, "\xD7")), /*#__PURE__*/React.createElement("div", {
+    style: { padding: "6px 16px 10px", fontSize: 11, color: "var(--text-3)", borderBottom: "1px solid var(--rule)" }
+  }, summary), tripIds.length === 0
+    ? /*#__PURE__*/React.createElement("div", { style: { padding: 16, fontSize: 12, color: "var(--text-3)" } }, "No visits recorded at this location")
+    : tripIds.map(tripId => {
+        const trip = tripMap[tripId];
+        const spotIds = new Set(nearby.filter(s => s.tripId === tripId).map(s => s.id));
+        const tc = mc.filter(c => spotIds.has(c.spotId));
+        const to = mo.filter(o => spotIds.has(o.spotId));
+        return /*#__PURE__*/React.createElement("div", {
+          key: tripId,
+          className: "modal-section"
+        }, /*#__PURE__*/React.createElement("div", {
+          className: "modal-section-title"
+        }, trip.name), /*#__PURE__*/React.createElement("div", {
+          className: "spot-items"
+        }, tc.length === 0 && to.length === 0 ? /*#__PURE__*/React.createElement("div", {
+          style: { fontSize: 11, color: "var(--text-3)", padding: "4px 0" }
+        }, "No catches or observations") : null, tc.map(c => /*#__PURE__*/React.createElement("div", {
+          key: c.id,
+          className: "mini-catch",
+          style: { cursor: "default" }
+        }, c.fishPhoto ? /*#__PURE__*/React.createElement(PhotoImg, {
+          src: c.fishPhoto, alt: "", className: "mini-catch-thumb"
+        }) : /*#__PURE__*/React.createElement("div", { className: "mini-catch-thumb" }, "🐟"), /*#__PURE__*/React.createElement("div", {
+          className: "mini-catch-info"
+        }, /*#__PURE__*/React.createElement("div", { className: "mini-catch-species" }, c.species), /*#__PURE__*/React.createElement("div", {
+          className: "mini-catch-time"
+        }, fmtDT(c.timestamp), c.size ? ` \xB7 ${c.size}` : "", c.flyPattern ? ` \xB7 ${c.flyPattern}` : "")))), to.map(o => /*#__PURE__*/React.createElement("div", {
+          key: o.id,
+          className: "mini-obs"
+        }, /*#__PURE__*/React.createElement("span", { style: { fontSize: 14 } }, "👁"), /*#__PURE__*/React.createElement("div", {
+          style: { flex: 1 }
+        }, /*#__PURE__*/React.createElement("div", { style: { fontSize: 13 } }, o.species || "Observation"), /*#__PURE__*/React.createElement("div", {
+          style: { fontSize: 11, color: "var(--text-3)" }
+        }, fmtDT(o.timestamp), o.count ? ` \xB7 \xD7${o.count}` : "", o.estimatedSize ? ` \xB7 ${o.estimatedSize}` : ""))))));
+      })));
 }
 
 // ── Trip detail modal ─────────────────────────────────────────────────────────
@@ -3392,12 +3538,20 @@ function TripDetail({
   spots,
   catches,
   observations,
+  allSpots,
+  allCatches,
+  allObs,
+  allTrips,
   onSelCatch,
   onSelObs,
   onUpdSpot
 }) {
   const [editTarget, setEditTarget] = useState(t.targetSpecies || "");
   const [editNotes, setEditNotes] = useState(t.notes || "");
+  const [selHistorySpot, setSelHistorySpot] = useState(null);
+  const [editingSpotId, setEditingSpotId] = useState(null);
+  const [editingSpotName, setEditingSpotName] = useState("");
+  const saveSpotName = s => { onUpdSpot({ ...s, name: editingSpotName.trim() || s.name }); setEditingSpotId(null); };
   // datetime-local input requires YYYY-MM-DDTHH:MM
   const toLocalDT = iso => {
     if (!iso) return "";
@@ -3417,7 +3571,7 @@ function TripDetail({
     notes: editNotes,
     endTime: currentEndISO || t.endTime
   });
-  return /*#__PURE__*/React.createElement("div", {
+  return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     className: "modal-overlay",
     onClick: e => e.target === e.currentTarget && onClose()
   }, /*#__PURE__*/React.createElement("div", {
@@ -3547,9 +3701,22 @@ function TripDetail({
       className: "spot-group"
     }, /*#__PURE__*/React.createElement("div", {
       className: "spot-group-header"
-    }, /*#__PURE__*/React.createElement("span", null, ""), /*#__PURE__*/React.createElement("span", {
-      className: "spot-group-name"
+    }, /*#__PURE__*/React.createElement("span", null, ""), editingSpotId === s.id ? /*#__PURE__*/React.createElement("input", {
+      className: "field-input",
+      value: editingSpotName,
+      autoFocus: true,
+      style: { flex: 1, fontFamily: "'Inter',sans-serif", fontSize: 14, fontWeight: 600 },
+      onChange: e => setEditingSpotName(e.target.value),
+      onBlur: () => saveSpotName(s),
+      onKeyDown: e => { if (e.key === "Enter") saveSpotName(s); if (e.key === "Escape") setEditingSpotId(null); }
+    }) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
+      className: "spot-group-name",
+      style: s.gps ? { cursor: "pointer", borderBottom: "1px dotted var(--slate-light)" } : {},
+      onClick: () => s.gps && setSelHistorySpot(s)
     }, s.name || "Unnamed spot"), /*#__PURE__*/React.createElement("span", {
+      style: { cursor: "pointer", fontSize: 10, color: "var(--text-3)", letterSpacing: "0.5px", textTransform: "uppercase" },
+      onClick: () => { setEditingSpotId(s.id); setEditingSpotName(s.name || ""); }
+    }, "edit")), /*#__PURE__*/React.createElement("span", {
       className: "spot-group-meta"
     }, fmtTime(s.timestamp)), s.lineType && /*#__PURE__*/React.createElement("span", {
       className: `line-type-badge ${FLY_LINES.includes(s.lineType) ? "line-type-fly" : "line-type-spin"}`,
@@ -3650,7 +3817,14 @@ function TripDetail({
   })), /*#__PURE__*/React.createElement("button", {
     className: "delete-btn",
     onClick: () => onDelete(t.id)
-  }, "Delete this session")));
+  }, "Delete this session"))), selHistorySpot && /*#__PURE__*/React.createElement(SpotHistory, {
+    spot: selHistorySpot,
+    allSpots: allSpots,
+    allCatches: allCatches,
+    allObs: allObs,
+    allTrips: allTrips,
+    onClose: () => setSelHistorySpot(null)
+  }));
 }
 
 // ── Catch detail modal ────────────────────────────────────────────────────────
