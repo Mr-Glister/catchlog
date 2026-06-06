@@ -1,0 +1,11 @@
+[
+  {
+    "origin": [
+      "https://mr-glister.github.io",
+      "http://localhost:3000",
+      "http://localhost:8080"
+    ],
+    "method": ["GET"],
+    "maxAgeSeconds": 3600
+  }
+]

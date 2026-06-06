@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.21</title>
+  <title>The Catch Log v2.22</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -1081,30 +1081,36 @@ function usePhoto(ref) {
     if (!ref) { setSrc(null); return; }
     if (!isPhotoId(ref)) { setSrc(ref); return; }
     var cancelled = false;
-    var hit = photoCache.get(ref);
-    if (hit) { setSrc(hit); return; }
-    photoDB.get(ref).then(function(blob) {
+    function tryLoad() {
       if (cancelled) return;
-      if (blob) {
-        var u = URL.createObjectURL(blob);
-        photoCache.set(ref, u);
-        setSrc(u);
-      } else {
-        try {
-          var urls = JSON.parse(localStorage.getItem('cl_photo_urls') || '{}');
-          if (urls[ref]) {
-            fetch(urls[ref]).then(function(r) { return r.blob(); }).then(function(b) {
-              if (cancelled) return;
-              photoDB.put(ref, b);
-              var u = URL.createObjectURL(b);
-              photoCache.set(ref, u);
-              setSrc(u);
-            }).catch(function() {});
-          }
-        } catch(e) {}
-      }
-    });
-    return function() { cancelled = true; };
+      var hit = photoCache.get(ref);
+      if (hit) { setSrc(hit); return; }
+      photoDB.get(ref).then(function(blob) {
+        if (cancelled) return;
+        if (blob) {
+          var u = URL.createObjectURL(blob);
+          photoCache.set(ref, u);
+          setSrc(u);
+        } else {
+          try {
+            var urls = JSON.parse(localStorage.getItem('cl_photo_urls') || '{}');
+            if (urls[ref]) {
+              // Display straight from the remote URL — <img> loads cross-origin without CORS.
+              setSrc(urls[ref]);
+              // Best-effort: cache the blob into IDB for offline use. Needs bucket CORS;
+              // harmless if it fails since the image is already displaying via the URL.
+              fetch(urls[ref]).then(function(r) { return r.blob(); }).then(function(b) {
+                if (cancelled) return;
+                photoDB.put(ref, b);
+              }).catch(function() {});
+            }
+          } catch(e) {}
+        }
+      });
+    }
+    tryLoad();
+    window.addEventListener('catchlog-photos-ready', tryLoad);
+    return function() { cancelled = true; window.removeEventListener('catchlog-photos-ready', tryLoad); };
   }, [ref]);
   return src;
 }
@@ -1232,15 +1238,15 @@ function cloudDeletePhoto(photoId) {
 
 function cloudDownloadPhotos(photoUrls) {
   if (!photoUrls) return;
+  // Best-effort offline caching into IDB. Requires Storage bucket CORS; if it's not
+  // configured these fetches fail harmlessly — photos still display via direct URL.
   Object.keys(photoUrls).forEach(function(id) {
     photoDB.get(id).then(function(blob) {
       if (blob) return;
       return fetch(photoUrls[id]).then(function(r) { return r.blob(); }).then(function(b) {
         return photoDB.put(id, b);
       });
-    }).catch(function(err) {
-      console.error('Photo download error (' + id + '):', err);
-    });
+    }).catch(function() {});
   });
 }
 
@@ -1257,18 +1263,25 @@ function cloudRecoverPhotoUrls(uid) {
     if (isPhotoId(c.flyPhoto) && !urlMap[c.flyPhoto]) ids.push(c.flyPhoto);
   });
   if (!ids.length) return;
+  console.log('[catchlog] recovering ' + ids.length + ' photo URL(s) from Storage…');
+  var recovered = 0, failed = 0;
   var chain = Promise.resolve();
   ids.forEach(function(id) {
     chain = chain.then(function() {
       return fbStorage.ref('users/' + uid + '/photos/' + id + '.jpg').getDownloadURL().then(function(url) {
-        urlMap[id] = url;
-      }).catch(function() {});
+        urlMap[id] = url; recovered++;
+      }).catch(function(err) {
+        failed++;
+        console.warn('[catchlog] could not recover photo ' + id + ': ' + (err && err.code ? err.code : err));
+      });
     });
   });
   chain.then(function() {
+    console.log('[catchlog] photo recovery done — ' + recovered + ' recovered, ' + failed + ' failed');
     _origLocalStorageSet('cl_photo_urls', JSON.stringify(urlMap));
     cloudDownloadPhotos(urlMap);
-    cloudDoc(uid).update({ photoUrls: urlMap }).catch(function() {});
+    window.dispatchEvent(new CustomEvent('catchlog-photos-ready'));
+    if (recovered > 0) cloudDoc(uid).update({ photoUrls: urlMap }).catch(function() {});
   });
 }
 
@@ -1533,7 +1546,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.21 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.22 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
