@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.22</title>
+  <title>The Catch Log v2.23</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -569,8 +569,8 @@ async function fetchTideData(lat, lon, isoTs) {
     lo = lon.toFixed(6),
     ck = `${ls},${lo}`;
   const cd = new Date(isoTs),
-    from = new Date(cd - 1800000),  // 30 min before
-    to   = new Date(cd + 1800000);  // 30 min after
+    from = new Date(cd - 3600000),  // 60 min before — wide enough for forecast/observation series to appear
+    to   = new Date(cd + 3600000);  // 60 min after
   let mhwsCM, mlwsCM;
   if (DATUM_CACHE[ck]) ({ mhwsCM, mlwsCM } = DATUM_CACHE[ck]);
   else {
@@ -591,25 +591,36 @@ async function fetchTideData(lat, lon, isoTs) {
       }
     }
   }
-  const txt2 = await proxyFetch(`${BASE}?lat=${ls}&lon=${lo}&fromtime=${toKartverketTime(from)}&totime=${toKartverketTime(to)}&datatype=pre&refcode=cd&lang=en&interval=10&tide_request=locationdata`);
-  // Parse all waterlevel readings to derive direction
+  const txt2 = await proxyFetch(`${BASE}?lat=${ls}&lon=${lo}&fromtime=${toKartverketTime(from)}&totime=${toKartverketTime(to)}&datatype=all&refcode=cd&lang=en&interval=10&tide_request=locationdata`);
+  // datatype=all returns several series: observation (measured level, stations only),
+  // forecast (weather-corrected actual level = Kartverket "Vannstandsvarsel", available everywhere),
+  // prediction (astronomical "Beregnet tidevann"), weathereffect (the surge difference).
+  // We want the REAL water level a fisherman sees, so prefer forecast, then observation,
+  // and fall back to the astronomical prediction only if neither is available.
   const doc2 = new DOMParser().parseFromString(txt2, "text/xml");
-  const wls = [...doc2.querySelectorAll("waterlevel")].map(el => ({
-    t: new Date(el.getAttribute("time")),
-    v: parseFloat(el.getAttribute("value"))
-  })).filter(x => !isNaN(x.v) && !isNaN(x.t.getTime())).sort((a, b) => a.t - b.t);
-  if (!wls.length) return null;
-  // Find reading closest to catch time for the value
-  const closest = wls.reduce((a, b) => Math.abs(a.t - cd) < Math.abs(b.t - cd) ? a : b);
-  // Direction: compare first third vs last third of readings
+  const series = {};
+  [...doc2.querySelectorAll("data")].forEach(d => {
+    const type = (d.getAttribute("type") || "").toLowerCase();
+    series[type] = [...d.querySelectorAll("waterlevel")].map(el => ({
+      t: new Date(el.getAttribute("time")),
+      v: parseFloat(el.getAttribute("value"))
+    })).filter(x => !isNaN(x.v) && !isNaN(x.t.getTime())).sort((a, b) => a.t - b.t);
+  });
+  const pick = (...names) => { for (const n of names) if (series[n] && series[n].length) return series[n]; return []; };
+  const levelSeries = pick("forecast", "observation", "prediction");  // real water level
+  const dirSeries   = pick("forecast", "prediction", "observation");  // dense continuous curve for trend
+  if (!levelSeries.length) return null;
+  // Value at catch time from the real-water-level series
+  const closest = levelSeries.reduce((a, b) => Math.abs(a.t - cd) < Math.abs(b.t - cd) ? a : b);
+  // Direction: compare first third vs last third of the trend series
   let direction = null;
-  if (wls.length >= 3) {
-    const third = Math.floor(wls.length / 3);
-    const early = wls.slice(0, third).reduce((s, x) => s + x.v, 0) / third;
-    const late  = wls.slice(-third).reduce((s, x) => s + x.v, 0) / third;
+  if (dirSeries.length >= 3) {
+    const third = Math.floor(dirSeries.length / 3);
+    const early = dirSeries.slice(0, third).reduce((s, x) => s + x.v, 0) / third;
+    const late  = dirSeries.slice(-third).reduce((s, x) => s + x.v, 0) / third;
     direction = late > early ? "rising" : "falling";
-  } else if (wls.length === 2) {
-    direction = wls[1].v > wls[0].v ? "rising" : "falling";
+  } else if (dirSeries.length === 2) {
+    direction = dirSeries[1].v > dirSeries[0].v ? "rising" : "falling";
   }
   const seasonal = mhwsCM != null && mlwsCM != null ? normalizeTide(closest.v, mlwsCM, mhwsCM) : null;
 
@@ -1546,7 +1557,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.22 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.23 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
