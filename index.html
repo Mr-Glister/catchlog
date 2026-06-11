@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.23</title>
+  <title>The Catch Log v2.24</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -449,7 +449,7 @@ function getMoonPhase(d) {
   const diff = (d - new Date("2000-01-06")) / 86400000;
   return phases[Math.floor((diff % 29.53 + 29.53) % 29.53 / (29.53 / 8))];
 }
-const formatCoords = (lat, lon) => lat == null ? null : `${Math.abs(lat).toFixed(5)}°${lat >= 0 ? "N" : "S"}  ${Math.abs(lon).toFixed(5)}°${lon >= 0 ? "E" : "W"}`;
+const formatCoords = (lat, lon, acc) => lat == null ? null : `${Math.abs(lat).toFixed(5)}°${lat >= 0 ? "N" : "S"}  ${Math.abs(lon).toFixed(5)}°${lon >= 0 ? "E" : "W"}${acc != null ? `  ±${acc}m` : ""}`;
 const fmtDT = iso => new Date(iso).toLocaleString("en-US", {
   month: "short",
   day: "numeric",
@@ -477,7 +477,7 @@ function geoDistM(lat1, lon1, lat2, lon2) {
 }
 function nearestSpotName(gps, allSpots) {
   if (!gps) return null;
-  let best = null, bestD = 100;
+  let best = null, bestD = 150;
   for (const s of allSpots) {
     if (!s.gps || !s.name) continue;
     const d = geoDistM(gps.lat, gps.lon, s.gps.lat, s.gps.lon);
@@ -557,7 +557,9 @@ async function fetchTideData(lat, lon, isoTs) {
         }
         if (r.ok) {
           const t = await r.text();
-          if (t.includes("<")) return t;
+          // Must look like Kartverket tide XML — proxies sometimes return their own
+          // HTML error/challenge pages with status 200, which would otherwise pass
+          if (t.includes("<tide")) return t;
         }
       } catch (e) {
         continue;
@@ -569,8 +571,8 @@ async function fetchTideData(lat, lon, isoTs) {
     lo = lon.toFixed(6),
     ck = `${ls},${lo}`;
   const cd = new Date(isoTs),
-    from = new Date(cd - 3600000),  // 60 min before — wide enough for forecast/observation series to appear
-    to   = new Date(cd + 3600000);  // 60 min after
+    from = new Date(cd.getTime() - 3600000),  // 60 min before — wide enough for forecast/observation series to appear
+    to   = new Date(cd.getTime() + 3600000);  // 60 min after (must use getTime(): Date + number string-concatenates, which Safari rejects as Invalid Date)
   let mhwsCM, mlwsCM;
   if (DATUM_CACHE[ck]) ({ mhwsCM, mlwsCM } = DATUM_CACHE[ck]);
   else {
@@ -788,25 +790,57 @@ function useEnv() {
       setTideStatus("error");
     }
   }, []);
-  const getGPS = useCallback(ts => {
+  // The browser's first fix is often a coarse Wi-Fi/cell estimate that can be
+  // hundreds of metres off. We use it immediately (UI + weather/tide load with
+  // no waiting), then keep watching in the background and silently upgrade the
+  // coordinates whenever a more accurate fix arrives — stopping once the fix is
+  // ≤20m or after 30s. Records saved meanwhile get the best fix so far.
+  // Pass {refine: false} for one-shot rough mode (Live Conditions).
+  const watchRef = useRef(null);
+  const clearWatch = useCallback(() => {
+    if (watchRef.current != null) {
+      navigator.geolocation.clearWatch(watchRef.current.id);
+      clearTimeout(watchRef.current.timer);
+      watchRef.current = null;
+    }
+  }, []);
+  useEffect(() => clearWatch, []);
+  const getGPS = useCallback((ts, opts) => {
+    const refine = !(opts && opts.refine === false);
+    clearWatch();
     setGpsStatus("loading");
-    navigator.geolocation.getCurrentPosition(pos => {
-      const {
-        latitude: la,
-        longitude: lo
-      } = pos.coords;
-      setGps({
-        lat: la,
-        lon: lo
-      });
-      setGpsStatus("ok");
-      fetchEnv(la, lo, ts);
-    }, () => setGpsStatus("error"), {
-      enableHighAccuracy: true,
-      timeout: 15000
-    });
-  }, [fetchEnv]);
+    let gotFirst = false, bestAcc = Infinity;
+    const accept = pos => {
+      const { latitude: la, longitude: lo, accuracy } = pos.coords;
+      const acc = accuracy != null && isFinite(accuracy) ? Math.round(accuracy) : null;
+      if (acc != null && acc >= bestAcc) return; // only ever upgrade
+      if (acc != null) bestAcc = acc;
+      setGps({ lat: la, lon: lo, acc });
+      if (!gotFirst) {
+        gotFirst = true;
+        setGpsStatus("ok");
+        fetchEnv(la, lo, ts); // weather/tide off the first fix — a few hundred metres doesn't matter there
+      }
+      if (refine && acc != null && acc <= 20) clearWatch(); // good enough, stop burning battery
+    };
+    const onError = () => {
+      // Ignore errors (e.g. per-fix timeouts) once we already have a position
+      if (!gotFirst) {
+        setGpsStatus("error");
+        clearWatch();
+      }
+    };
+    const geoOpts = { enableHighAccuracy: true, timeout: 15000 };
+    if (!refine) {
+      navigator.geolocation.getCurrentPosition(accept, onError, geoOpts);
+      return;
+    }
+    const id = navigator.geolocation.watchPosition(accept, onError, geoOpts);
+    const timer = setTimeout(clearWatch, 30000);
+    watchRef.current = { id, timer };
+  }, [fetchEnv, clearWatch]);
   const reset = () => {
+    clearWatch();
     setGps(null);
     setGpsStatus("idle");
     setWeather(null);
@@ -824,6 +858,33 @@ function useEnv() {
     getGPS,
     reset
   };
+}
+
+// Forms capture GPS + timestamp once on mount. A PWA stays in memory for hours,
+// so a form left open while the phone is locked goes stale and silently records
+// the previous location and time. Re-acquire both whenever the app returns to
+// the foreground (typed fields are untouched; spot-name autofill only fills an
+// empty field).
+function useFreshEnvOnReturn(activeRef, getGPS, setTimestamp) {
+  useEffect(() => {
+    // Only refresh after a real absence (>2 min). Short hides — camera picker,
+    // app switcher, notifications — must NOT restart the GPS watch, or a rough
+    // first fix would overwrite an already-precise one and weather/tide would
+    // re-fetch on every flicker.
+    let hiddenAt = null;
+    const onVis = () => {
+      if (document.hidden) { hiddenAt = Date.now(); return; }
+      const awayMs = hiddenAt != null ? Date.now() - hiddenAt : 0;
+      hiddenAt = null;
+      if (awayMs < 120000) return;
+      if (activeRef && activeRef.current === false) return;
+      const ts = new Date().toISOString();
+      setTimestamp(ts);
+      getGPS(ts);
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, []);
 }
 
 // ── CSV helpers ───────────────────────────────────────────────────────────────
@@ -1557,7 +1618,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.23 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.24 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -1744,7 +1805,7 @@ function SpeciesSelect({
 function ConditionsModal({ onClose }) {
   const [ts] = useState(new Date().toISOString());
   const { gps, gpsStatus, weather, tide, tideStatus, getGPS, reset } = useEnv();
-  useEffect(() => { getGPS(ts); }, []);
+  useEffect(() => { getGPS(ts, { refine: false }); }, []);
   return /*#__PURE__*/React.createElement("div", {
     className: "cond-backdrop",
     onClick: () => { reset(); onClose(); }
@@ -1769,7 +1830,7 @@ function ConditionsModal({ onClose }) {
     className: "field-label"
   }, "GPS"), gpsStatus === "idle" && /*#__PURE__*/React.createElement("button", {
     className: "gps-btn",
-    onClick: () => getGPS(ts)
+    onClick: () => getGPS(ts, { refine: false })
   }, "Get GPS"), gpsStatus === "loading" && /*#__PURE__*/React.createElement("span", {
     className: "status-badge status-loading"
   }, "Acquiring…"), gpsStatus === "error" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
@@ -1777,10 +1838,10 @@ function ConditionsModal({ onClose }) {
   }, "Failed"), /*#__PURE__*/React.createElement("button", {
     className: "gps-btn",
     style: {marginLeft: 6},
-    onClick: () => getGPS(ts)
+    onClick: () => getGPS(ts, { refine: false })
   }, "Retry")), gpsStatus === "ok" && gps && /*#__PURE__*/React.createElement("span", {
     className: "gps-coords"
-  }, formatCoords(gps.lat, gps.lon))), /*#__PURE__*/React.createElement("div", {
+  }, formatCoords(gps.lat, gps.lon, gps.acc))), /*#__PURE__*/React.createElement("div", {
     className: "field-row"
   }, /*#__PURE__*/React.createElement("span", {
     className: "field-icon"
@@ -1934,10 +1995,22 @@ function TripsList({
   const [spotNotes, setSpotNotes] = useState("");
   const [spotPhoto, setSpotPhoto] = useState(null);
   const spotPhotoRef = useRef();
-  const [timestamp] = useState(new Date().toISOString());
+  const [timestamp, setTimestamp] = useState(new Date().toISOString());
   const { gps, gpsStatus, weather, weatherStatus, tide, tideStatus, getGPS, reset: resetEnv } = useEnv();
+  const showFormRef = useRef(showForm);
+  showFormRef.current = showForm;
   useEffect(() => { if (showForm) getGPS(timestamp); }, [showForm]);
-  useEffect(() => { if (gps && spotName === "") { const n = nearestSpotName(gps, spots); if (n) setSpotName(n); } }, [gps]);
+  useFreshEnvOnReturn(showFormRef, getGPS, setTimestamp);
+  // Auto-fill spot name; as the GPS fix refines, replace our own earlier
+  // suggestion (tracked in autoNameRef) but never text the user typed
+  const autoNameRef = useRef(null);
+  useEffect(() => {
+    if (!gps) return;
+    if (spotName !== "" && spotName !== autoNameRef.current) return;
+    const n = nearestSpotName(gps, spots);
+    if (n) { setSpotName(n); autoNameRef.current = n; }
+    else if (spotName !== "" && spotName === autoNameRef.current) { setSpotName(""); autoNameRef.current = null; }
+  }, [gps]);
   const handleStart = () => {
     onStartSession({
       name: spotName.trim(),
@@ -2043,7 +2116,7 @@ function TripsList({
     onClick: () => getGPS(timestamp)
   }, "Retry")), gpsStatus === "ok" && gps && /*#__PURE__*/React.createElement("span", {
     className: "gps-coords"
-  }, formatCoords(gps.lat, gps.lon))), /*#__PURE__*/React.createElement("div", {
+  }, formatCoords(gps.lat, gps.lon, gps.acc))), /*#__PURE__*/React.createElement("div", {
     className: "field-row"
   }, /*#__PURE__*/React.createElement("span", {
     className: "field-icon"
@@ -2363,10 +2436,20 @@ function AddSpotForm({
   const [notes, setNotes] = useState("");
   const [photo, setPhoto] = useState(null);
   const photoRef = useRef();
-  const [timestamp] = useState(new Date().toISOString());
+  const [timestamp, setTimestamp] = useState(new Date().toISOString());
   const { gps, gpsStatus, weather, weatherStatus, tide, tideStatus, getGPS, reset: resetEnv } = useEnv();
   useEffect(() => { getGPS(timestamp); }, []);
-  useEffect(() => { if (gps && name === "") { const n = nearestSpotName(gps, spots); if (n) setName(n); } }, [gps]);
+  useFreshEnvOnReturn(null, getGPS, setTimestamp);
+  // Auto-fill spot name; as the GPS fix refines, replace our own earlier
+  // suggestion (tracked in autoNameRef) but never text the user typed
+  const autoNameRef = useRef(null);
+  useEffect(() => {
+    if (!gps) return;
+    if (name !== "" && name !== autoNameRef.current) return;
+    const n = nearestSpotName(gps, spots);
+    if (n) { setName(n); autoNameRef.current = n; }
+    else if (name !== "" && name === autoNameRef.current) { setName(""); autoNameRef.current = null; }
+  }, [gps]);
   const handleSave = () => {
     onSave({
       id: `s_${Date.now()}`,
@@ -2444,7 +2527,7 @@ function AddSpotForm({
     onClick: () => getGPS(timestamp)
   }, "Retry")), gpsStatus === "ok" && gps && /*#__PURE__*/React.createElement("span", {
     className: "gps-coords"
-  }, formatCoords(gps.lat, gps.lon))), /*#__PURE__*/React.createElement("div", {
+  }, formatCoords(gps.lat, gps.lon, gps.acc))), /*#__PURE__*/React.createElement("div", {
     className: "field-row"
   }, /*#__PURE__*/React.createElement("span", {
     className: "field-icon"
@@ -2607,7 +2690,7 @@ function CatchForm({
   const [size, setSize] = useState("");
   const [waterTemp, setWaterTemp] = useState("");
   const [notes, setNotes] = useState("");
-  const [timestamp] = useState(() => new Date().toISOString());
+  const [timestamp, setTimestamp] = useState(() => new Date().toISOString());
   const {
     gps,
     gpsStatus,
@@ -2619,6 +2702,7 @@ function CatchForm({
     reset
   } = useEnv();
   useEffect(() => { getGPS(timestamp); }, []);
+  useFreshEnvOnReturn(null, getGPS, setTimestamp);
   const fishRef = useRef(),
     flyRef = useRef();
   const hp = s => e => {
@@ -2763,7 +2847,7 @@ function CatchForm({
     onClick: () => getGPS(timestamp)
   }, "Retry")), gpsStatus === "ok" && gps && /*#__PURE__*/React.createElement("span", {
     className: "gps-coords"
-  }, formatCoords(gps.lat, gps.lon)))), /*#__PURE__*/React.createElement("div", {
+  }, formatCoords(gps.lat, gps.lon, gps.acc)))), /*#__PURE__*/React.createElement("div", {
     className: "field-group"
   }, /*#__PURE__*/React.createElement("div", {
     className: "field-group-title"
@@ -2909,9 +2993,10 @@ function ObsForm({
   const [count, setCount] = useState("");
   const [estSize, setEstSize] = useState("");
   const [notes, setNotes] = useState("");
-  const [timestamp] = useState(() => new Date().toISOString());
+  const [timestamp, setTimestamp] = useState(() => new Date().toISOString());
   const { gps, gpsStatus, weather, weatherStatus, tide, tideStatus, getGPS, reset } = useEnv();
   useEffect(() => { getGPS(timestamp); }, []);
+  useFreshEnvOnReturn(null, getGPS, setTimestamp);
 
   const handleSave = () => {
     if (!species.trim()) return;
@@ -2961,7 +3046,7 @@ function ObsForm({
         gpsStatus === "error" && /*#__PURE__*/React.createElement(React.Fragment, null,
           /*#__PURE__*/React.createElement("span", { className: "status-badge status-error" }, "Failed"),
           /*#__PURE__*/React.createElement("button", { className: "gps-btn", style: { marginLeft: 6 }, onClick: () => getGPS(timestamp) }, "Retry")),
-        gpsStatus === "ok" && gps && /*#__PURE__*/React.createElement("span", { className: "gps-coords" }, formatCoords(gps.lat, gps.lon)))),
+        gpsStatus === "ok" && gps && /*#__PURE__*/React.createElement("span", { className: "gps-coords" }, formatCoords(gps.lat, gps.lon, gps.acc)))),
     /*#__PURE__*/React.createElement("div", { className: "field-group" },
       /*#__PURE__*/React.createElement("div", { className: "field-group-title" },
         "Conditions", (weatherStatus === "loading" || tideStatus === "loading") && /*#__PURE__*/React.createElement("span", { style: { opacity: .5, fontSize: 9 } }, " \u00b7 fetching\u2026")),
@@ -3396,15 +3481,16 @@ function Journal({
     ...o,
     _type: "obs"
   }))].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+  // Group by spot name (case/whitespace-insensitive) — the name IS the spot's
+  // identity. GPS grouping split same-named spots >100m apart into separate
+  // cards and merged differently-named spots that happened to be close.
   const locationGroups = [];
+  const groupByName = {};
   for (const s of spots) {
-    if (!s.name) continue;
-    if (s.gps) {
-      const grp = locationGroups.find(g => g.gps && geoDistM(g.gps.lat, g.gps.lon, s.gps.lat, s.gps.lon) < 100);
-      if (grp) grp.visits.push(s); else locationGroups.push({ gps: s.gps, visits: [s] });
-    } else {
-      locationGroups.push({ gps: null, visits: [s] });
-    }
+    if (!s.name || !s.name.trim()) continue;
+    const key = s.name.trim().toLowerCase();
+    if (groupByName[key]) groupByName[key].visits.push(s);
+    else { groupByName[key] = { visits: [s] }; locationGroups.push(groupByName[key]); }
   }
   const locs = locationGroups.map(g => {
     const byDate = [...g.visits].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
@@ -3520,7 +3606,12 @@ function Journal({
 // ── Spot history modal ────────────────────────────────────────────────────────
 
 function SpotHistory({ spot, allSpots, allCatches, allObs, allTrips, onClose }) {
-  const nearby = allSpots.filter(s => s.gps && geoDistM(spot.gps.lat, spot.gps.lon, s.gps.lat, s.gps.lon) < 100);
+  // Same name = same spot (matches Journal grouping); GPS proximity only as
+  // fallback for unnamed spots
+  const normName = n => (n || "").trim().toLowerCase();
+  const nearby = spot.name && spot.name.trim()
+    ? allSpots.filter(s => normName(s.name) === normName(spot.name))
+    : allSpots.filter(s => s.gps && spot.gps && geoDistM(spot.gps.lat, spot.gps.lon, s.gps.lat, s.gps.lon) < 100);
   const nearbyIds = new Set(nearby.map(s => s.id));
   const mc = allCatches.filter(c => nearbyIds.has(c.spotId));
   const mo = allObs.filter(o => nearbyIds.has(o.spotId));
@@ -3789,7 +3880,7 @@ function TripDetail({
         fontFamily: "'Source Code Pro',monospace",
         marginBottom: 6
       }
-    }, formatCoords(s.gps.lat, s.gps.lon)), (function() {
+    }, formatCoords(s.gps.lat, s.gps.lon, s.gps.acc)), (function() {
       var inputId = "sp-photo-" + s.id;
       return /*#__PURE__*/React.createElement("div", null,
         /*#__PURE__*/React.createElement("input", {
@@ -3961,7 +4052,7 @@ function CatchDetail({
     style: {
       fontSize: 10
     }
-  }, formatCoords(c.gps.lat, c.gps.lon))), spot && /*#__PURE__*/React.createElement("div", {
+  }, formatCoords(c.gps.lat, c.gps.lon, c.gps.acc))), spot && /*#__PURE__*/React.createElement("div", {
     className: "modal-stat"
   }, /*#__PURE__*/React.createElement("div", {
     className: "modal-stat-label"
@@ -4114,7 +4205,7 @@ function ObsDetail({
           /*#__PURE__*/React.createElement("div", { className: "modal-stat-value", style: { fontSize: 11 } }, fmtTime(o.timestamp))),
         o.gps && /*#__PURE__*/React.createElement("div", { className: "modal-stat" },
           /*#__PURE__*/React.createElement("div", { className: "modal-stat-label" }, "GPS"),
-          /*#__PURE__*/React.createElement("div", { className: "modal-stat-value", style: { fontSize: 10 } }, formatCoords(o.gps.lat, o.gps.lon))),
+          /*#__PURE__*/React.createElement("div", { className: "modal-stat-value", style: { fontSize: 10 } }, formatCoords(o.gps.lat, o.gps.lon, o.gps.acc))),
         spot && /*#__PURE__*/React.createElement("div", { className: "modal-stat" },
           /*#__PURE__*/React.createElement("div", { className: "modal-stat-label" }, "Spot"),
           /*#__PURE__*/React.createElement("div", { className: "modal-stat-value" }, spot.name || "\u2014")),
