@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.25</title>
+  <title>The Catch Log v2.26</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -1833,7 +1833,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.25 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.26 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -2295,6 +2295,7 @@ function TripsList({
     ref: spotPhotoRef,
     type: "file",
     accept: "image/*",
+    capture: "environment",
     onChange: e => { const f = e.target.files[0]; if (f) compressPhoto(f, setSpotPhoto); e.target.value = ""; }
   }))), /*#__PURE__*/React.createElement("div", {
     className: "field-row"
@@ -2714,6 +2715,7 @@ function AddSpotForm({
     ref: photoRef,
     type: "file",
     accept: "image/*",
+    capture: "environment",
     onChange: e => { const f = e.target.files[0]; if (f) compressPhoto(f, setPhoto); e.target.value = ""; }
   }))), /*#__PURE__*/React.createElement("div", {
     className: "field-row"
