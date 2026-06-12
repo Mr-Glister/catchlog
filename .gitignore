@@ -1,0 +1,7 @@
+# Handover docs contain the Frost API client_secret — repo is public, never commit
+HANDOFF.md
+catchlog-handover.md
+
+# Local scratch files
+_check.js
+_testdata.json

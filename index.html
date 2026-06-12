@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.24</title>
+  <title>The Catch Log v2.25</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -53,6 +53,9 @@
     var fbAuth = firebase.auth();
     var fbDb   = firebase.firestore();
     var fbStorage = firebase.storage();
+    // Durable offline writes: queued pushes survive the app being killed and
+    // sync automatically when connectivity returns
+    try { fbDb.enablePersistence({ synchronizeTabs: true }).catch(function() {}); } catch (e) {}
 
     function cloudDoc(uid) {
       return fbDb.doc('users/' + uid + '/catchlog/data');
@@ -62,16 +65,72 @@
         return snap.exists ? snap.data() : null;
       });
     }
+    function cloudReadJSON(key, fallback) {
+      try { return JSON.parse(localStorage.getItem(key) || fallback); } catch (e) { return JSON.parse(fallback); }
+    }
     function cloudPush(uid) {
-      var photoUrls; try { photoUrls = JSON.parse(localStorage.getItem('cl_photo_urls') || '{}'); } catch(e) { photoUrls = {}; }
+      var spots   = cloudReadJSON('fl_spots_v2', '[]');
+      var catches = cloudReadJSON('fl_catches_v3', '[]');
+      // Only push photo URLs still referenced by a record — stale entries
+      // otherwise accumulate forever and eat into the 1MB Firestore doc limit
+      var photoUrls = cloudReadJSON('cl_photo_urls', '{}');
+      var refd = {};
+      spots.forEach(function(s) { if (s.photo) refd[s.photo] = 1; });
+      catches.forEach(function(c) { if (c.fishPhoto) refd[c.fishPhoto] = 1; if (c.flyPhoto) refd[c.flyPhoto] = 1; });
+      var prunedUrls = {};
+      Object.keys(photoUrls).forEach(function(id) { if (refd[id]) prunedUrls[id] = photoUrls[id]; });
       return cloudDoc(uid).set({
-        trips:        JSON.parse(localStorage.getItem('fl_trips_v3')  || '[]'),
-        spots:        JSON.parse(localStorage.getItem('fl_spots_v2')  || '[]'),
-        catches:      JSON.parse(localStorage.getItem('fl_catches_v3')|| '[]'),
-        observations: JSON.parse(localStorage.getItem('fl_obs_v2')    || '[]'),
-        photoUrls:    photoUrls,
+        trips:        cloudReadJSON('fl_trips_v3', '[]'),
+        spots:        spots,
+        catches:      catches,
+        observations: cloudReadJSON('fl_obs_v2', '[]'),
+        photoUrls:    prunedUrls,
+        deleted:      cloudReadJSON('fl_deleted_v1', '{}'),
         lastUpdated:  Date.now()
       });
+    }
+    // Merge two copies of a record array: newest updatedAt wins per id, records
+    // present on only one side are kept, tombstoned ids (deleted later than
+    // their last edit) are dropped. This replaces whole-document last-writer-
+    // wins, which silently discarded one device's data on two-device use.
+    function cloudMergeById(localArr, remoteArr, deleted) {
+      var byId = {};
+      (remoteArr || []).forEach(function(r) { if (r && r.id) byId[r.id] = r; });
+      (localArr || []).forEach(function(l) {
+        if (!l || !l.id) return;
+        var r = byId[l.id];
+        if (!r) { byId[l.id] = l; return; }
+        var lt = l.updatedAt ? Date.parse(l.updatedAt) : 0;
+        var rt = r.updatedAt ? Date.parse(r.updatedAt) : 0;
+        byId[l.id] = lt >= rt ? l : r;
+      });
+      var out = [];
+      Object.keys(byId).forEach(function(id) {
+        var rec = byId[id];
+        var delAt = deleted && deleted[id] ? Date.parse(deleted[id]) : null;
+        var upAt = rec.updatedAt ? Date.parse(rec.updatedAt) : 0;
+        if (delAt != null && delAt >= upAt) return;
+        out.push(rec);
+      });
+      out.sort(function(a, b) {
+        var ta = Date.parse(a.startTime || a.timestamp || 0) || 0;
+        var tb = Date.parse(b.startTime || b.timestamp || 0) || 0;
+        return tb - ta;
+      });
+      return out;
+    }
+    function cloudMergeDeleted(local, remote) {
+      var m = {};
+      var cutoff = Date.now() - 365 * 86400000; // prune year-old tombstones
+      [local, remote].forEach(function(src) {
+        if (!src) return;
+        Object.keys(src).forEach(function(id) {
+          var t = Date.parse(src[id]) || 0;
+          if (t < cutoff) return;
+          if (!m[id] || Date.parse(m[id]) < t) m[id] = src[id];
+        });
+      });
+      return m;
     }
     var _cloudLoading = false;
     var _cloudSyncTimer = null;
@@ -93,7 +152,12 @@
       }, 2000);
     }
     function cloudSignIn() {
-      return fbAuth.signInWithPopup(new firebase.auth.GoogleAuthProvider());
+      var provider = new firebase.auth.GoogleAuthProvider();
+      // Installed (home-screen) PWAs can't receive popup results on iOS —
+      // use the redirect flow there; onAuthStateChanged picks up the result
+      var standalone = navigator.standalone === true ||
+        (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
+      return standalone ? fbAuth.signInWithRedirect(provider) : fbAuth.signInWithPopup(provider);
     }
     function cloudSignOut() {
       return fbAuth.signOut();
@@ -112,6 +176,8 @@
         }
       };
     })();
+    // Retry pending pushes as soon as connectivity returns
+    window.addEventListener('online', function() { cloudSchedulePush(); });
   </script>
 
   <script>
@@ -446,8 +512,11 @@ const css = `
 
 function getMoonPhase(d) {
   const phases = ["🌑 New", "🌒 Waxing Crescent", "🌓 First Quarter", "🌔 Waxing Gibbous", "🌕 Full", "🌖 Waning Gibbous", "🌗 Last Quarter", "🌘 Waning Crescent"];
-  const diff = (d - new Date("2000-01-06")) / 86400000;
-  return phases[Math.floor((diff % 29.53 + 29.53) % 29.53 / (29.53 / 8))];
+  // Reference new moon: 2000-01-06 18:14 UTC. The +0.5 centres each phase on
+  // its astronomical instant instead of starting it there (half-phase early).
+  const diff = (d - new Date("2000-01-06T18:14:00Z")) / 86400000;
+  const frac = ((diff % 29.53) + 29.53) % 29.53 / 29.53;
+  return phases[Math.floor(frac * 8 + 0.5) % 8];
 }
 const formatCoords = (lat, lon, acc) => lat == null ? null : `${Math.abs(lat).toFixed(5)}°${lat >= 0 ? "N" : "S"}  ${Math.abs(lon).toFixed(5)}°${lon >= 0 ? "E" : "W"}${acc != null ? `  ±${acc}m` : ""}`;
 const fmtDT = iso => new Date(iso).toLocaleString("en-US", {
@@ -494,7 +563,10 @@ function toKartverketTime(d) {
 function normalizeTide(v, lat, hat) {
   const r = hat - lat;
   if (!r || r <= 0) return null;
-  return Math.max(0, Math.min(1, (v - lat) / r));
+  // Deliberately NOT clamped: storm surge above MHWS (>1) / below MLWS (<0)
+  // is exactly the unusual-conditions signal tideLabel reports. Bar widths
+  // clamp at display time.
+  return (v - lat) / r;
 }
 function tideLabel(n) {
   if (n == null) return null;
@@ -539,7 +611,14 @@ function parseKartverketXML(xml) {
   if (mhws != null || mlws != null) return { type: "levels", mhws, mlws };
   return null;
 }
-const DATUM_CACHE = {};
+// MLWS/MHWS datums are static per location — persist them so each app launch
+// doesn't burn up to 8 proxy round-trips re-fetching the same numbers
+const DATUM_CACHE = (() => {
+  try { return JSON.parse(localStorage.getItem("cl_tide_datums") || "{}"); } catch { return {}; }
+})();
+function saveDatumCache() {
+  try { localStorage.setItem("cl_tide_datums", JSON.stringify(DATUM_CACHE)); } catch {}
+}
 async function fetchTideData(lat, lon, isoTs) {
   const BASE = "https://vannstand.kartverket.no/tideapi.php";
   // Try two CORS proxies in sequence
@@ -586,6 +665,7 @@ async function fetchTideData(lat, lon, isoTs) {
           mhwsCM = p.mhws;
           mlwsCM = p.mlws;
           DATUM_CACHE[ck] = { mhwsCM, mlwsCM };
+          saveDatumCache();
           break;
         }
       } catch (e) {
@@ -593,7 +673,15 @@ async function fetchTideData(lat, lon, isoTs) {
       }
     }
   }
-  const txt2 = await proxyFetch(`${BASE}?lat=${ls}&lon=${lo}&fromtime=${toKartverketTime(from)}&totime=${toKartverketTime(to)}&datatype=all&refcode=cd&lang=en&interval=10&tide_request=locationdata`);
+  // Retry like the datum call above — free CORS proxies fail transiently all
+  // the time, and this is the call that actually produces the water level
+  let txt2 = null, txt2Err = null;
+  for (let attempt = 0; attempt < 3 && txt2 == null; attempt++) {
+    try {
+      txt2 = await proxyFetch(`${BASE}?lat=${ls}&lon=${lo}&fromtime=${toKartverketTime(from)}&totime=${toKartverketTime(to)}&datatype=all&refcode=cd&lang=en&interval=10&tide_request=locationdata`);
+    } catch (e) { txt2Err = e; }
+  }
+  if (txt2 == null) throw txt2Err || new Error("tide fetch failed");
   // datatype=all returns several series: observation (measured level, stations only),
   // forecast (weather-corrected actual level = Kartverket "Vannstandsvarsel", available everywhere),
   // prediction (astronomical "Beregnet tidevann"), weathereffect (the surge difference).
@@ -665,12 +753,25 @@ function useEnv() {
   const [tide, setTide] = useState(null);
   const [tideStatus, setTideStatus] = useState("idle");
   const fetchEnv = useCallback(async (la, lo, ts) => {
+    // Weather and tide run in PARALLEL — tide used to wait behind the whole
+    // weather/Frost chain (up to ~30s on flaky proxies) before even starting
+    const weatherTask = (async () => {
     setWeatherStatus("loading");
     try {
       // --- Current conditions from met.no Locationforecast (Norwegian model, sea-level pressure) ---
-      const metResp = await fetch(
-        `https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=${la}&lon=${lo}`
-      );
+      // 4-decimal coords (met.no ToS; ~11m precision is plenty) and a real
+      // timeout so a stalled connection can't pin the panel on "loading"
+      const metAc = new AbortController();
+      const metTimer = setTimeout(() => metAc.abort(), 10000);
+      let metResp;
+      try {
+        metResp = await fetch(
+          `https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=${(+la).toFixed(4)}&lon=${(+lo).toFixed(4)}`,
+          { signal: metAc.signal }
+        );
+      } finally {
+        clearTimeout(metTimer);
+      }
       if (!metResp.ok) throw new Error('met.no HTTP ' + metResp.status);
       const metData = await metResp.json();
       // Pick the timeseries entry whose time is closest to now
@@ -707,16 +808,25 @@ function useEnv() {
         const FROST_ID = '15f1c5d3-8ff3-4f4e-a7e2-8f358ae24cc3';
         const frostAuth = 'Basic ' + btoa(FROST_ID + ':');
         const frostGet = async (path) => {
-          const proxied = 'https://corsproxy.io/?' + encodeURIComponent('https://frost.met.no' + path);
-          const ac = new AbortController();
-          const tid = setTimeout(() => ac.abort(), 10000);
-          try {
-            const r = await fetch(proxied, { headers: { Authorization: frostAuth }, signal: ac.signal });
-            if (r.ok) return r.json();
-            throw new Error('Frost HTTP ' + r.status);
-          } finally {
-            clearTimeout(tid);
+          const target = 'https://frost.met.no' + path;
+          // Two-proxy fallback like the tide fetch — one flaky free proxy
+          // shouldn't silently kill the pressure trend for the day
+          const proxies = ['https://corsproxy.io/?', 'https://api.allorigins.win/raw?url='];
+          let lastErr;
+          for (const proxy of proxies) {
+            const ac = new AbortController();
+            const tid = setTimeout(() => ac.abort(), 10000);
+            try {
+              const r = await fetch(proxy + encodeURIComponent(target), { headers: { Authorization: frostAuth }, signal: ac.signal });
+              if (r.ok) return await r.json();
+              lastErr = new Error('Frost HTTP ' + r.status);
+            } catch (e) {
+              lastErr = e;
+            } finally {
+              clearTimeout(tid);
+            }
           }
+          throw lastErr;
         };
         // Step 1: find nearest station with pressure observations
         const geomParam = encodeURIComponent(`nearest(POINT(${lo} ${la}))`);
@@ -778,6 +888,8 @@ function useEnv() {
       console.warn('fetchEnv weather error', e);
       setWeatherStatus("error");
     }
+    })();
+    const tideTask = (async () => {
     setTideStatus("loading");
     try {
       const res = await fetchTideData(la, lo, ts);
@@ -789,6 +901,8 @@ function useEnv() {
       console.warn("tide", e);
       setTideStatus("error");
     }
+    })();
+    await Promise.allSettled([weatherTask, tideTask]);
   }, []);
   // The browser's first fix is often a coarse Wi-Fi/cell estimate that can be
   // hundreds of metres off. We use it immediately (UI + weather/tide load with
@@ -892,8 +1006,11 @@ function useFreshEnvOnReturn(activeRef, getGPS, setTimestamp) {
 const moonCSV = m => m ? m.replace(/^\S+\s/, "") : "";
 const esc = v => {
   if (v == null) return "";
-  const s = String(v);
-  return s.includes(",") || s.includes('"') || s.includes("\n") ? `"${s.replace(/"/g, '""')}"` : s;
+  let s = String(v);
+  // Neutralize spreadsheet formula injection in text fields; real numbers
+  // pass through as non-strings so negatives stay numeric
+  if (typeof v === "string" && /^[=+@\t]/.test(s)) s = "'" + s;
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 };
 const row = cells => cells.map(esc).join(",");
 const tripsCSV = (trips, spots, catches, obs) => {
@@ -955,60 +1072,63 @@ function dlJSON(obj, filename) {
 }
 function backupAll(trips, spots, catches, observations) {
   var tasks = [];
+  var missing = 0;
   var spotsCopy = spots.map(function(s) { return Object.assign({}, s); });
   var catchesCopy = catches.map(function(c) { return Object.assign({}, c); });
-  spotsCopy.forEach(function(s) {
-    if (isPhotoId(s.photo)) tasks.push(photoIdToBase64(s.photo).then(function(b64) { s.photo = b64; }));
-  });
-  catchesCopy.forEach(function(c) {
-    if (isPhotoId(c.fishPhoto)) tasks.push(photoIdToBase64(c.fishPhoto).then(function(b64) { c.fishPhoto = b64; }));
-    if (isPhotoId(c.flyPhoto)) tasks.push(photoIdToBase64(c.flyPhoto).then(function(b64) { c.flyPhoto = b64; }));
-  });
+  // Photo failures must be visible, not silent — a backup the user believes
+  // is complete is the app's last line of defence
+  var attach = function(rec, field) {
+    if (!isPhotoId(rec[field])) return;
+    tasks.push(photoIdToBase64(rec[field]).then(function(b64) {
+      if (!b64) missing++;
+      rec[field] = b64;
+    }).catch(function() { missing++; rec[field] = null; }));
+  };
+  spotsCopy.forEach(function(s) { attach(s, 'photo'); });
+  catchesCopy.forEach(function(c) { attach(c, 'fishPhoto'); attach(c, 'flyPhoto'); });
   Promise.all(tasks).then(function() {
     var today = new Date().toISOString().slice(0, 10);
     dlJSON({ exportedAt: new Date().toISOString(), version: 1, trips: trips, spots: spotsCopy, catches: catchesCopy, observations: observations },
       'catchlog_backup_' + today + '.json');
+    if (missing) alert(missing + " photo(s) could not be read and are not in this backup. All catch/spot data is included.");
+  }).catch(function(e) {
+    alert("Backup failed: " + (e && e.message ? e.message : e));
   });
 }
 function restoreFromFile(file, onDone) {
   var reader = new FileReader();
+  reader.onerror = function() { alert("Could not read the selected file."); };
   reader.onload = function(e) {
     try {
       var data = JSON.parse(e.target.result);
-      if (!data.trips || !data.spots || !data.catches || !data.observations) {
+      // Strict shape check — a malformed file written to storage would brick
+      // the app on next launch
+      if (!Array.isArray(data.trips) || !Array.isArray(data.spots) ||
+          !Array.isArray(data.catches) || !Array.isArray(data.observations)) {
         alert("Invalid backup file — missing expected data."); return;
       }
+      ['trips', 'spots', 'catches', 'observations'].forEach(function(k) {
+        data[k] = data[k].filter(function(r) { return r && typeof r === 'object' && r.id; });
+      });
       var tasks = [];
-      (data.spots || []).forEach(function(s) {
-        if (s.photo && s.photo.startsWith('data:')) {
+      var importPhoto = function(rec, field) {
+        var v = rec[field];
+        if (v && typeof v === 'string' && v.startsWith('data:')) {
           var id = genPhotoId();
-          tasks.push(fetch(s.photo).then(function(r) { return r.blob(); }).then(function(blob) {
+          tasks.push(fetch(v).then(function(r) { return r.blob(); }).then(function(blob) {
             return photoDB.put(id, blob);
           }));
-          s.photo = id;
+          rec[field] = id;
         }
-      });
-      (data.catches || []).forEach(function(c) {
-        if (c.fishPhoto && c.fishPhoto.startsWith('data:')) {
-          var id = genPhotoId();
-          tasks.push(fetch(c.fishPhoto).then(function(r) { return r.blob(); }).then(function(blob) {
-            return photoDB.put(id, blob);
-          }));
-          c.fishPhoto = id;
-        }
-        if (c.flyPhoto && c.flyPhoto.startsWith('data:')) {
-          var id = genPhotoId();
-          tasks.push(fetch(c.flyPhoto).then(function(r) { return r.blob(); }).then(function(blob) {
-            return photoDB.put(id, blob);
-          }));
-          c.flyPhoto = id;
-        }
-      });
-      if (tasks.length) {
-        Promise.all(tasks).then(function() { onDone(data); });
-      } else {
+      };
+      data.spots.forEach(function(s) { importPhoto(s, 'photo'); });
+      data.catches.forEach(function(c) { importPhoto(c, 'fishPhoto'); importPhoto(c, 'flyPhoto'); });
+      // One failed photo must not silently abort the whole restore
+      Promise.allSettled(tasks).then(function(results) {
+        var failed = results.filter(function(r) { return r.status === 'rejected'; }).length;
+        if (failed) alert(failed + " photo(s) could not be restored and will show blank. All catch/spot data was restored.");
         onDone(data);
-      }
+      });
     } catch(err) { alert("Could not read backup file. Make sure it's a valid CatchLog JSON backup."); }
   };
   reader.readAsText(file);
@@ -1027,15 +1147,18 @@ function exportPhotos(catches, spots) {
     if (isPhotoId(c.fishPhoto)) tasks.push(photoIdToBase64(c.fishPhoto).then(function(b64) { c.fishPhoto = b64; }));
     if (isPhotoId(c.flyPhoto)) tasks.push(photoIdToBase64(c.flyPhoto).then(function(b64) { c.flyPhoto = b64; }));
   });
+  var escHtml = function(v) {
+    return String(v == null ? "" : v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  };
   Promise.all(tasks).then(function() {
     var today = new Date().toISOString().slice(0, 10);
     var spotItems = rSpots.filter(function(s) { return s.photo; }).map(function(s) {
-      return '<div class="item"><p class="label">' + s.id + ' \xB7 spot \xB7 ' + (s.name || "Unnamed") + ' \xB7 ' + s.timestamp.slice(0,10) + '</p><img src="' + s.photo + '" /></div>';
+      return '<div class="item"><p class="label">' + escHtml(s.id) + ' \xB7 spot \xB7 ' + escHtml(s.name || "Unnamed") + ' \xB7 ' + escHtml((s.timestamp || "").slice(0,10)) + '</p><img src="' + s.photo + '" /></div>';
     }).join("\n");
     var items = rCatches.map(function(c) {
       var parts = [];
-      if (c.fishPhoto) parts.push('<div class="item"><p class="label">' + c.id + ' \xB7 fish \xB7 ' + c.species + ' \xB7 ' + c.timestamp.slice(0,10) + '</p><img src="' + c.fishPhoto + '" /></div>');
-      if (c.flyPhoto)  parts.push('<div class="item"><p class="label">' + c.id + ' \xB7 fly \xB7 ' + c.species + ' \xB7 ' + c.timestamp.slice(0,10) + '</p><img src="' + c.flyPhoto + '" /></div>');
+      if (c.fishPhoto) parts.push('<div class="item"><p class="label">' + escHtml(c.id) + ' \xB7 fish \xB7 ' + escHtml(c.species) + ' \xB7 ' + escHtml((c.timestamp || "").slice(0,10)) + '</p><img src="' + c.fishPhoto + '" /></div>');
+      if (c.flyPhoto)  parts.push('<div class="item"><p class="label">' + escHtml(c.id) + ' \xB7 fly \xB7 ' + escHtml(c.species) + ' \xB7 ' + escHtml((c.timestamp || "").slice(0,10)) + '</p><img src="' + c.flyPhoto + '" /></div>');
       return parts.join("\n");
     }).join("\n");
     var allItems = [spotItems, items].filter(Boolean).join("\n");
@@ -1046,6 +1169,8 @@ function exportPhotos(catches, spots) {
     var a = document.createElement("a");
     a.href = url; a.download = 'catchlog_photos_' + today + '.html'; a.click();
     URL.revokeObjectURL(url);
+  }).catch(function(e) {
+    alert("Photo export failed: " + (e && e.message ? e.message : e));
   });
 }
 
@@ -1105,7 +1230,12 @@ function isPhotoId(v) {
 }
 
 function genPhotoId() {
-  return 'ph_' + Date.now() + '_' + Math.random().toString(16).slice(2, 6);
+  return 'ph_' + Date.now() + '_' + Math.random().toString(16).slice(2, 10);
+}
+
+// Surface storage failures to the user (FishLog shows these as a toast)
+function reportStorageError(msg) {
+  try { window.dispatchEvent(new CustomEvent('catchlog-storage-error', { detail: msg })); } catch (e) {}
 }
 
 function photoIdToBase64(id) {
@@ -1124,6 +1254,11 @@ function photoIdToBase64(id) {
 function compressPhoto(file, cb) {
   var img = new Image();
   var url = URL.createObjectURL(file);
+  img.onerror = function() {
+    URL.revokeObjectURL(url);
+    reportStorageError("Photo couldn't be read — unsupported image format");
+    cb(null);
+  };
   img.onload = function() {
     var MAX = 800;
     var scale = Math.min(1, MAX / Math.max(img.width, img.height));
@@ -1132,12 +1267,20 @@ function compressPhoto(file, cb) {
     canvas.width = w; canvas.height = h;
     canvas.getContext("2d").drawImage(img, 0, 0, w, h);
     canvas.toBlob(function(blob) {
+      if (!blob) {
+        reportStorageError("Photo couldn't be processed — not attached");
+        cb(null);
+        return;
+      }
       var id = genPhotoId();
       photoDB.put(id, blob).then(function() {
         photoCache.set(id, URL.createObjectURL(blob));
         cb(id);
       }).catch(function() {
-        cb(canvas.toDataURL("image/jpeg", 0.7));
+        // Do NOT fall back to base64 in the record: ~100KB strings flood
+        // localStorage and push the Firestore doc over its 1MB cap
+        reportStorageError("Photo storage unavailable — photo not attached");
+        cb(null);
       });
     }, "image/jpeg", 0.7);
     URL.revokeObjectURL(url);
@@ -1178,6 +1321,13 @@ function usePhoto(ref) {
             }
           } catch(e) {}
         }
+      }).catch(function() {
+        // IndexedDB read failed — fall back to the remote URL if we have one
+        if (cancelled) return;
+        try {
+          var urls = JSON.parse(localStorage.getItem('cl_photo_urls') || '{}');
+          if (urls[ref]) setSrc(urls[ref]);
+        } catch(e) {}
       });
     }
     tryLoad();
@@ -1391,7 +1541,16 @@ const load = k => {
     return [];
   }
 };
-const persist = (k, d) => localStorage.setItem(k, JSON.stringify(d));
+const persist = (k, d) => {
+  try {
+    localStorage.setItem(k, JSON.stringify(d));
+  } catch (e) {
+    // Quota exceeded (or storage unavailable): the record still lives in React
+    // state for this session — warn instead of crashing the whole app
+    console.error("persist failed", e);
+    reportStorageError("Storage is full — entry NOT saved permanently! Export a backup now, then clear photos in Export.");
+  }
+};
 
 // ── App root ──────────────────────────────────────────────────────────────────
 
@@ -1421,7 +1580,12 @@ function FishLog() {
   };
   const mut = (setter, key) => fn => {
     setter(p => {
-      const u = fn(p);
+      // Stamp updatedAt on every new or modified record (updates always create
+      // new objects, untouched records keep their reference) — per-record merge
+      // sync depends on this
+      const prevRefs = new Set(p);
+      const now = new Date().toISOString();
+      const u = fn(p).map(r => prevRefs.has(r) ? r : { ...r, updatedAt: now });
       persist(key, u);
       return u;
     });
@@ -1430,6 +1594,14 @@ function FishLog() {
   const mutSpots = mut(setSpots, SK.spots);
   const mutCatches = mut(setCatches, SK.catches);
   const mutObs = mut(setObservations, SK.obs);
+  // Tombstones: record deletions by id so sync drops them everywhere instead
+  // of resurrecting them from another device's copy
+  const markDeleted = ids => {
+    let m; try { m = JSON.parse(localStorage.getItem('fl_deleted_v1') || '{}'); } catch { m = {}; }
+    const now = new Date().toISOString();
+    ids.forEach(id => { if (id) m[id] = now; });
+    try { _origLocalStorageSet('fl_deleted_v1', JSON.stringify(m)); } catch {}
+  };
 
   // Keep React sync status in step with background pushes
   useEffect(function() {
@@ -1440,7 +1612,16 @@ function FishLog() {
     return function() { _onCloudSync = null; };
   }, []);
 
-  // Cloud sync — listen for auth state changes
+  // Storage failures (quota, IndexedDB) surface as toasts
+  useEffect(() => {
+    const onErr = e => showToast(e.detail || "Storage error");
+    window.addEventListener("catchlog-storage-error", onErr);
+    return () => window.removeEventListener("catchlog-storage-error", onErr);
+  }, []);
+
+  // Cloud sync — listen for auth state changes. Local and cloud copies are
+  // MERGED per record (newest updatedAt wins, tombstones drop deletes), so
+  // neither device's unsynced work is ever discarded wholesale.
   useEffect(function() {
     return fbAuth.onAuthStateChanged(function(user) {
       setCloudUser(user);
@@ -1448,34 +1629,54 @@ function FishLog() {
       setCloudStatus('loading');
       _cloudLoading = true;
       cloudPull(user.uid).then(function(remote) {
-        var localTs  = parseInt(localStorage.getItem('cl_lastUpdated') || '0', 10);
-        var cloudTs  = remote && remote.lastUpdated ? remote.lastUpdated : 0;
-        var localEmpty = !load(SK.trips).length && !load(SK.catches).length;
-        // Load from cloud only if: cloud has data AND (local is empty OR cloud is
-        // definitively newer with a known local timestamp)
-        var useCloud = remote && remote.trips && remote.trips.length > 0 &&
-                       (localEmpty || (localTs > 0 && cloudTs > localTs));
-        if (useCloud) {
-          // Cloud is the most recent copy — load it
-          _origLocalStorageSet('fl_trips_v3',   JSON.stringify(remote.trips        || []));
-          _origLocalStorageSet('fl_spots_v2',   JSON.stringify(remote.spots        || []));
-          _origLocalStorageSet('fl_catches_v3', JSON.stringify(remote.catches      || []));
-          _origLocalStorageSet('fl_obs_v2',     JSON.stringify(remote.observations || []));
-          if (remote.photoUrls) _origLocalStorageSet('cl_photo_urls', JSON.stringify(remote.photoUrls));
-          setTrips(remote.trips        || []);
-          setSpots(remote.spots        || []);
-          setCatches(remote.catches    || []);
-          setObservations(remote.observations || []);
-          cloudDownloadPhotos(remote.photoUrls);
-          if (typeof cloudRecoverPhotoUrls === 'function') cloudRecoverPhotoUrls(user.uid);
-        } else {
-          // Local is same age, newer, or unknown — push local up to cloud
-          cloudPush(user.uid);
-          if (typeof cloudSyncPhotos === 'function') cloudSyncPhotos(user.uid);
+        var localTrips   = load(SK.trips);
+        var localSpots   = load(SK.spots);
+        var localCatches = load(SK.catches);
+        var localObs     = load(SK.obs);
+        var localDeleted; try { localDeleted = JSON.parse(localStorage.getItem('fl_deleted_v1') || '{}'); } catch (e) { localDeleted = {}; }
+        // Guard against cross-account bleed: if this device holds another
+        // account's data, never merge it into the new account
+        var lastUid = localStorage.getItem('cl_lastUid');
+        if (lastUid && lastUid !== user.uid && (localTrips.length || localCatches.length)) {
+          if (!confirm("This device contains CatchLog data from a different account.\n\nOK: replace it with this account's cloud data.\nCancel: keep the data and stay signed out.")) {
+            _cloudLoading = false;
+            fbAuth.signOut();
+            return;
+          }
+          localTrips = []; localSpots = []; localCatches = []; localObs = []; localDeleted = {};
+          _origLocalStorageSet('cl_photo_urls', '{}');
         }
+        remote = remote || {};
+        var deleted = cloudMergeDeleted(localDeleted, remote.deleted);
+        var trips   = cloudMergeById(localTrips,   remote.trips,        deleted);
+        var spots   = cloudMergeById(localSpots,   remote.spots,        deleted);
+        var catches = cloudMergeById(localCatches, remote.catches,      deleted);
+        var obs     = cloudMergeById(localObs,     remote.observations, deleted);
+        // Union of photo URL maps — remote fills anything missing locally
+        var photoUrls; try { photoUrls = JSON.parse(localStorage.getItem('cl_photo_urls') || '{}'); } catch (e) { photoUrls = {}; }
+        if (remote.photoUrls) Object.keys(remote.photoUrls).forEach(function(id) {
+          if (!photoUrls[id]) photoUrls[id] = remote.photoUrls[id];
+        });
+        _origLocalStorageSet('fl_trips_v3',    JSON.stringify(trips));
+        _origLocalStorageSet('fl_spots_v2',    JSON.stringify(spots));
+        _origLocalStorageSet('fl_catches_v3',  JSON.stringify(catches));
+        _origLocalStorageSet('fl_obs_v2',      JSON.stringify(obs));
+        _origLocalStorageSet('fl_deleted_v1',  JSON.stringify(deleted));
+        _origLocalStorageSet('cl_photo_urls',  JSON.stringify(photoUrls));
+        _origLocalStorageSet('cl_lastUid',     user.uid);
+        setTrips(trips);
+        setSpots(spots);
+        setCatches(catches);
+        setObservations(obs);
+        cloudDownloadPhotos(photoUrls);
+        if (typeof cloudRecoverPhotoUrls === 'function') cloudRecoverPhotoUrls(user.uid);
         _cloudLoading = false;
-        setCloudLastSynced(new Date());
-        setCloudStatus('synced');
+        // Push the merged result back up; report status from the real outcome
+        return cloudPush(user.uid).then(function() {
+          setCloudLastSynced(new Date());
+          setCloudStatus('synced');
+          if (typeof cloudSyncPhotos === 'function') cloudSyncPhotos(user.uid);
+        });
       }).catch(function(e) {
         _cloudLoading = false;
         console.error('Cloud load error:', e);
@@ -1520,7 +1721,11 @@ function FishLog() {
     showToast("Session ended");
     setShowQuickAction(false);
   };
-  const updTrip = t => mutTrips(p => p.map(x => x.id === t.id ? t : x));
+  const updTrip = t => {
+    mutTrips(p => p.map(x => x.id === t.id ? t : x));
+    // Keep the open TripDetail in step, otherwise "Save changes" never clears
+    setSelTrip(prev => prev && prev.id === t.id ? t : prev);
+  };
   const delTrip = id => {
     if (!confirm("Delete this session and all its data?")) return;
     spots.filter(s => s.tripId === id).forEach(s => { if (isPhotoId(s.photo)) { photoDB.del(s.photo); cloudDeletePhoto(s.photo); } });
@@ -1528,6 +1733,10 @@ function FishLog() {
       if (isPhotoId(c.fishPhoto)) { photoDB.del(c.fishPhoto); cloudDeletePhoto(c.fishPhoto); }
       if (isPhotoId(c.flyPhoto)) { photoDB.del(c.flyPhoto); cloudDeletePhoto(c.flyPhoto); }
     });
+    markDeleted([id,
+      ...spots.filter(s => s.tripId === id).map(s => s.id),
+      ...catches.filter(c => c.tripId === id).map(c => c.id),
+      ...observations.filter(o => o.tripId === id).map(o => o.id)]);
     mutTrips(p => p.filter(t => t.id !== id));
     mutSpots(p => p.filter(s => s.tripId !== id));
     mutCatches(p => p.filter(c => c.tripId !== id));
@@ -1537,6 +1746,10 @@ function FishLog() {
   };
   const updSpot = s => mutSpots(p => p.map(x => x.id === s.id ? s : x));
   const restoreAll = data => {
+    // A restore replaces everything: tombstone current records missing from
+    // the backup so cloud merge doesn't resurrect them
+    const restoredIds = new Set([...data.trips, ...data.spots, ...data.catches, ...data.observations].map(r => r && r.id));
+    markDeleted([...trips, ...spots, ...catches, ...observations].map(r => r.id).filter(id => !restoredIds.has(id)));
     mutTrips(() => data.trips);
     mutSpots(() => data.spots);
     mutCatches(() => data.catches);
@@ -1556,6 +1769,7 @@ function FishLog() {
       if (isPhotoId(dc.fishPhoto)) { photoDB.del(dc.fishPhoto); cloudDeletePhoto(dc.fishPhoto); }
       if (isPhotoId(dc.flyPhoto)) { photoDB.del(dc.flyPhoto); cloudDeletePhoto(dc.flyPhoto); }
     }
+    markDeleted([id]);
     mutCatches(p => p.filter(c => c.id !== id));
     setSelCatch(null);
     showToast("Catch deleted");
@@ -1572,6 +1786,7 @@ function FishLog() {
   };
   const delObs = id => {
     if (!confirm("Delete this observation?")) return;
+    markDeleted([id]);
     mutObs(p => p.filter(o => o.id !== id));
     setSelObs(null);
     showToast("Observation deleted");
@@ -1618,7 +1833,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.24 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.25 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -1999,7 +2214,14 @@ function TripsList({
   const { gps, gpsStatus, weather, weatherStatus, tide, tideStatus, getGPS, reset: resetEnv } = useEnv();
   const showFormRef = useRef(showForm);
   showFormRef.current = showForm;
-  useEffect(() => { if (showForm) getGPS(timestamp); }, [showForm]);
+  // Fresh timestamp when the form OPENS — the component mounts when the tab
+  // first shows, which can be hours before "+ Start New Session" is tapped
+  useEffect(() => {
+    if (!showForm) return;
+    const ts = new Date().toISOString();
+    setTimestamp(ts);
+    getGPS(ts);
+  }, [showForm]);
   useFreshEnvOnReturn(showFormRef, getGPS, setTimestamp);
   // Auto-fill spot name; as the GPS fix refines, replace our own earlier
   // suggestion (tracked in autoNameRef) but never text the user typed
@@ -2073,7 +2295,6 @@ function TripsList({
     ref: spotPhotoRef,
     type: "file",
     accept: "image/*",
-    capture: "environment",
     onChange: e => { const f = e.target.files[0]; if (f) compressPhoto(f, setSpotPhoto); e.target.value = ""; }
   }))), /*#__PURE__*/React.createElement("div", {
     className: "field-row"
@@ -2493,7 +2714,6 @@ function AddSpotForm({
     ref: photoRef,
     type: "file",
     accept: "image/*",
-    capture: "environment",
     onChange: e => { const f = e.target.files[0]; if (f) compressPhoto(f, setPhoto); e.target.value = ""; }
   }))), /*#__PURE__*/React.createElement("div", {
     className: "field-row"
@@ -2772,7 +2992,6 @@ function CatchForm({
     ref: ref,
     type: "file",
     accept: "image/*",
-    capture: "environment",
     onChange: hp(setter)
   })))), /*#__PURE__*/React.createElement("div", {
     className: "field-group"
@@ -3171,6 +3390,13 @@ function Analytics({ catches, spots, trips }) {
   var kpiTrips = speciesFilter === "all" ? yTrips
     : yTrips.filter(function(t) { return t.targetSpecies === speciesFilter || fc.some(function(c) { return c.tripId === t.id; }); });
 
+  // Catches/hr math must pair catches with the same trips that supply the
+  // hours: only ENDED trips contribute hours, so catches from a live (or
+  // forgotten-open) session would inflate every rate
+  var endedTripIds = {};
+  kpiTrips.forEach(function(t) { if (t.endTime) endedTripIds[t.id] = 1; });
+  var fcEnded = fc.filter(function(c) { return endedTripIds[c.tripId]; });
+
   // ── Bucketing helpers ──
   var hourBucket = function(h) {
     if (h >= 4 && h < 7)  return "04–07";
@@ -3273,7 +3499,7 @@ function Analytics({ catches, spots, trips }) {
       timeHours[hourBucket(new Date(ms).getHours())] += chunk;
     }
   });
-  var cTimeCounts = buildCounts(fc, function(c) { return timeBucket(c.timestamp); }, timeBuckets);
+  var cTimeCounts = buildCounts(fcEnded, function(c) { return timeBucket(c.timestamp); }, timeBuckets);
   var timeRates = timeBuckets.map(function(b, i) {
     return timeHours[b] > 0 ? cTimeCounts[i] / timeHours[b] : 0;
   });
@@ -3293,7 +3519,7 @@ function Analytics({ catches, spots, trips }) {
       if (b && b in tempHours) tempHours[b] += hours;
     });
   });
-  var cTempCounts = buildCounts(fc, function(c) { return tempBucket(getWT(c)); }, tempBucketsAll);
+  var cTempCounts = buildCounts(fcEnded, function(c) { return tempBucket(getWT(c)); }, tempBucketsAll);
   var tempRates = tempBucketsAll.map(function(b, i) {
     return tempHours[b] > 0 ? cTempCounts[i] / tempHours[b] : 0;
   });
@@ -3333,7 +3559,7 @@ function Analytics({ catches, spots, trips }) {
       if (b && b in moonHours) moonHours[b] += dur;
     }
   });
-  var cMoonCounts = buildCounts(fc, function(c) { return moonBucket(getMoon(c)); }, moonBuckets);
+  var cMoonCounts = buildCounts(fcEnded, function(c) { return moonBucket(getMoon(c)); }, moonBuckets);
   var moonRates = moonBuckets.map(function(b, i) {
     return moonHours[b] > 0 ? cMoonCounts[i] / moonHours[b] : 0;
   });
@@ -3364,7 +3590,7 @@ function Analytics({ catches, spots, trips }) {
       if (b && b in pressHours) pressHours[b] += dur;
     }
   });
-  var cPressCounts = buildCounts(fc, function(c) { return pressBucket(getPress(c)); }, pressBuckets);
+  var cPressCounts = buildCounts(fcEnded, function(c) { return pressBucket(getPress(c)); }, pressBuckets);
   var pressRates = pressBuckets.map(function(b, i) {
     return pressHours[b] > 0 ? cPressCounts[i] / pressHours[b] : 0;
   });
@@ -3385,7 +3611,7 @@ function Analytics({ catches, spots, trips }) {
     });
   });
   var methodCatches = {};
-  fc.forEach(function(c) {
+  fcEnded.forEach(function(c) {
     var spot = spots.find(function(s) { return s.id === c.spotId; });
     var lt = spot ? spot.lineType : null;
     if (!lt) return;
@@ -3405,7 +3631,7 @@ function Analytics({ catches, spots, trips }) {
   var totalHours    = kpiTrips.filter(function(t) { return t.endTime; }).reduce(function(sum, t) {
     return sum + (new Date(t.endTime) - new Date(t.startTime)) / 3600000;
   }, 0);
-  var hrsPerCatch   = totalCatches > 0 ? (totalHours / totalCatches).toFixed(1) : "—";
+  var hrsPerCatch   = fcEnded.length > 0 ? (totalHours / fcEnded.length).toFixed(1) : "—";
   var largestFish   = fc.reduce(function(best, c) {
     var sz = parseFloat(c.size); return !isNaN(sz) && sz > (best.sz || 0) ? { c: c, sz: sz } : best;
   }, {}).c;
@@ -3709,12 +3935,18 @@ function TripDetail({
   const dirty = (editTarget || "") !== (t.targetSpecies || "")
     || (editNotes || "") !== (t.notes || "")
     || toLocalDT(currentEndISO) !== toLocalDT(t.endTime);
-  const save = () => onUpdate({
-    ...t,
-    targetSpecies: editTarget,
-    notes: editNotes,
-    endTime: currentEndISO || t.endTime
-  });
+  const save = () => {
+    if (currentEndISO && new Date(currentEndISO) <= new Date(t.startTime)) {
+      alert("End time must be after the session start (" + fmtDT(t.startTime) + ").");
+      return;
+    }
+    onUpdate({
+      ...t,
+      targetSpecies: editTarget,
+      notes: editNotes,
+      endTime: currentEndISO || t.endTime
+    });
+  };
   return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     className: "modal-overlay",
     onClick: e => e.target === e.currentTarget && onClose()
@@ -4145,7 +4377,7 @@ function CatchDetail({
   }, /*#__PURE__*/React.createElement("div", {
     className: "modal-tide-fill",
     style: {
-      width: `${norm * 100}%`
+      width: `${Math.max(0, Math.min(100, norm * 100))}%`
     }
   })), /*#__PURE__*/React.createElement("div", {
     style: {
