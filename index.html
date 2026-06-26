@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.26</title>
+  <title>The Catch Log v2.27</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -250,6 +250,19 @@ const css = `
   .photo-slot-label { font-size: 9px; letter-spacing: 2px; text-transform: uppercase; color: var(--text-3); margin-top: 6px; font-weight: 600; }
   .photo-slot-icon { display: none; }
   .photo-slot input { display: none; }
+  /* Spot photo shown in its captured orientation (portrait stays portrait) */
+  .photo-natural-wrap { position: relative; }
+  .photo-natural { display:block; width:100%; height:auto; max-height:60vh; object-fit:contain; border-radius:3px; background:#0d0f12; cursor: zoom-in; }
+  .photo-natural-wrap input { display:none; }
+  .photo-replace { display:block; width:100%; margin-top:6px; padding:7px; font-size:10px; font-weight:600; letter-spacing:1.5px; text-transform:uppercase; background:var(--paper-2); border:1px solid var(--rule); border-radius:4px; color:var(--slate); cursor:pointer; }
+  .photo-replace-corner { position:absolute; top:8px; right:8px; width:auto; margin:0; padding:5px 9px; background:rgba(20,24,29,.72); color:#fff; border:none; }
+  /* Fullscreen photo viewer with tap-to-zoom */
+  .lightbox { position:fixed; inset:0; z-index:300; background:rgba(8,10,12,.94); display:flex; align-items:center; justify-content:center; }
+  .lightbox-scroll { width:100%; height:100%; overflow:auto; display:flex; align-items:center; justify-content:center; -webkit-overflow-scrolling:touch; }
+  .lightbox-scroll.zoomed { align-items:flex-start; justify-content:flex-start; }
+  .lightbox-img { max-width:100%; max-height:100%; object-fit:contain; cursor:zoom-in; display:block; }
+  .lightbox-img.zoomed { max-width:none; max-height:none; width:250%; cursor:zoom-out; }
+  .lightbox-close { position:fixed; top:calc(env(safe-area-inset-top) + 10px); right:14px; z-index:301; width:40px; height:40px; border-radius:50%; border:none; background:rgba(20,24,29,.85); color:#fff; font-size:24px; line-height:1; cursor:pointer; display:flex; align-items:center; justify-content:center; }
 
   /* Field groups */
   .field-group { background: var(--paper-2); border: 1px solid var(--rule); border-radius: 3px; overflow: hidden; }
@@ -327,8 +340,9 @@ const css = `
   .trip-footer { display: flex; flex-wrap: wrap; gap: 6px; padding: 9px 14px; border-top: 1px solid var(--rule); }
   .trip-active-badge { background: var(--moss); color: var(--paper); border: none; font-size: 9px; padding: 3px 9px; border-radius: 2px; letter-spacing: 1.5px; text-transform: uppercase; font-weight: 600; }
 
-  /* Catch cards */
-  .catch-card { background: var(--paper-2); border: 1px solid var(--rule); border-left: 3px solid var(--moss); border-radius: 3px; overflow: hidden; cursor: pointer; transition: all .15s; }
+  /* Catch cards — left rail with vertical "CAUGHT" label to distinguish from observations */
+  .catch-card { position: relative; background: var(--paper-2); border: 1px solid var(--rule); border-radius: 3px; overflow: hidden; cursor: pointer; transition: all .15s; padding-left: 24px; min-height: 84px; }
+  .catch-card::before { content:"CAUGHT"; position:absolute; left:0; top:0; bottom:0; width:24px; background:var(--moss); color:#fff; writing-mode:vertical-rl; transform:rotate(180deg); display:flex; align-items:center; justify-content:center; font-size:9px; font-weight:700; letter-spacing:2px; }
   .catch-card:hover { border-color: var(--rule-strong); }
   .catch-card-header { display: flex; }
   .catch-thumb { width: 72px; height: 72px; object-fit: cover; flex-shrink: 0; background: var(--rule); display:flex;align-items:center;justify-content:center; }
@@ -342,9 +356,10 @@ const css = `
   .chip-spot { color: var(--moss); }
   .chip-obs  { color: var(--text-2); }
 
-  /* Observation cards */
-  .obs-card { background: var(--paper-2); border: 1px solid var(--rule); border-left: 3px solid var(--slate-light); border-radius: 3px; padding: 12px 14px; cursor: pointer; transition: all .15s; }
-  .obs-card:hover { border-color: var(--rule-strong); border-left-color: var(--slate); }
+  /* Observation cards — left rail with vertical "OBSERVED" label */
+  .obs-card { position: relative; background: var(--paper-2); border: 1px solid var(--rule); border-radius: 3px; overflow: hidden; padding: 12px 14px 12px 38px; cursor: pointer; transition: all .15s; min-height: 84px; }
+  .obs-card::before { content:"OBSERVED"; position:absolute; left:0; top:0; bottom:0; width:24px; background:var(--slate-light); color:#fff; writing-mode:vertical-rl; transform:rotate(180deg); display:flex; align-items:center; justify-content:center; font-size:8px; font-weight:700; letter-spacing:1.5px; }
+  .obs-card:hover { border-color: var(--rule-strong); }
   .obs-header { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
   .obs-species { font-family: 'Inter', sans-serif; font-size: 14px; font-weight: 600; letter-spacing: -0.01em; }
   .obs-count { font-size: 12px; color: var(--text-2); font-weight: 600; font-family: 'Source Code Pro', monospace; }
@@ -1260,6 +1275,8 @@ function compressPhoto(file, cb) {
     cb(null);
   };
   img.onload = function() {
+    // Kept at 800px to keep storage small — the zoom viewer just enlarges
+    // this; some pixelation when zoomed in is acceptable
     var MAX = 800;
     var scale = Math.min(1, MAX / Math.max(img.width, img.height));
     var w = Math.round(img.width * scale), h = Math.round(img.height * scale);
@@ -1341,6 +1358,62 @@ function PhotoImg(props) {
   var resolved = usePhoto(props.src);
   if (!resolved) return null;
   return React.createElement("img", Object.assign({}, props, { src: resolved }));
+}
+
+// Open a photo (id or data URL) in the fullscreen zoom viewer
+function openPhoto(ref) {
+  if (ref) window.dispatchEvent(new CustomEvent("catchlog-open-photo", { detail: ref }));
+}
+
+// Fullscreen photo viewer with tap-to-zoom (fit ↔ 2.5×, pan by scrolling).
+// Single instance mounted at the app root; driven by openPhoto() events.
+function PhotoLightbox() {
+  const [ref, setRef] = useState(null);
+  const [zoom, setZoom] = useState(false);
+  useEffect(() => {
+    const onOpen = e => { setRef(e.detail); setZoom(false); };
+    window.addEventListener("catchlog-open-photo", onOpen);
+    return () => window.removeEventListener("catchlog-open-photo", onOpen);
+  }, []);
+  if (!ref) return null;
+  const close = () => setRef(null);
+  return React.createElement("div", { className: "lightbox", onClick: close },
+    React.createElement("button", { className: "lightbox-close", onClick: close }, "\xD7"),
+    React.createElement("div", { className: "lightbox-scroll" + (zoom ? " zoomed" : ""), onClick: e => e.stopPropagation() },
+      React.createElement(PhotoImg, {
+        src: ref, alt: "",
+        className: "lightbox-img" + (zoom ? " zoomed" : ""),
+        onClick: () => setZoom(z => !z)
+      })
+    )
+  );
+}
+
+// Photo input + display. Empty: tap opens camera/picker. Filled: tap opens the
+// zoom viewer, a Replace button reaches the picker. `natural` shows the image
+// in its captured aspect ratio (spots); otherwise a square cover thumb (catch).
+function PhotoField({ photo, label, natural, camera, onPick }) {
+  const ref = useRef();
+  const pick = () => { if (ref.current) ref.current.click(); };
+  const inputProps = { ref, type: "file", accept: "image/*",
+    onChange: e => { const f = e.target.files[0]; if (f) onPick(f); e.target.value = ""; } };
+  if (camera) inputProps.capture = "environment";
+  const input = React.createElement("input", inputProps);
+  if (!photo) {
+    return React.createElement("div", {
+      className: "photo-slot", style: natural ? { aspectRatio: "16/9" } : undefined, onClick: pick
+    }, React.createElement("div", { className: "photo-slot-label" }, label), input);
+  }
+  if (natural) {
+    return React.createElement("div", { className: "photo-natural-wrap" },
+      React.createElement(PhotoImg, { src: photo, alt: label, className: "photo-natural", onClick: () => openPhoto(photo) }),
+      React.createElement("button", { className: "photo-replace", onClick: pick }, "Replace photo"),
+      input);
+  }
+  return React.createElement("div", { className: "photo-slot", onClick: () => openPhoto(photo) },
+    React.createElement(PhotoImg, { src: photo, alt: label }),
+    React.createElement("button", { className: "photo-replace photo-replace-corner", onClick: e => { e.stopPropagation(); pick(); } }, "Replace"),
+    input);
 }
 
 // ── Photo migration (base64 → IndexedDB) ────────────────────────────────────
@@ -1833,7 +1906,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.26 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.27 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -1960,7 +2033,7 @@ function FishLog() {
     onClose: () => setShowConditions(false)
   }), toast && /*#__PURE__*/React.createElement("div", {
     className: "toast"
-  }, toast)));
+  }, toast), /*#__PURE__*/React.createElement(PhotoLightbox, null)));
 }
 
 // ── Reusable dropdowns ────────────────────────────────────────────────────────
@@ -2280,24 +2353,13 @@ function TripsList({
   }, "\xD7")), /*#__PURE__*/React.createElement("div", {
     className: "photo-grid",
     style: { padding: "12px 14px" }
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "photo-slot",
-    style: { aspectRatio: "16/9" },
-    onClick: () => spotPhotoRef.current.click()
-  }, spotPhoto ? /*#__PURE__*/React.createElement(PhotoImg, {
-    src: spotPhoto,
-    alt: "spot"
-  }) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
-    className: "photo-slot-icon"
-  }, "\uD83D\uDCF7"), /*#__PURE__*/React.createElement("div", {
-    className: "photo-slot-label"
-  }, "Spot Photo \xB7 optional")), /*#__PURE__*/React.createElement("input", {
-    ref: spotPhotoRef,
-    type: "file",
-    accept: "image/*",
-    capture: "environment",
-    onChange: e => { const f = e.target.files[0]; if (f) compressPhoto(f, setSpotPhoto); e.target.value = ""; }
-  }))), /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement(PhotoField, {
+    photo: spotPhoto,
+    label: "Spot Photo \xB7 optional",
+    natural: true,
+    camera: true,
+    onPick: f => compressPhoto(f, setSpotPhoto)
+  })), /*#__PURE__*/React.createElement("div", {
     className: "field-row"
   }, /*#__PURE__*/React.createElement("span", {
     className: "field-icon"
@@ -2700,24 +2762,13 @@ function AddSpotForm({
   }, "New Spot"), /*#__PURE__*/React.createElement("div", {
     className: "photo-grid",
     style: { padding: "12px 14px" }
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "photo-slot",
-    style: { aspectRatio: "16/9" },
-    onClick: () => photoRef.current.click()
-  }, photo ? /*#__PURE__*/React.createElement(PhotoImg, {
-    src: photo,
-    alt: "spot"
-  }) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
-    className: "photo-slot-icon"
-  }, "\uD83D\uDCF7"), /*#__PURE__*/React.createElement("div", {
-    className: "photo-slot-label"
-  }, "Spot Photo \xB7 optional")), /*#__PURE__*/React.createElement("input", {
-    ref: photoRef,
-    type: "file",
-    accept: "image/*",
-    capture: "environment",
-    onChange: e => { const f = e.target.files[0]; if (f) compressPhoto(f, setPhoto); e.target.value = ""; }
-  }))), /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement(PhotoField, {
+    photo: photo,
+    label: "Spot Photo \xB7 optional",
+    natural: true,
+    camera: true,
+    onPick: f => compressPhoto(f, setPhoto)
+  })), /*#__PURE__*/React.createElement("div", {
     className: "field-row"
   }, /*#__PURE__*/React.createElement("span", {
     className: "field-icon"
@@ -2965,37 +3016,23 @@ function CatchForm({
   }, "Logging to: ", /*#__PURE__*/React.createElement("strong", null, activeSpot.name || "Active spot"), activeSpot.waterTemp != null ? ` · ${activeSpot.waterTemp}°C` : ""), /*#__PURE__*/React.createElement("div", {
     className: "photo-grid photo-grid-2"
   }, [{
-    ref: fishRef,
     photo: fishPhoto,
     setter: setFishPhoto,
     label: "Fish"
   }, {
-    ref: flyRef,
     photo: flyPhoto,
     setter: setFlyPhoto,
     label: "Fly"
   }].map(({
-    ref,
     photo,
     setter,
     label
-  }) => /*#__PURE__*/React.createElement("div", {
+  }) => /*#__PURE__*/React.createElement(PhotoField, {
     key: label,
-    className: "photo-slot",
-    onClick: () => ref.current.click()
-  }, photo ? /*#__PURE__*/React.createElement(PhotoImg, {
-    src: photo,
-    alt: label
-  }) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
-    className: "photo-slot-icon"
-  }, "\uD83D\uDCF7"), /*#__PURE__*/React.createElement("div", {
-    className: "photo-slot-label"
-  }, label)), /*#__PURE__*/React.createElement("input", {
-    ref: ref,
-    type: "file",
-    accept: "image/*",
-    onChange: hp(setter)
-  })))), /*#__PURE__*/React.createElement("div", {
+    photo: photo,
+    label: label,
+    onPick: f => compressPhoto(f, setter)
+  }))), /*#__PURE__*/React.createElement("div", {
     className: "field-group"
   }, /*#__PURE__*/React.createElement("div", {
     className: "field-group-title"
@@ -4114,25 +4151,15 @@ function TripDetail({
         fontFamily: "'Source Code Pro',monospace",
         marginBottom: 6
       }
-    }, formatCoords(s.gps.lat, s.gps.lon, s.gps.acc)), (function() {
-      var inputId = "sp-photo-" + s.id;
-      return /*#__PURE__*/React.createElement("div", null,
-        /*#__PURE__*/React.createElement("input", {
-          id: inputId, type: "file", accept: "image/*", style: { display: "none" },
-          onChange: function(e) { var f = e.target.files[0]; if (f) { var old = s.photo; compressPhoto(f, function(d) { if (isPhotoId(old)) { photoDB.del(old); cloudDeletePhoto(old); } onUpdSpot(Object.assign({}, s, { photo: d })); }); } e.target.value = ""; }
-        }),
-        s.photo
-          ? /*#__PURE__*/React.createElement(PhotoImg, {
-              src: s.photo, alt: "spot", className: "spot-photo",
-              style: { cursor: "pointer" },
-              onClick: function() { document.getElementById(inputId).click(); }
-            })
-          : /*#__PURE__*/React.createElement("span", {
-              onClick: function() { document.getElementById(inputId).click(); },
-              style: { fontSize: 10, color: "var(--text-3)", cursor: "pointer", display: "inline-block", marginBottom: 6 }
-            }, "📷 Add spot photo")
-      );
-    })(), s.weather && /*#__PURE__*/React.createElement("div", {
+    }, formatCoords(s.gps.lat, s.gps.lon, s.gps.acc)), /*#__PURE__*/React.createElement("div", {
+      style: { marginBottom: 6 }
+    }, /*#__PURE__*/React.createElement(PhotoField, {
+      photo: s.photo,
+      label: "📷 Add spot photo",
+      natural: true,
+      camera: true,
+      onPick: function(f) { var old = s.photo; compressPhoto(f, function(d) { if (isPhotoId(old)) { photoDB.del(old); cloudDeletePhoto(old); } onUpdSpot(Object.assign({}, s, { photo: d })); }); }
+    })), s.weather && /*#__PURE__*/React.createElement("div", {
       style: {fontSize: 10, color: "#999", marginBottom: 6, lineHeight: 1.6, fontFamily: "'Source Code Pro',monospace"}
     }, [s.weather.airTemp != null ? `${s.weather.airTemp}\xB0C air` : null, s.weather.pressure != null ? `${s.weather.pressure} hPa${s.weather.pressureLevel ? ` ${s.weather.pressureLevel}` : ""}` : null, s.weather.windSpeed != null ? `${s.weather.windSpeed} m/s ${windCompass(s.weather.windDir)}` : null, s.tide?.seasonal != null ? `Tide ${tidePct(s.tide.seasonal)}%${tideArrow(s.tide.direction)}` : null, s.weather.moon || null].filter(Boolean).join(" \xB7 ")), /*#__PURE__*/React.createElement("div", {
       className: "spot-items"
@@ -4234,23 +4261,12 @@ function CatchDetail({
   }, "\xD7")), /*#__PURE__*/React.createElement("div", {
     className: "photo-grid photo-grid-2",
     style: {margin: "0 0 8px"}
-  }, [{ref: fishRef, photo: c.fishPhoto, key: "fishPhoto", label: "Fish"}, {ref: flyRef, photo: c.flyPhoto, key: "flyPhoto", label: "Fly"}].map(p => /*#__PURE__*/React.createElement("div", {
+  }, [{photo: c.fishPhoto, key: "fishPhoto", label: "Fish"}, {photo: c.flyPhoto, key: "flyPhoto", label: "Fly"}].map(p => /*#__PURE__*/React.createElement(PhotoField, {
     key: p.label,
-    className: "photo-slot",
-    onClick: () => p.ref.current.click()
-  }, p.photo ? /*#__PURE__*/React.createElement(PhotoImg, {
-    src: p.photo,
-    alt: p.label
-  }) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
-    className: "photo-slot-icon"
-  }, "📷"), /*#__PURE__*/React.createElement("div", {
-    className: "photo-slot-label"
-  }, p.label)), /*#__PURE__*/React.createElement("input", {
-    ref: p.ref,
-    type: "file",
-    accept: "image/*",
-    onChange: e => { const f = e.target.files[0]; if (f) { var old = p.photo; compressPhoto(f, d => { if (isPhotoId(old)) { photoDB.del(old); cloudDeletePhoto(old); } onUpdate(c.id, {[p.key]: d}); }); } e.target.value = ""; }
-  })))), /*#__PURE__*/React.createElement("div", {
+    photo: p.photo,
+    label: p.label,
+    onPick: f => { var old = p.photo; compressPhoto(f, d => { if (isPhotoId(old)) { photoDB.del(old); cloudDeletePhoto(old); } onUpdate(c.id, {[p.key]: d}); }); }
+  }))), /*#__PURE__*/React.createElement("div", {
     className: "modal-section"
   }, /*#__PURE__*/React.createElement("div", {
     className: "modal-section-title"
