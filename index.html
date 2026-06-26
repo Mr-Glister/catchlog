@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.27</title>
+  <title>The Catch Log v2.28</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -1906,7 +1906,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.27 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.28 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -4647,7 +4647,25 @@ function ExportTab({ trips, spots, catches, observations, onRestore, cloudUser, 
   </script>
   <script>
     if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => navigator.serviceWorker.register('sw.js'));
+      window.addEventListener('load', function() {
+        navigator.serviceWorker.register('sw.js').then(function(reg) {
+          var check = function() { reg.update().catch(function() {}); };
+          // iOS Home Screen apps resume from a frozen snapshot instead of
+          // reloading, so they never check for a new sw.js on their own.
+          // Force a check whenever the app returns to the foreground, plus
+          // a periodic check while it stays open.
+          document.addEventListener('visibilitychange', function() { if (!document.hidden) check(); });
+          setInterval(check, 30 * 60 * 1000);
+        }).catch(function() {});
+        // The new service worker calls skipWaiting()+clients.claim(), so once
+        // an update activates the controller changes — reload once to run it.
+        var reloaded = false;
+        navigator.serviceWorker.addEventListener('controllerchange', function() {
+          if (reloaded) return;
+          reloaded = true;
+          window.location.reload();
+        });
+      });
     }
   </script>
 </body>
