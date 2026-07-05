@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.30</title>
+  <title>The Catch Log v2.31-exp</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -412,6 +412,8 @@ const css = `
   .line-type-spin { color: var(--text-2); border-color: var(--text-2); }
   .method-derived { font-size: 11px; color: var(--text-3); }
   .info-note { font-size: 10px; color: var(--text-3); padding: 11px 14px; text-align: center; line-height: 1.5; border-top: 1px solid var(--rule); letter-spacing: 0.3px; }
+  .mode-switch-link { font-size: 11px; color: var(--rule-strong); padding: 10px 14px 12px; text-align: center; cursor: pointer; letter-spacing: 0.3px; user-select: none; }
+  .mode-switch-link:hover { color: var(--slate); }
   .context-pill { border-radius: 3px; padding: 9px 14px; font-size: 12px; letter-spacing: -0.005em; font-weight: 500; }
   .context-pill.water { background: var(--paper-2); border: 1px solid var(--rule); border-left: 3px solid var(--slate); color: var(--text-2); }
   .context-pill.copper { background: var(--paper-2); border: 1px solid var(--rule); border-left: 3px solid var(--slate-light); color: var(--text-2); }
@@ -558,6 +560,16 @@ function geoDistM(lat1, lon1, lat2, lon2) {
   const R = 6371000, dLat = (lat2 - lat1) * Math.PI / 180, dLon = (lon2 - lon1) * Math.PI / 180;
   const x = dLon * Math.cos((lat1 + lat2) * Math.PI / 360);
   return R * Math.sqrt(dLat * dLat + x * x);
+}
+// Trolling tracks are arrays of [lat, lon, epochSecs] points, thinned to ≥25m
+function trackDistM(track) {
+  if (!track || track.length < 2) return 0;
+  let d = 0;
+  for (let i = 1; i < track.length; i++) d += geoDistM(track[i - 1][0], track[i - 1][1], track[i][0], track[i][1]);
+  return d;
+}
+function fmtTrackDist(m) {
+  return m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${Math.round(m)} m`;
 }
 function nearestSpotName(gps, allSpots) {
   if (!gps) return null;
@@ -1035,7 +1047,7 @@ const tripsCSV = (trips, spots, catches, obs) => {
     const tc = catches.filter(c => c.tripId === t.id);
     const to = obs.filter(o => o.tripId === t.id);
     const dur = t.endTime ? Math.round((new Date(t.endTime) - new Date(t.startTime)) / 60000) : "";
-    const method = deriveMethod(ts) || "";
+    const method = deriveMethod(ts, t) || "";
     return row([t.id, t.name, t.startTime, t.endTime || "", dur, t.targetSpecies || "", method, ts.length, tc.length, to.length, t.notes || ""]);
   })].join("\n");
 };
@@ -1047,11 +1059,11 @@ const spotsCSV = (spots, trips) => {
   })].join("\n");
 };
 const catchesCSV = (catches, spots, trips) => {
-  const h = row(["catch_id", "trip_id", "trip_name", "spot_id", "spot_name", "timestamp", "species", "fly_pattern", "size", "gps_lat", "gps_lon", "water_temp", "air_temp_c", "pressure_hpa", "pressure_level", "pressure_trend", "wind_ms", "wind_dir_deg", "moon_phase", "tide_seasonal_pct", "tide_direction", "tide_cm", "tide_mlws_cm", "tide_mhws_cm", "has_fish_photo", "has_fly_photo", "notes"]);
+  const h = row(["catch_id", "trip_id", "trip_name", "spot_id", "spot_name", "timestamp", "species", "fly_pattern", "troll_depth", "size", "gps_lat", "gps_lon", "water_temp", "air_temp_c", "pressure_hpa", "pressure_level", "pressure_trend", "wind_ms", "wind_dir_deg", "moon_phase", "tide_seasonal_pct", "tide_direction", "tide_cm", "tide_mlws_cm", "tide_mhws_cm", "has_fish_photo", "has_fly_photo", "notes"]);
   return [h, ...[...catches].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp)).map(c => {
     const t = trips.find(x => x.id === c.tripId),
       s = spots.find(x => x.id === c.spotId);
-    return row([c.id, c.tripId || "", t?.name || "", c.spotId || "", s?.name || "", c.timestamp, c.species, c.flyPattern || "", c.size || "", c.gps?.lat ?? "", c.gps?.lon ?? "", c.waterTemp ?? "", c.weather?.airTemp ?? "", c.weather?.pressure ?? "", c.weather?.pressureLevel || "", c.weather?.pressureTrend || "", c.weather?.windSpeed ?? "", c.weather?.windDir ?? "", moonCSV(c.weather?.moon), c.tide?.seasonal != null ? tidePct(c.tide.seasonal) : "", c.tide?.direction || "", c.tide?.valueCM ?? "", c.tide?.mlwsCM ?? "", c.tide?.mhwsCM ?? "", c.fishPhoto ? "1" : "0", c.flyPhoto ? "1" : "0", c.notes || ""]);
+    return row([c.id, c.tripId || "", t?.name || "", c.spotId || "", s?.name || "", c.timestamp, c.species, c.flyPattern || "", c.trollDepth || "", c.size || "", c.gps?.lat ?? "", c.gps?.lon ?? "", c.waterTemp ?? "", c.weather?.airTemp ?? "", c.weather?.pressure ?? "", c.weather?.pressureLevel || "", c.weather?.pressureTrend || "", c.weather?.windSpeed ?? "", c.weather?.windDir ?? "", moonCSV(c.weather?.moon), c.tide?.seasonal != null ? tidePct(c.tide.seasonal) : "", c.tide?.direction || "", c.tide?.valueCM ?? "", c.tide?.mlwsCM ?? "", c.tide?.mhwsCM ?? "", c.fishPhoto ? "1" : "0", c.flyPhoto ? "1" : "0", c.notes || ""]);
   })].join("\n");
 };
 const obsCSV = (observations, spots, trips) => {
@@ -1597,15 +1609,17 @@ function cloudRecoverPhotoUrls(uid) {
 // ── Line types & method derivation ───────────────────────────────────────────
 
 const FLY_LINES = ["Float", "Slow Int", "Fast Int", "Sink3", "Sink5", "Sink7"];
-const SPIN_LINES = ["Wobbler", "Sandeel", "Shad", "Softjerk"];
+const SPIN_LINES = ["Wobbler", "Sandeel", "Shad", "Softjerk", "Spoon"];
 const ALL_LINES = [...FLY_LINES, ...SPIN_LINES];
+const TROLL_DEPTHS = ["Surface", "1–2 m", "2–4 m", "4–6 m", "6–10 m", "10+ m"];
 const TEMP_OPTIONS = [
   ...Array.from({length: 5}, (_, i) => `${i + 3} °C`),
   ...Array.from({length: 21}, (_, i) => `${(8 + i * 0.5).toFixed(1).replace(/\.0$/, '')} °C`),
   ...Array.from({length: 7}, (_, i) => `${i + 19} °C`)
 ];
 const TARGET_SPECIES = ["Sea Trout", "Sea Bass", "Salmon", "Garfish", "Mackerel", "Mullet"];
-function deriveMethod(tripSpots) {
+function deriveMethod(tripSpots, trip) {
+  if (trip && trip.mode === "trolling") return "Trolling";
   const lines = tripSpots.map(s => s.lineType).filter(Boolean);
   if (!lines.length) return null;
   const hasFly = lines.some(l => FLY_LINES.includes(l));
@@ -1772,11 +1786,50 @@ function FishLog() {
     });
   }, []);
 
-  // Starting a session creates both a trip AND the first spot atomically
+  // Trolling route recorder — while a trolling session is active, follow the
+  // boat with watchPosition, thin points to ≥25m spacing, and hold a screen
+  // wake lock (a hidden PWA gets no GPS callbacks, so the screen must stay on
+  // for the track to record; gaps just draw as straight lines)
+  useEffect(() => {
+    if (!activeTrip || activeTrip.mode !== "trolling") return;
+    const tripId = activeTrip.id;
+    const startTrack = activeTrip.track || [];
+    let lastPt = startTrack.length ? startTrack[startTrack.length - 1] : null;
+    let wakeLock = null;
+    let stopped = false;
+    const acquireLock = () => {
+      if (!("wakeLock" in navigator)) return;
+      navigator.wakeLock.request("screen").then(wl => {
+        if (stopped) { wl.release().catch(() => {}); return; }
+        wakeLock = wl;
+      }).catch(() => {});
+    };
+    acquireLock();
+    // Wake locks are auto-released when the page hides — re-acquire on return
+    const onVis = () => { if (document.visibilityState === "visible") acquireLock(); };
+    document.addEventListener("visibilitychange", onVis);
+    const watchId = navigator.geolocation.watchPosition(pos => {
+      if (pos.coords.accuracy > 60) return; // coarse fix — would zigzag the line
+      const lat = +pos.coords.latitude.toFixed(5);
+      const lon = +pos.coords.longitude.toFixed(5);
+      if (lastPt && geoDistM(lastPt[0], lastPt[1], lat, lon) < 25) return;
+      const pt = [lat, lon, Math.round(pos.timestamp / 1000)];
+      lastPt = pt;
+      mutTrips(p => p.map(t => t.id === tripId ? { ...t, track: [...(t.track || []), pt] } : t));
+    }, () => {}, { enableHighAccuracy: true, maximumAge: 4000, timeout: 60000 });
+    return () => {
+      stopped = true;
+      navigator.geolocation.clearWatch(watchId);
+      document.removeEventListener("visibilitychange", onVis);
+      if (wakeLock) wakeLock.release().catch(() => {});
+    };
+  }, [activeTrip ? activeTrip.id : null, activeTrip ? activeTrip.mode : null]);
+
+  // Starting a session creates both a trip AND the first spot atomically.
+  // Trolling sessions pass spotData = null — they have a route, not spots.
   const startSession = (spotData, tripMeta) => {
     const now = new Date();
     const tripId = `t_${now.getTime()}`;
-    const spotId = `s_${now.getTime()}`;
     const trip = {
       id: tripId,
       name: fmtDateLong(now),
@@ -1784,15 +1837,19 @@ function FishLog() {
       endTime: null,
       ...tripMeta
     };
-    const spot = {
-      id: spotId,
-      tripId,
-      ...spotData,
-      timestamp: now.toISOString()
-    };
     mutTrips(p => [trip, ...p]);
-    mutSpots(p => [spot, ...p]);
-    showToast(`Session started · ${spot.name || "New spot"}`);
+    if (spotData) {
+      const spot = {
+        id: `s_${now.getTime()}`,
+        tripId,
+        ...spotData,
+        timestamp: now.toISOString()
+      };
+      mutSpots(p => [spot, ...p]);
+      showToast(`Session started · ${spot.name || "New spot"}`);
+    } else {
+      showToast("Trolling session started · recording route");
+    }
     setShowQuickAction(true);
   };
   const addSpot = s => {
@@ -1920,7 +1977,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.30 \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.31-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -1942,7 +1999,7 @@ function FishLog() {
     className: "ab-trip"
   }, activeTrip.name), /*#__PURE__*/React.createElement("div", {
     className: "ab-spot"
-  }, activeSpot ? (activeSpot.name || "Unnamed spot") : "No spot yet"), activeSpot?.waterTemp && /*#__PURE__*/React.createElement("div", {
+  }, activeTrip.mode === "trolling" ? `Trolling · ${fmtTrackDist(trackDistM(activeTrip.track))}` : activeSpot ? (activeSpot.name || "Unnamed spot") : "No spot yet"), activeTrip.mode !== "trolling" && activeSpot?.waterTemp && /*#__PURE__*/React.createElement("div", {
     className: "ab-meta"
   }, "", activeSpot.waterTemp, "\xB0C"))), tab === "trips" && /*#__PURE__*/React.createElement(TripsList, {
     trips: trips,
@@ -2025,10 +2082,12 @@ function FishLog() {
     className: "qa-heading"
   }, "Live Session"), /*#__PURE__*/React.createElement("div", {
     className: "qa-context"
-  }, activeSpot ? (activeSpot.name || "Unnamed spot") : "No spot yet", activeSpot?.waterTemp ? ` \xB7 ${activeSpot.waterTemp}\xB0C` : ""), /*#__PURE__*/React.createElement("button", {
+  }, activeTrip.mode === "trolling"
+    ? `Trolling · ${[activeTrip.trollLure, activeTrip.trollDepth].filter(Boolean).join(" @ ") || "no setup"} · ${fmtTrackDist(trackDistM(activeTrip.track))}`
+    : /*#__PURE__*/React.createElement(React.Fragment, null, activeSpot ? (activeSpot.name || "Unnamed spot") : "No spot yet", activeSpot?.waterTemp ? ` \xB7 ${activeSpot.waterTemp}\xB0C` : "")), /*#__PURE__*/React.createElement("button", {
     className: "qa-btn primary",
     onClick: () => { setShowQuickAction(false); setLogMode("catch"); setTab("log"); }
-  }, "Record Catch"), /*#__PURE__*/React.createElement("button", {
+  }, "Record Catch"), activeTrip.mode !== "trolling" && /*#__PURE__*/React.createElement("button", {
     className: "qa-btn",
     onClick: () => { setShowQuickAction(false); setLogMode("spot"); setTab("log"); }
   }, "New Spot"), /*#__PURE__*/React.createElement("button", {
@@ -2296,6 +2355,9 @@ function TripsList({
   const [targetSpecies, setTargetSpecies] = useState("");
   const [spotNotes, setSpotNotes] = useState("");
   const [spotPhoto, setSpotPhoto] = useState(null);
+  const [trollMode, setTrollMode] = useState(false);
+  const [trollLure, setTrollLure] = useState("");
+  const [trollDepth, setTrollDepth] = useState("");
   const spotPhotoRef = useRef();
   const [timestamp, setTimestamp] = useState(new Date().toISOString());
   const { gps, gpsStatus, weather, weatherStatus, tide, tideStatus, getGPS, reset: resetEnv } = useEnv();
@@ -2342,6 +2404,23 @@ function TripsList({
     setSpotPhoto(null);
     resetEnv();
   };
+  const handleStartTroll = () => {
+    onStartSession(null, {
+      targetSpecies: targetSpecies.trim(),
+      notes: spotNotes.trim(),
+      mode: "trolling",
+      trollLure,
+      trollDepth,
+      track: []
+    });
+    setShowForm(false);
+    setTrollMode(false);
+    setTargetSpecies("");
+    setSpotNotes("");
+    setTrollLure("");
+    setTrollDepth("");
+    resetEnv();
+  };
   const sorted = [...trips].sort((a, b) => new Date(b.startTime) - new Date(a.startTime));
   return /*#__PURE__*/React.createElement("div", {
     className: "log-wrap"
@@ -2357,7 +2436,7 @@ function TripsList({
     className: "save-btn",
     style: {borderRadius: 6, borderTop: "none", marginTop: 0},
     onClick: () => setShowConditions(true)
-  }, "Live Conditions"), showForm && !activeTrip && /*#__PURE__*/React.createElement("div", {
+  }, "Live Conditions"), showForm && !activeTrip && !trollMode && /*#__PURE__*/React.createElement("div", {
     className: "field-group"
   }, /*#__PURE__*/React.createElement("div", {
     className: "field-group-title moss"
@@ -2475,6 +2554,9 @@ function TripsList({
     className: "save-btn green",
     onClick: handleStart
   }, "Start Session"), /*#__PURE__*/React.createElement("div", {
+    className: "mode-switch-link",
+    onClick: () => setTrollMode(true)
+  }, "Trolling session instead →"), /*#__PURE__*/React.createElement("div", {
     className: "field-group-title"
   }, "Conditions", (weatherStatus === "loading" || tideStatus === "loading") && /*#__PURE__*/React.createElement("span", {
     style: {opacity: .5, fontSize: 9}
@@ -2558,7 +2640,80 @@ function TripsList({
     className: "info-note"
   }, "Get GPS fix to auto-load air temp, pressure, wind & tide"), tideStatus === "ok" && /*#__PURE__*/React.createElement("div", {
     className: "info-note"
-  }, "Tide \xA9 Kartverket/NMA (CC BY 4.0)")), sorted.length === 0 && !showForm && /*#__PURE__*/React.createElement("div", {
+  }, "Tide \xA9 Kartverket/NMA (CC BY 4.0)")), showForm && !activeTrip && trollMode && /*#__PURE__*/React.createElement("div", {
+    className: "field-group"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "field-group-title moss"
+  }, "Trolling Session", /*#__PURE__*/React.createElement("button", {
+    className: "form-x",
+    onClick: () => { setShowForm(false); setTrollMode(false); }
+  }, "\xD7")), /*#__PURE__*/React.createElement("div", {
+    className: "field-row"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "field-icon"
+  }, ""), /*#__PURE__*/React.createElement("span", {
+    className: "field-label"
+  }, "Targeting"), /*#__PURE__*/React.createElement(TargetSelect, {
+    value: targetSpecies,
+    onChange: setTargetSpecies
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "field-row"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "field-icon"
+  }, ""), /*#__PURE__*/React.createElement("span", {
+    className: "field-label"
+  }, "Lure"), /*#__PURE__*/React.createElement("div", {
+    className: "field-select-wrap"
+  }, /*#__PURE__*/React.createElement("select", {
+    className: "field-select",
+    value: trollLure,
+    onChange: e => setTrollLure(e.target.value)
+  }, /*#__PURE__*/React.createElement("option", {
+    value: ""
+  }, "— select —"), SPIN_LINES.map(l => /*#__PURE__*/React.createElement("option", {
+    key: l,
+    value: l
+  }, l))))), /*#__PURE__*/React.createElement("div", {
+    className: "field-row"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "field-icon"
+  }, ""), /*#__PURE__*/React.createElement("span", {
+    className: "field-label"
+  }, "Trolling Depth"), /*#__PURE__*/React.createElement("div", {
+    className: "field-select-wrap"
+  }, /*#__PURE__*/React.createElement("select", {
+    className: "field-select",
+    value: trollDepth,
+    onChange: e => setTrollDepth(e.target.value)
+  }, /*#__PURE__*/React.createElement("option", {
+    value: ""
+  }, "— select —"), TROLL_DEPTHS.map(d => /*#__PURE__*/React.createElement("option", {
+    key: d,
+    value: d
+  }, d))))), /*#__PURE__*/React.createElement("div", {
+    className: "field-row top"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "field-icon",
+    style: { marginTop: 2 }
+  }, "📝"), /*#__PURE__*/React.createElement("span", {
+    className: "field-label top",
+    style: { marginTop: 2 }
+  }, "Notes"), /*#__PURE__*/React.createElement("textarea", {
+    className: "field-input",
+    value: spotNotes,
+    onChange: e => setSpotNotes(e.target.value),
+    placeholder: "Boat, area, plan…",
+    rows: 2,
+    style: { padding: "2px 0", resize: "none" }
+  })), /*#__PURE__*/React.createElement("button", {
+    className: "save-btn green",
+    onClick: handleStartTroll
+  }, "Start & Begin Tracking"), /*#__PURE__*/React.createElement("div", {
+    className: "mode-switch-link",
+    onClick: () => setTrollMode(false)
+  }, "← Shore session instead"), /*#__PURE__*/React.createElement("div", {
+    className: "info-note"
+  }, "Route recording keeps the screen awake while the app is open — use a charger on board. Catches capture GPS, weather & tide as usual.")), sorted.length === 0 && !showForm && /*#__PURE__*/React.createElement("div", {
     className: "empty-state"
   }, /*#__PURE__*/React.createElement("div", {
     className: "empty-icon"
@@ -2575,7 +2730,7 @@ function TripsList({
       tc = tripCatches(t),
       to = tripObs(t);
     const thumb = tc.find(c => c.fishPhoto)?.fishPhoto || ts.find(s => s.photo)?.photo || null;
-    const derivedMethod = deriveMethod(ts);
+    const derivedMethod = deriveMethod(ts, t);
     return /*#__PURE__*/React.createElement("div", {
       key: t.id,
       className: "trip-card",
@@ -2673,7 +2828,7 @@ function LogTab({
       display: "flex",
       gap: 6
     }
-  }, [["catch", "Catch"], ["obs", "Observation"], ["spot", "New Spot"]].map(([m, label]) => /*#__PURE__*/React.createElement("button", {
+  }, [["catch", "Catch"], ["obs", "Observation"], ...(activeTrip.mode === "trolling" ? [] : [["spot", "New Spot"]])].map(([m, label]) => /*#__PURE__*/React.createElement("button", {
     key: m,
     onClick: () => setMode(m),
     style: {
@@ -2970,10 +3125,12 @@ function CatchForm({
   activeSpot,
   onSave
 }) {
+  const trolling = activeTrip && activeTrip.mode === "trolling";
   const [fishPhoto, setFishPhoto] = useState(null);
   const [flyPhoto, setFlyPhoto] = useState(null);
   const [species, setSpecies] = useState(activeTrip && activeTrip.targetSpecies ? activeTrip.targetSpecies : "");
-  const [flyPattern, setFlyPattern] = useState("");
+  const [flyPattern, setFlyPattern] = useState(trolling && activeTrip.trollLure ? activeTrip.trollLure : "");
+  const [trollDepth, setTrollDepth] = useState(trolling ? (activeTrip.trollDepth || "") : "");
   const [size, setSize] = useState("");
   const [waterTemp, setWaterTemp] = useState("");
   const [notes, setNotes] = useState("");
@@ -3014,7 +3171,8 @@ function CatchForm({
       weather: weather ? (({pressureHistory, ...w}) => w)(weather) : null,
       tide,
       tripId: activeTrip?.id || null,
-      spotId: activeSpot?.id || null
+      spotId: activeSpot?.id || null,
+      ...(trolling ? { trollDepth } : {})
     });
     setFishPhoto(null);
     setFlyPhoto(null);
@@ -3025,7 +3183,9 @@ function CatchForm({
     setNotes("");
     reset();
   };
-  return /*#__PURE__*/React.createElement(React.Fragment, null, activeSpot && /*#__PURE__*/React.createElement("div", {
+  return /*#__PURE__*/React.createElement(React.Fragment, null, trolling ? /*#__PURE__*/React.createElement("div", {
+    className: "context-pill water"
+  }, "Logging to: ", /*#__PURE__*/React.createElement("strong", null, "Trolling"), [activeTrip.trollLure, activeTrip.trollDepth].filter(Boolean).length ? ` · ${[activeTrip.trollLure, activeTrip.trollDepth].filter(Boolean).join(" @ ")}` : "") : activeSpot && /*#__PURE__*/React.createElement("div", {
     className: "context-pill water"
   }, "Logging to: ", /*#__PURE__*/React.createElement("strong", null, activeSpot.name || "Active spot"), activeSpot.waterTemp != null ? ` · ${activeSpot.waterTemp}°C` : ""), /*#__PURE__*/React.createElement("div", {
     className: "photo-grid photo-grid-2"
@@ -3036,7 +3196,7 @@ function CatchForm({
   }, {
     photo: flyPhoto,
     setter: setFlyPhoto,
-    label: "Fly"
+    label: trolling ? "Lure" : "Fly"
   }].map(({
     photo,
     setter,
@@ -3067,10 +3227,10 @@ function CatchForm({
     ph: "42 cm / 16 in"
   }, {
     icon: "",
-    label: activeSpot?.lineType && SPIN_LINES.includes(activeSpot.lineType) ? "Lure" : "Fly Pattern",
+    label: trolling || (activeSpot?.lineType && SPIN_LINES.includes(activeSpot.lineType)) ? "Lure" : "Fly Pattern",
     val: flyPattern,
     set: setFlyPattern,
-    ph: activeSpot?.lineType && SPIN_LINES.includes(activeSpot.lineType) ? "Wobbler, shad…" : "Elk Hair Caddis #14…"
+    ph: trolling ? "Spoon, wobbler…" : activeSpot?.lineType && SPIN_LINES.includes(activeSpot.lineType) ? "Wobbler, shad…" : "Elk Hair Caddis #14…"
   }].map(f => /*#__PURE__*/React.createElement("div", {
     key: f.label,
     className: "field-row"
@@ -3083,7 +3243,24 @@ function CatchForm({
     value: f.val,
     onChange: e => f.set(e.target.value),
     placeholder: f.ph
-  })))), /*#__PURE__*/React.createElement("div", {
+  }))), trolling && /*#__PURE__*/React.createElement("div", {
+    className: "field-row"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "field-icon"
+  }, ""), /*#__PURE__*/React.createElement("span", {
+    className: "field-label"
+  }, "Depth"), /*#__PURE__*/React.createElement("div", {
+    className: "field-select-wrap"
+  }, /*#__PURE__*/React.createElement("select", {
+    className: "field-select",
+    value: trollDepth,
+    onChange: e => setTrollDepth(e.target.value)
+  }, /*#__PURE__*/React.createElement("option", {
+    value: ""
+  }, "— select —"), TROLL_DEPTHS.map(d => /*#__PURE__*/React.createElement("option", {
+    key: d,
+    value: d
+  }, d)))))), /*#__PURE__*/React.createElement("div", {
     className: "field-group"
   }, /*#__PURE__*/React.createElement("div", {
     className: "field-group-title"
@@ -3951,6 +4128,71 @@ function SpotHistory({ spot, allSpots, allCatches, allObs, allTrips, onClose }) 
       })));
 }
 
+// ── Trolling route map (Leaflet, lazy-loaded on first use) ───────────────────
+
+let _leafletPromise = null;
+function loadLeaflet() {
+  if (window.L) return Promise.resolve(window.L);
+  if (_leafletPromise) return _leafletPromise;
+  _leafletPromise = new Promise((resolve, reject) => {
+    const css = document.createElement("link");
+    css.rel = "stylesheet";
+    css.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+    document.head.appendChild(css);
+    const s = document.createElement("script");
+    s.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+    s.onload = () => resolve(window.L);
+    s.onerror = () => { _leafletPromise = null; reject(new Error("Leaflet load failed")); };
+    document.head.appendChild(s);
+  });
+  return _leafletPromise;
+}
+
+function TrollMap({ track, catches }) {
+  const boxRef = useRef(null);
+  const mapRef = useRef(null);
+  const [mapErr, setMapErr] = useState(false);
+  const pts = (track || []).map(p => [p[0], p[1]]);
+  const catchPts = (catches || []).filter(c => c.gps).map(c => ({ lat: c.gps.lat, lon: c.gps.lon, label: c.species }));
+  const hasData = pts.length > 0 || catchPts.length > 0;
+  useEffect(() => {
+    if (!hasData) return;
+    let dead = false;
+    loadLeaflet().then(L => {
+      if (dead || !boxRef.current || mapRef.current) return;
+      const map = L.map(boxRef.current);
+      mapRef.current = map;
+      L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        attribution: "&copy; OpenStreetMap"
+      }).addTo(map);
+      let bounds = L.latLngBounds([]);
+      if (pts.length >= 2) bounds.extend(L.polyline(pts, { color: "#2b5d75", weight: 3 }).addTo(map).getBounds());
+      else if (pts.length === 1) bounds.extend(pts[0]);
+      catchPts.forEach(cp => {
+        const m = L.circleMarker([cp.lat, cp.lon], { radius: 7, color: "#3d5a4a", fillColor: "#3d5a4a", fillOpacity: .85 }).addTo(map);
+        if (cp.label) m.bindTooltip(cp.label);
+        bounds.extend([cp.lat, cp.lon]);
+      });
+      map.fitBounds(bounds.pad(0.2), { maxZoom: 15 });
+    }).catch(() => { if (!dead) setMapErr(true); });
+    return () => {
+      dead = true;
+      if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; }
+    };
+  }, [hasData]);
+  if (!hasData) return /*#__PURE__*/React.createElement("div", {
+    style: { fontSize: 11, color: "#ccc", padding: "4px 0" }
+  }, "No route recorded yet");
+  if (mapErr) return /*#__PURE__*/React.createElement("div", {
+    style: { fontSize: 11, color: "#ccc", padding: "4px 0" }
+  }, "Map unavailable (offline?)");
+  return /*#__PURE__*/React.createElement("div", {
+    ref: boxRef,
+    style: { height: 240, borderRadius: 4, border: "1px solid var(--rule)", marginBottom: 10, overflow: "hidden" }
+  });
+}
+
 // ── Trip detail modal ─────────────────────────────────────────────────────────
 
 function TripDetail({
@@ -3983,7 +4225,7 @@ function TripDetail({
     return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
   };
   const [editEnd, setEditEnd] = useState(toLocalDT(t.endTime));
-  const derivedMethod = deriveMethod(spots);
+  const derivedMethod = deriveMethod(spots, t);
   const currentEndISO = editEnd ? new Date(editEnd).toISOString() : null;
   const dirty = (editTarget || "") !== (t.targetSpecies || "")
     || (editNotes || "") !== (t.notes || "")
@@ -4084,11 +4326,23 @@ function TripDetail({
       fontSize: 13,
       color: "var(--ink)"
     }
-  }, derivedMethod, " ", /*#__PURE__*/React.createElement("span", {
+  }, derivedMethod, " ", t.mode !== "trolling" && /*#__PURE__*/React.createElement("span", {
     className: "method-derived"
   }, "\xB7 auto from spots")) : /*#__PURE__*/React.createElement("span", {
     className: "method-derived"
-  }, "Set by choosing line types at each spot")), /*#__PURE__*/React.createElement("div", {
+  }, "Set by choosing line types at each spot")), t.mode === "trolling" && (t.trollLure || t.trollDepth) && /*#__PURE__*/React.createElement("div", {
+    className: "field-row",
+    style: {
+      padding: "7px 0"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "field-label"
+  }, "Setup"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 13,
+      color: "var(--ink)"
+    }
+  }, [t.trollLure, t.trollDepth].filter(Boolean).join(" @ "))), /*#__PURE__*/React.createElement("div", {
     style: {
       padding: "7px 0"
     }
@@ -4117,7 +4371,74 @@ function TripDetail({
     className: "modal-section"
   }, /*#__PURE__*/React.createElement("div", {
     className: "modal-section-title"
-  }, "Spots & Activity"), spots.length === 0 && /*#__PURE__*/React.createElement("div", {
+  }, t.mode === "trolling" ? "Route & Activity" : "Spots & Activity"), t.mode === "trolling" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(TrollMap, {
+    track: t.track,
+    catches: catches
+  }), (t.track || []).length > 1 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: "var(--water)",
+      fontFamily: "'Source Code Pro',monospace",
+      marginBottom: 8
+    }
+  }, "Distance trolled: ", fmtTrackDist(trackDistM(t.track)), " \xB7 ", t.track.length, " track points"), /*#__PURE__*/React.createElement("div", {
+    className: "spot-items"
+  }, catches.map(c => /*#__PURE__*/React.createElement("div", {
+    key: c.id,
+    className: "mini-catch",
+    onClick: () => onSelCatch(c)
+  }, c.fishPhoto ? /*#__PURE__*/React.createElement(PhotoImg, {
+    src: c.fishPhoto,
+    alt: "",
+    className: "mini-catch-thumb"
+  }) : /*#__PURE__*/React.createElement("div", {
+    className: "mini-catch-thumb"
+  }, ""), /*#__PURE__*/React.createElement("div", {
+    className: "mini-catch-info"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "mini-catch-species"
+  }, c.species), /*#__PURE__*/React.createElement("div", {
+    className: "mini-catch-time"
+  }, fmtTime(c.timestamp), c.size ? ` · ${c.size}` : "", c.trollDepth ? ` · ${c.trollDepth}` : "")), /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: "#ccc",
+      fontSize: 16
+    }
+  }, "›"))), observations.map(o => /*#__PURE__*/React.createElement("div", {
+    key: o.id,
+    className: "mini-obs",
+    onClick: () => onSelObs(o)
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 14
+    }
+  }, ""), /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: 1
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontFamily: "'Playfair Display',serif",
+      fontWeight: 600
+    }
+  }, o.species, o.count ? ` × ${o.count}` : ""), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: "#999"
+    }
+  }, fmtTime(o.timestamp), o.estimatedSize ? ` · ${o.estimatedSize}` : "")), /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: "#ccc",
+      fontSize: 16
+    }
+  }, "›"))), catches.length === 0 && observations.length === 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: "#ccc",
+      padding: "4px 0"
+    }
+  }, "Nothing logged yet"))), t.mode !== "trolling" && spots.length === 0 && /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 11,
       color: "#ccc"
@@ -4290,9 +4611,15 @@ function CatchDetail({
     className: "modal-stat"
   }, /*#__PURE__*/React.createElement("div", {
     className: "modal-stat-label"
-  }, "Fly"), /*#__PURE__*/React.createElement("div", {
+  }, trip?.mode === "trolling" ? "Lure" : "Fly"), /*#__PURE__*/React.createElement("div", {
     className: "modal-stat-value"
-  }, c.flyPattern)), c.size && /*#__PURE__*/React.createElement("div", {
+  }, c.flyPattern)), c.trollDepth && /*#__PURE__*/React.createElement("div", {
+    className: "modal-stat"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "modal-stat-label"
+  }, "Depth"), /*#__PURE__*/React.createElement("div", {
+    className: "modal-stat-value"
+  }, c.trollDepth)), c.size && /*#__PURE__*/React.createElement("div", {
     className: "modal-stat"
   }, /*#__PURE__*/React.createElement("div", {
     className: "modal-stat-label"

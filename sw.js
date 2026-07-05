@@ -1,4 +1,4 @@
-const CACHE = 'catchlog-v29-33';
+const CACHE = 'catchlog-v29-34';
 const ASSETS = [
   '/catchlog/',
   '/catchlog/index.html',
@@ -38,11 +38,13 @@ self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET') return;
   const url = new URL(e.request.url);
 
-  // Live data APIs: network only, never cached
+  // Live data APIs + map tiles: network only, never cached (tiles would
+  // grow the cache without bound)
   const isApi = url.hostname.includes('kartverket') ||
                 url.hostname.includes('met.no') ||
                 url.hostname.includes('allorigins') ||
-                url.hostname.includes('corsproxy');
+                url.hostname.includes('corsproxy') ||
+                url.hostname.includes('openstreetmap');
   if (isApi) {
     e.respondWith(fetch(e.request).catch(() => new Response('', { status: 503 })));
     return;
