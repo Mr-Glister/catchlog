@@ -1999,9 +1999,9 @@ function FishLog() {
     className: "ab-trip"
   }, activeTrip.name), /*#__PURE__*/React.createElement("div", {
     className: "ab-spot"
-  }, activeTrip.mode === "trolling" ? `Trolling · ${fmtTrackDist(trackDistM(activeTrip.track))}` : activeSpot ? (activeSpot.name || "Unnamed spot") : "No spot yet"), activeTrip.mode !== "trolling" && activeSpot?.waterTemp && /*#__PURE__*/React.createElement("div", {
+  }, activeTrip.mode === "trolling" ? `Trolling · ${fmtTrackDist(trackDistM(activeTrip.track))}` : activeSpot ? (activeSpot.name || "Unnamed spot") : "No spot yet"), (activeTrip.mode === "trolling" ? activeTrip.waterTemp : activeSpot?.waterTemp) != null && /*#__PURE__*/React.createElement("div", {
     className: "ab-meta"
-  }, "", activeSpot.waterTemp, "\xB0C"))), tab === "trips" && /*#__PURE__*/React.createElement(TripsList, {
+  }, "", activeTrip.mode === "trolling" ? activeTrip.waterTemp : activeSpot.waterTemp, "\xB0C"))), tab === "trips" && /*#__PURE__*/React.createElement(TripsList, {
     trips: trips,
     tripSpots: tripSpots,
     spots: spots,
@@ -2083,7 +2083,7 @@ function FishLog() {
   }, "Live Session"), /*#__PURE__*/React.createElement("div", {
     className: "qa-context"
   }, activeTrip.mode === "trolling"
-    ? `Trolling · ${[activeTrip.trollLure, activeTrip.trollDepth].filter(Boolean).join(" @ ") || "no setup"} · ${fmtTrackDist(trackDistM(activeTrip.track))}`
+    ? `Trolling · ${[activeTrip.trollLure, activeTrip.trollDepth].filter(Boolean).join(" @ ") || "no setup"}${activeTrip.waterTemp != null ? ` · ${activeTrip.waterTemp}°C` : ""} · ${fmtTrackDist(trackDistM(activeTrip.track))}`
     : /*#__PURE__*/React.createElement(React.Fragment, null, activeSpot ? (activeSpot.name || "Unnamed spot") : "No spot yet", activeSpot?.waterTemp ? ` \xB7 ${activeSpot.waterTemp}\xB0C` : "")), /*#__PURE__*/React.createElement("button", {
     className: "qa-btn primary",
     onClick: () => { setShowQuickAction(false); setLogMode("catch"); setTab("log"); }
@@ -2411,6 +2411,7 @@ function TripsList({
       mode: "trolling",
       trollLure,
       trollDepth,
+      waterTemp: waterTemp ? parseFloat(waterTemp) : null,
       track: []
     });
     setShowForm(false);
@@ -2419,6 +2420,7 @@ function TripsList({
     setSpotNotes("");
     setTrollLure("");
     setTrollDepth("");
+    setWaterTemp("");
     resetEnv();
   };
   const sorted = [...trips].sort((a, b) => new Date(b.startTime) - new Date(a.startTime));
@@ -2691,6 +2693,15 @@ function TripsList({
     key: d,
     value: d
   }, d))))), /*#__PURE__*/React.createElement("div", {
+    className: "field-row"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "field-icon"
+  }, "💧"), /*#__PURE__*/React.createElement("span", {
+    className: "field-label"
+  }, "Water Temp"), /*#__PURE__*/React.createElement(TempSelect, {
+    value: waterTemp,
+    onChange: setWaterTemp
+  })), /*#__PURE__*/React.createElement("div", {
     className: "field-row top"
   }, /*#__PURE__*/React.createElement("span", {
     className: "field-icon",
@@ -3132,7 +3143,7 @@ function CatchForm({
   const [flyPattern, setFlyPattern] = useState(trolling && activeTrip.trollLure ? activeTrip.trollLure : "");
   const [trollDepth, setTrollDepth] = useState(trolling ? (activeTrip.trollDepth || "") : "");
   const [size, setSize] = useState("");
-  const [waterTemp, setWaterTemp] = useState("");
+  const [waterTemp, setWaterTemp] = useState(trolling && activeTrip.waterTemp != null ? `${activeTrip.waterTemp} °C` : "");
   const [notes, setNotes] = useState("");
   const [timestamp, setTimestamp] = useState(() => new Date().toISOString());
   const {
@@ -3185,7 +3196,7 @@ function CatchForm({
   };
   return /*#__PURE__*/React.createElement(React.Fragment, null, trolling ? /*#__PURE__*/React.createElement("div", {
     className: "context-pill water"
-  }, "Logging to: ", /*#__PURE__*/React.createElement("strong", null, "Trolling"), [activeTrip.trollLure, activeTrip.trollDepth].filter(Boolean).length ? ` · ${[activeTrip.trollLure, activeTrip.trollDepth].filter(Boolean).join(" @ ")}` : "") : activeSpot && /*#__PURE__*/React.createElement("div", {
+  }, "Logging to: ", /*#__PURE__*/React.createElement("strong", null, "Trolling"), [activeTrip.trollLure, activeTrip.trollDepth].filter(Boolean).length ? ` · ${[activeTrip.trollLure, activeTrip.trollDepth].filter(Boolean).join(" @ ")}` : "", activeTrip.waterTemp != null ? ` · ${activeTrip.waterTemp}°C` : "") : activeSpot && /*#__PURE__*/React.createElement("div", {
     className: "context-pill water"
   }, "Logging to: ", /*#__PURE__*/React.createElement("strong", null, activeSpot.name || "Active spot"), activeSpot.waterTemp != null ? ` · ${activeSpot.waterTemp}°C` : ""), /*#__PURE__*/React.createElement("div", {
     className: "photo-grid photo-grid-2"
@@ -4330,7 +4341,7 @@ function TripDetail({
     className: "method-derived"
   }, "\xB7 auto from spots")) : /*#__PURE__*/React.createElement("span", {
     className: "method-derived"
-  }, "Set by choosing line types at each spot")), t.mode === "trolling" && (t.trollLure || t.trollDepth) && /*#__PURE__*/React.createElement("div", {
+  }, "Set by choosing line types at each spot")), t.mode === "trolling" && (t.trollLure || t.trollDepth || t.waterTemp != null) && /*#__PURE__*/React.createElement("div", {
     className: "field-row",
     style: {
       padding: "7px 0"
@@ -4342,7 +4353,7 @@ function TripDetail({
       fontSize: 13,
       color: "var(--ink)"
     }
-  }, [t.trollLure, t.trollDepth].filter(Boolean).join(" @ "))), /*#__PURE__*/React.createElement("div", {
+  }, [t.trollLure, t.trollDepth].filter(Boolean).join(" @ "), t.waterTemp != null ? ` · ${t.waterTemp}°C` : "")), /*#__PURE__*/React.createElement("div", {
     style: {
       padding: "7px 0"
     }
