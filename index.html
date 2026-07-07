@@ -2046,11 +2046,15 @@ function FishLog() {
     className: "ab-left"
   }, /*#__PURE__*/React.createElement("div", {
     className: "ab-trip"
-  }, activeTrip.name), /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("span", {
+    style: { color: "var(--moss-bright, #6f9e85)" }
+  }, "● "), "Active Session"), /*#__PURE__*/React.createElement("div", {
     className: "ab-spot"
   }, activeTrip.mode === "trolling" ? `Trolling · ${fmtTrackDist(trackDistM(activeTrip.track))}` : activeSpot ? (activeSpot.name || "Unnamed spot") : "No spot yet"), (activeTrip.mode === "trolling" ? activeTrip.waterTemp : activeSpot?.waterTemp) != null && /*#__PURE__*/React.createElement("div", {
     className: "ab-meta"
-  }, "", activeTrip.mode === "trolling" ? activeTrip.waterTemp : activeSpot.waterTemp, "\xB0C"))), tab === "trips" && /*#__PURE__*/React.createElement(TripsList, {
+  }, "", activeTrip.mode === "trolling" ? activeTrip.waterTemp : activeSpot.waterTemp, "\xB0C")), /*#__PURE__*/React.createElement("div", {
+    style: { color: "rgba(255,255,255,.45)", fontSize: 20, lineHeight: 1, paddingRight: 2 }
+  }, "›")), tab === "trips" && /*#__PURE__*/React.createElement(TripsList, {
     trips: trips,
     tripSpots: tripSpots,
     spots: spots,
