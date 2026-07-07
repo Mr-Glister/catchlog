@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.34-exp</title>
+  <title>The Catch Log v2.35-exp</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -1707,7 +1707,6 @@ function FishLog() {
   const [toast, setToast] = useState(null);
   const toastRef = useRef(null);
   const [showQuickAction, setShowQuickAction] = useState(() => trips.some(t => !t.endTime));
-  const [showRouteMap, setShowRouteMap] = useState(false);
   const [showConditions, setShowConditions] = useState(false);
   const [cloudUser, setCloudUser] = useState(() => fbAuth.currentUser);
   const [cloudStatus, setCloudStatus] = useState('idle');
@@ -2024,7 +2023,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.34-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.35-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -2134,7 +2133,36 @@ function FishLog() {
     onDelete: delObs,
     trips: trips,
     spots: spots
-  }), activeTrip && showQuickAction && /*#__PURE__*/React.createElement("div", {
+  }), activeTrip && showQuickAction && (activeTrip.mode === "trolling" ? /*#__PURE__*/React.createElement("div", {
+    className: "quick-overlay",
+    style: { justifyContent: "flex-start" }
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "qa-close",
+    onClick: () => setShowQuickAction(false)
+  }, "\xD7"), /*#__PURE__*/React.createElement("div", {
+    className: "qa-heading",
+    style: { marginBottom: 2 }
+  }, "Live Session"), /*#__PURE__*/React.createElement("div", {
+    className: "qa-context",
+    style: { marginBottom: 10 }
+  }, `Trolling · ${[activeTrip.trollLure, activeTrip.trollDepth].filter(Boolean).join(" @ ") || "no setup"}${activeTrip.waterTemp != null ? ` · ${activeTrip.waterTemp}°C` : ""} · ${fmtTrackDist(trackDistM(activeTrip.track))}`), /*#__PURE__*/React.createElement(TrollMap, {
+    track: activeTrip.track,
+    catches: catches.filter(c => c.tripId === activeTrip.id),
+    fill: true
+  }), /*#__PURE__*/React.createElement("button", {
+    className: "qa-btn primary",
+    onClick: () => { setShowQuickAction(false); setLogMode("catch"); setTab("log"); }
+  }, "Record Catch"), /*#__PURE__*/React.createElement("div", {
+    style: { display: "flex", gap: 12, width: "100%", maxWidth: 340 }
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "qa-btn",
+    style: { flex: 1, minHeight: 56 },
+    onClick: () => { setShowQuickAction(false); setLogMode("obs"); setTab("log"); }
+  }, "Observation"), /*#__PURE__*/React.createElement("button", {
+    className: "qa-btn end",
+    style: { flex: 1, minHeight: 56 },
+    onClick: endTrip
+  }, "End Session"))) : /*#__PURE__*/React.createElement("div", {
     className: "quick-overlay"
   }, /*#__PURE__*/React.createElement("button", {
     className: "qa-close",
@@ -2143,50 +2171,22 @@ function FishLog() {
     className: "qa-heading"
   }, "Live Session"), /*#__PURE__*/React.createElement("div", {
     className: "qa-context"
-  }, activeTrip.mode === "trolling"
-    ? `Trolling · ${[activeTrip.trollLure, activeTrip.trollDepth].filter(Boolean).join(" @ ") || "no setup"}${activeTrip.waterTemp != null ? ` · ${activeTrip.waterTemp}°C` : ""} · ${fmtTrackDist(trackDistM(activeTrip.track))}`
-    : /*#__PURE__*/React.createElement(React.Fragment, null, activeSpot ? (activeSpot.name || "Unnamed spot") : "No spot yet", activeSpot?.waterTemp ? ` \xB7 ${activeSpot.waterTemp}\xB0C` : "")), /*#__PURE__*/React.createElement("button", {
+  }, activeSpot ? (activeSpot.name || "Unnamed spot") : "No spot yet", activeSpot?.waterTemp ? ` \xB7 ${activeSpot.waterTemp}\xB0C` : ""), /*#__PURE__*/React.createElement("button", {
     className: "qa-btn primary",
     onClick: () => { setShowQuickAction(false); setLogMode("catch"); setTab("log"); }
-  }, "Record Catch"), activeTrip.mode !== "trolling" && /*#__PURE__*/React.createElement("button", {
+  }, "Record Catch"), /*#__PURE__*/React.createElement("button", {
     className: "qa-btn",
     onClick: () => { setShowQuickAction(false); setLogMode("spot"); setTab("log"); }
   }, "New Spot"), /*#__PURE__*/React.createElement("button", {
     className: "qa-btn",
     onClick: () => { setShowQuickAction(false); setLogMode("obs"); setTab("log"); }
-  }, "Observation"), activeTrip.mode === "trolling" && /*#__PURE__*/React.createElement("button", {
-    className: "qa-btn",
-    onClick: () => setShowRouteMap(true)
-  }, "Route Map"), /*#__PURE__*/React.createElement("button", {
+  }, "Observation"), /*#__PURE__*/React.createElement("button", {
     className: "qa-btn",
     onClick: () => setShowConditions(true)
   }, "Live Conditions"), /*#__PURE__*/React.createElement("button", {
     className: "qa-btn end",
     onClick: endTrip
-  }, "End Session")), showRouteMap && activeTrip && /*#__PURE__*/React.createElement("div", {
-    className: "modal-overlay",
-    style: { zIndex: 200 },
-    onClick: e => e.target === e.currentTarget && setShowRouteMap(false)
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "modal"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "modal-header"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "modal-title"
-  }, "Route"), /*#__PURE__*/React.createElement("button", {
-    className: "modal-close",
-    onClick: () => setShowRouteMap(false)
-  }, "\xD7")), /*#__PURE__*/React.createElement(TrollMap, {
-    track: activeTrip.track,
-    catches: catches.filter(c => c.tripId === activeTrip.id)
-  }), trackPts(activeTrip.track).length > 1 && /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 10,
-      color: "var(--water)",
-      fontFamily: "'Source Code Pro',monospace",
-      marginTop: 4
-    }
-  }, "Distance trolled: ", fmtTrackDist(trackDistM(activeTrip.track)), " \xB7 ", trackPts(activeTrip.track).length, " track points"))), showConditions && /*#__PURE__*/React.createElement(ConditionsModal, {
+  }, "End Session"))), showConditions && /*#__PURE__*/React.createElement(ConditionsModal, {
     onClose: () => setShowConditions(false)
   }), toast && /*#__PURE__*/React.createElement("div", {
     className: "toast"
@@ -4110,7 +4110,16 @@ function Analytics({ catches, spots, trips }) {
     React.createElement(StatChart, { title: "Air Pressure (catches/hr)", buckets: pressBuckets, values: pressRates, fmt: function(v) { return v.toFixed(2); }, hours: pressBuckets.map(function(b) { return pressHours[b] || 0; }) }),
     React.createElement(StatChart, { title: "Wind Direction (catches/hr)", buckets: windBuckets, values: windRates, fmt: function(v) { return v.toFixed(2); }, hours: windBuckets.map(function(b) { return windHours[b] || 0; }) }),
     React.createElement(StatChart, { title: "Trolling Speed (catches/hr)", buckets: speedBuckets, values: speedRates, fmt: function(v) { return v.toFixed(2); }, hours: speedBuckets.map(function(b) { return speedHours[b] || 0; }) }),
-    React.createElement(StatChart, { title: "Moon Phase (catches/hr)",  buckets: moonBuckets,  values: moonRates, fmt: function(v) { return v.toFixed(2); }, hours: moonBuckets.map(function(b) { return moonHours[b] || 0; }) })
+    React.createElement(StatChart, { title: "Moon Phase (catches/hr)",  buckets: moonBuckets,  values: moonRates, fmt: function(v) { return v.toFixed(2); }, hours: moonBuckets.map(function(b) { return moonHours[b] || 0; }) }),
+    // ── Catch map — every filtered catch with a GPS fix ──
+    (function() {
+      var mapCatches = fc.filter(function(c) { return c.gps; });
+      if (!mapCatches.length) return null;
+      return React.createElement("div", { className: "stat-card" },
+        React.createElement("div", { className: "stat-card-title" }, "Catch Map (" + mapCatches.length + ")"),
+        // key remounts the map when filters change — markers are drawn once at mount
+        React.createElement(TrollMap, { key: speciesFilter + "|" + yearFilter + "|" + mapCatches.length, catches: mapCatches }));
+    })()
   );
 }
 
@@ -4397,7 +4406,7 @@ function loadLeaflet() {
   return _leafletPromise;
 }
 
-function TrollMap({ track, catches, highlightId }) {
+function TrollMap({ track, catches, highlightId, fill }) {
   const boxRef = useRef(null);
   const mapRef = useRef(null);
   const lineRef = useRef(null);
@@ -4443,14 +4452,20 @@ function TrollMap({ track, catches, highlightId }) {
     if (mapRef.current && lineRef.current && pts.length) lineRef.current.setLatLngs(pts);
   }, [pts.length]);
   if (!hasData) return /*#__PURE__*/React.createElement("div", {
-    style: { fontSize: 11, color: "#ccc", padding: "4px 0" }
-  }, "No route recorded yet");
+    style: fill
+      ? { flex: 1, minHeight: 0, width: "100%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: "rgba(255,255,255,.4)", border: "1px dashed rgba(255,255,255,.15)", borderRadius: 4 }
+      : { fontSize: 11, color: "#ccc", padding: "4px 0" }
+  }, "No route recorded yet — waiting for GPS");
   if (mapErr) return /*#__PURE__*/React.createElement("div", {
-    style: { fontSize: 11, color: "#ccc", padding: "4px 0" }
+    style: fill
+      ? { flex: 1, minHeight: 0, width: "100%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: "rgba(255,255,255,.4)" }
+      : { fontSize: 11, color: "#ccc", padding: "4px 0" }
   }, "Map unavailable (offline?)");
   return /*#__PURE__*/React.createElement("div", {
     ref: boxRef,
-    style: { height: 240, borderRadius: 4, border: "1px solid var(--rule)", marginBottom: 10, overflow: "hidden" }
+    style: fill
+      ? { flex: 1, minHeight: 0, width: "100%", borderRadius: 4, overflow: "hidden" }
+      : { height: 240, borderRadius: 4, border: "1px solid var(--rule)", marginBottom: 10, overflow: "hidden" }
   });
 }
 
