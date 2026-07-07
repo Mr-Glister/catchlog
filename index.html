@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.33-exp</title>
+  <title>The Catch Log v2.34-exp</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -490,6 +490,10 @@ const css = `
     cursor: pointer; margin-top: 20px; font-family: 'Inter', sans-serif;
     padding: 12px; font-weight: 500; }
   .qa-dismiss:active { color: rgba(255,255,255,.6); }
+  .qa-close { position: absolute; top: calc(10px + env(safe-area-inset-top, 0px)); right: 10px;
+    background: none; border: none; color: rgba(255,255,255,.35); font-size: 26px;
+    line-height: 1; padding: 12px; cursor: pointer; font-family: 'Inter', sans-serif; }
+  .qa-close:active { color: rgba(255,255,255,.6); }
 
   /* Conditions modal */
   .cond-backdrop { position: fixed; inset: 0; z-index: 200; background: rgba(0,0,0,.55); display: flex; align-items: flex-start; justify-content: center; padding: 56px 16px 16px; }
@@ -580,6 +584,23 @@ function trackDistM(track) {
 }
 function fmtTrackDist(m) {
   return m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${Math.round(m)} m`;
+}
+// Average boat speed (m/s) over the ~5 min of track before a moment, or null.
+// Window reaches 60s past the moment — the fix nearest the catch often lands
+// just after the timestamp the user tapped in.
+function speedAtMoment(track, ts) {
+  const pts = trackPts(track);
+  const t = new Date(ts).getTime() / 1000;
+  const win = pts.filter(p => p[2] >= t - 300 && p[2] <= t + 60);
+  if (win.length < 2) return null;
+  let d = 0;
+  for (let i = 1; i < win.length; i++) d += geoDistM(win[i - 1][0], win[i - 1][1], win[i][0], win[i][1]);
+  const dt = win[win.length - 1][2] - win[0][2];
+  if (dt < 30) return null;
+  return d / dt;
+}
+function fmtKnots(ms) {
+  return `${(ms * 1.94384).toFixed(1)} kn`;
 }
 function nearestSpotName(gps, allSpots) {
   if (!gps) return null;
@@ -1107,6 +1128,13 @@ function dlJSON(obj, filename) {
   a.click();
   URL.revokeObjectURL(url);
 }
+function daysSinceBackup() {
+  var iso = localStorage.getItem('cl_lastBackup');
+  if (!iso) return null;
+  var d = new Date(iso);
+  if (isNaN(d.getTime())) return null;
+  return Math.floor((Date.now() - d.getTime()) / 86400000);
+}
 function backupAll(trips, spots, catches, observations) {
   var tasks = [];
   var missing = 0;
@@ -1127,6 +1155,7 @@ function backupAll(trips, spots, catches, observations) {
     var today = new Date().toISOString().slice(0, 10);
     dlJSON({ exportedAt: new Date().toISOString(), version: 1, trips: trips, spots: spotsCopy, catches: catchesCopy, observations: observations },
       'catchlog_backup_' + today + '.json');
+    _origLocalStorageSet('cl_lastBackup', new Date().toISOString());
     if (missing) alert(missing + " photo(s) could not be read and are not in this backup. All catch/spot data is included.");
   }).catch(function(e) {
     alert("Backup failed: " + (e && e.message ? e.message : e));
@@ -1678,6 +1707,7 @@ function FishLog() {
   const [toast, setToast] = useState(null);
   const toastRef = useRef(null);
   const [showQuickAction, setShowQuickAction] = useState(() => trips.some(t => !t.endTime));
+  const [showRouteMap, setShowRouteMap] = useState(false);
   const [showConditions, setShowConditions] = useState(false);
   const [cloudUser, setCloudUser] = useState(() => fbAuth.currentUser);
   const [cloudStatus, setCloudStatus] = useState('idle');
@@ -1994,22 +2024,24 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.33-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.34-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
-    onClick: () => { setTab("trips"); window.scrollTo(0,0); if (activeTrip) setShowQuickAction(true); }
+    onClick: () => { setTab("trips"); window.scrollTo(0,0); }
   }, "Sessions"), /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "logbook" ? " active" : ""}`,
-    onClick: () => { setTab("logbook"); window.scrollTo(0,0); if (activeTrip) setShowQuickAction(true); }
+    onClick: () => { setTab("logbook"); window.scrollTo(0,0); }
   }, "Logbook"), /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "insights" ? " active" : ""}`,
-    onClick: () => { setTab("insights"); window.scrollTo(0,0); if (activeTrip) setShowQuickAction(true); }
+    onClick: () => { setTab("insights"); window.scrollTo(0,0); }
   }, "Insights"), /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "export" ? " active" : ""}`,
-    onClick: () => { setTab("export"); window.scrollTo(0,0); if (activeTrip) setShowQuickAction(true); }
+    onClick: () => { setTab("export"); window.scrollTo(0,0); }
   }, "Export"))), activeTrip && /*#__PURE__*/React.createElement("div", {
-    className: "active-banner"
+    className: "active-banner",
+    style: { cursor: "pointer" },
+    onClick: () => setShowQuickAction(true)
   }, /*#__PURE__*/React.createElement("div", {
     className: "ab-left"
   }, /*#__PURE__*/React.createElement("div", {
@@ -2029,7 +2061,11 @@ function FishLog() {
     onStartSession: startSession,
     showConditions: showConditions,
     setShowConditions: setShowConditions
-  }), tab === "log" && /*#__PURE__*/React.createElement(LogTab, {
+  }), tab === "trips" && !cloudUser && trips.length > 0 && (daysSinceBackup() == null || daysSinceBackup() > 30) && /*#__PURE__*/React.createElement("div", {
+    className: "info-note",
+    style: { borderTop: "none", cursor: "pointer" },
+    onClick: () => setTab("export")
+  }, "No cloud sync active \xB7 last local backup: ", daysSinceBackup() == null ? "never" : `${daysSinceBackup()} days ago`, " \xB7 tap to back up"), tab === "log" && /*#__PURE__*/React.createElement(LogTab, {
     activeTrip: activeTrip,
     activeSpot: activeSpot,
     onAddSpot: addSpot,
@@ -2096,7 +2132,10 @@ function FishLog() {
     spots: spots
   }), activeTrip && showQuickAction && /*#__PURE__*/React.createElement("div", {
     className: "quick-overlay"
-  }, /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "qa-close",
+    onClick: () => setShowQuickAction(false)
+  }, "\xD7"), /*#__PURE__*/React.createElement("div", {
     className: "qa-heading"
   }, "Live Session"), /*#__PURE__*/React.createElement("div", {
     className: "qa-context"
@@ -2111,16 +2150,39 @@ function FishLog() {
   }, "New Spot"), /*#__PURE__*/React.createElement("button", {
     className: "qa-btn",
     onClick: () => { setShowQuickAction(false); setLogMode("obs"); setTab("log"); }
-  }, "Observation"), /*#__PURE__*/React.createElement("button", {
+  }, "Observation"), activeTrip.mode === "trolling" && /*#__PURE__*/React.createElement("button", {
+    className: "qa-btn",
+    onClick: () => setShowRouteMap(true)
+  }, "Route Map"), /*#__PURE__*/React.createElement("button", {
     className: "qa-btn",
     onClick: () => setShowConditions(true)
   }, "Live Conditions"), /*#__PURE__*/React.createElement("button", {
     className: "qa-btn end",
     onClick: endTrip
-  }, "End Session"), /*#__PURE__*/React.createElement("button", {
-    className: "qa-dismiss",
-    onClick: () => setShowQuickAction(false)
-  }, "View tabs")), showConditions && /*#__PURE__*/React.createElement(ConditionsModal, {
+  }, "End Session")), showRouteMap && activeTrip && /*#__PURE__*/React.createElement("div", {
+    className: "modal-overlay",
+    style: { zIndex: 200 },
+    onClick: e => e.target === e.currentTarget && setShowRouteMap(false)
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "modal"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "modal-header"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "modal-title"
+  }, "Route"), /*#__PURE__*/React.createElement("button", {
+    className: "modal-close",
+    onClick: () => setShowRouteMap(false)
+  }, "\xD7")), /*#__PURE__*/React.createElement(TrollMap, {
+    track: activeTrip.track,
+    catches: catches.filter(c => c.tripId === activeTrip.id)
+  }), trackPts(activeTrip.track).length > 1 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: "var(--water)",
+      fontFamily: "'Source Code Pro',monospace",
+      marginTop: 4
+    }
+  }, "Distance trolled: ", fmtTrackDist(trackDistM(activeTrip.track)), " \xB7 ", trackPts(activeTrip.track).length, " track points"))), showConditions && /*#__PURE__*/React.createElement(ConditionsModal, {
     onClose: () => setShowConditions(false)
   }), toast && /*#__PURE__*/React.createElement("div", {
     className: "toast"
@@ -3226,7 +3288,7 @@ function CatchForm({
       tide,
       tripId: activeTrip?.id || null,
       spotId: activeSpot?.id || null,
-      ...(trolling ? { trollDepth } : {})
+      ...(trolling ? { trollDepth, speedMS: speedAtMoment(activeTrip.track, timestamp) } : {})
     });
     setFishPhoto(null);
     setFlyPhoto(null);
@@ -3923,6 +3985,37 @@ function Analytics({ catches, spots, trips }) {
     return windHours[b] > 0 ? cWindCounts[i] / windHours[b] : 0;
   });
 
+  // ── Trolling Speed — catches per hour ──
+  // Hours come straight from the track: each segment's duration lands in the
+  // bucket of that segment's speed. Gaps >10 min (screen off, paused) are
+  // skipped rather than counted as ultra-slow trolling.
+  var speedBuckets = ["<1 kn", "1–2 kn", "2–3 kn", "3–4 kn", "4+ kn"];
+  var speedBucket = function(ms) {
+    if (ms == null) return null;
+    var kn = ms * 1.94384;
+    if (kn < 1) return "<1 kn";
+    if (kn < 2) return "1–2 kn";
+    if (kn < 3) return "2–3 kn";
+    if (kn < 4) return "3–4 kn";
+    return "4+ kn";
+  };
+  var speedHours = {};
+  speedBuckets.forEach(function(b) { speedHours[b] = 0; });
+  kpiTrips.filter(function(t) { return t.endTime && t.mode === "trolling"; }).forEach(function(t) {
+    var pts = trackPts(t.track);
+    for (var i = 1; i < pts.length; i++) {
+      var dt = pts[i][2] - pts[i - 1][2];
+      if (dt <= 0 || dt > 600) continue;
+      var seg = geoDistM(pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1]) / dt;
+      var b = speedBucket(seg);
+      if (b) speedHours[b] += dt / 3600;
+    }
+  });
+  var cSpeedCounts = buildCounts(fcEnded, function(c) { return speedBucket(c.speedMS); }, speedBuckets);
+  var speedRates = speedBuckets.map(function(b, i) {
+    return speedHours[b] > 0 ? cSpeedCounts[i] / speedHours[b] : 0;
+  });
+
   // ── Catch rate by method ──
   var methodHours = {};
   kpiTrips.filter(function(t) { return t.endTime; }).forEach(function(t) {
@@ -4012,6 +4105,7 @@ function Analytics({ catches, spots, trips }) {
     React.createElement(StatChart, { title: "Time of Day (catches/hr)", buckets: timeBuckets,  values: timeRates, fmt: function(v) { return v.toFixed(2); }, hours: timeBuckets.map(function(b) { return timeHours[b] || 0; }) }),
     React.createElement(StatChart, { title: "Air Pressure (catches/hr)", buckets: pressBuckets, values: pressRates, fmt: function(v) { return v.toFixed(2); }, hours: pressBuckets.map(function(b) { return pressHours[b] || 0; }) }),
     React.createElement(StatChart, { title: "Wind Direction (catches/hr)", buckets: windBuckets, values: windRates, fmt: function(v) { return v.toFixed(2); }, hours: windBuckets.map(function(b) { return windHours[b] || 0; }) }),
+    React.createElement(StatChart, { title: "Trolling Speed (catches/hr)", buckets: speedBuckets, values: speedRates, fmt: function(v) { return v.toFixed(2); }, hours: speedBuckets.map(function(b) { return speedHours[b] || 0; }) }),
     React.createElement(StatChart, { title: "Moon Phase (catches/hr)",  buckets: moonBuckets,  values: moonRates, fmt: function(v) { return v.toFixed(2); }, hours: moonBuckets.map(function(b) { return moonHours[b] || 0; }) })
   );
 }
@@ -4028,6 +4122,9 @@ function Journal({
 }) {
   const [journalTab, setJournalTab] = useState("catches");
   const [selHistorySpot, setSelHistorySpot] = useState(null);
+  const [spotFilter, setSpotFilter] = useState("all");
+  const [yearFilter, setYearFilter] = useState("all");
+  const [monthFilter, setMonthFilter] = useState("all");
   const spotName = id => spots.find(s => s.id === id)?.name || null;
   const items = [...catches.map(c => ({
     ...c,
@@ -4053,6 +4150,24 @@ function Journal({
     const sessionCount = new Set(g.visits.map(v => v.tripId)).size;
     return { rep: byDate[0], name: byDate[0].name, lastVisit: byDate[0].timestamp, catchCount, sessionCount };
   }).sort((a, b) => new Date(b.lastVisit) - new Date(a.lastVisit));
+  // Catches-tab filters: spot (by name, matching the Spots-tab grouping),
+  // trolling sessions as a pseudo-spot, year and month
+  const itemYears = Array.from(new Set(items.map(i => new Date(i.timestamp).getFullYear()))).sort((a, b) => b - a);
+  const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+  const hasTrolling = trips.some(t => t.mode === "trolling");
+  const fItems = items.filter(it => {
+    const d = new Date(it.timestamp);
+    if (yearFilter !== "all" && d.getFullYear() !== parseInt(yearFilter)) return false;
+    if (monthFilter !== "all" && d.getMonth() !== parseInt(monthFilter)) return false;
+    if (spotFilter === "all") return true;
+    if (spotFilter === "__trolling") {
+      const t = trips.find(t => t.id === it.tripId);
+      return !!t && t.mode === "trolling";
+    }
+    const n = spotName(it.spotId);
+    return !!n && n.trim().toLowerCase() === spotFilter;
+  });
+  const filtersActive = spotFilter !== "all" || yearFilter !== "all" || monthFilter !== "all";
   const tabBtn = active => ({
     flex: 1, padding: "9px 4px", fontSize: 9, fontWeight: 700, letterSpacing: .8, textTransform: "uppercase",
     border: "1px solid var(--mist)", borderRadius: 4, cursor: "pointer",
@@ -4072,7 +4187,38 @@ function Journal({
     className: "empty-icon"
   }, ""), /*#__PURE__*/React.createElement("div", {
     className: "empty-text"
-  }, "Nothing logged yet")) : items.map(item => item._type === "catch" ? /*#__PURE__*/React.createElement("div", {
+  }, "Nothing logged yet")) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    className: "stat-filter",
+    style: { padding: "2px 0 8px" }
+  }, /*#__PURE__*/React.createElement("select", {
+    value: spotFilter,
+    onChange: e => setSpotFilter(e.target.value)
+  }, /*#__PURE__*/React.createElement("option", {
+    value: "all"
+  }, "All Spots"), hasTrolling && /*#__PURE__*/React.createElement("option", {
+    value: "__trolling"
+  }, "Trolling"), locs.map(l => /*#__PURE__*/React.createElement("option", {
+    key: l.name,
+    value: l.name.trim().toLowerCase()
+  }, l.name))), /*#__PURE__*/React.createElement("select", {
+    value: yearFilter,
+    onChange: e => setYearFilter(e.target.value)
+  }, /*#__PURE__*/React.createElement("option", {
+    value: "all"
+  }, "All Years"), itemYears.map(y => /*#__PURE__*/React.createElement("option", {
+    key: y,
+    value: String(y)
+  }, String(y)))), /*#__PURE__*/React.createElement("select", {
+    value: monthFilter,
+    onChange: e => setMonthFilter(e.target.value)
+  }, /*#__PURE__*/React.createElement("option", {
+    value: "all"
+  }, "All Months"), MONTH_NAMES.map((m, i) => /*#__PURE__*/React.createElement("option", {
+    key: m,
+    value: String(i)
+  }, m)))), fItems.length === 0 && filtersActive && /*#__PURE__*/React.createElement("div", {
+    style: { fontSize: 11, color: "#bbb", textAlign: "center", padding: "20px 0" }
+  }, "No entries match the filters"), fItems.map(item => item._type === "catch" ? /*#__PURE__*/React.createElement("div", {
     key: item.id,
     className: "catch-card",
     onClick: () => onSelCatch(item)
@@ -4126,7 +4272,7 @@ function Journal({
     className: "obs-count"
   }, "\xD7 ", item.count)), /*#__PURE__*/React.createElement("div", {
     className: "obs-meta"
-  }, /*#__PURE__*/React.createElement("span", null, fmtDT(item.timestamp)), item.estimatedSize && /*#__PURE__*/React.createElement("span", null, "", item.estimatedSize), item.spotId && spotName(item.spotId) && /*#__PURE__*/React.createElement("span", null, "", spotName(item.spotId)))))) : (locs.length === 0 ? /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("span", null, fmtDT(item.timestamp)), item.estimatedSize && /*#__PURE__*/React.createElement("span", null, "", item.estimatedSize), item.spotId && spotName(item.spotId) && /*#__PURE__*/React.createElement("span", null, "", spotName(item.spotId))))))) : (locs.length === 0 ? /*#__PURE__*/React.createElement("div", {
     className: "empty-state"
   }, /*#__PURE__*/React.createElement("div", {
     className: "empty-icon"
@@ -4250,6 +4396,7 @@ function loadLeaflet() {
 function TrollMap({ track, catches, highlightId }) {
   const boxRef = useRef(null);
   const mapRef = useRef(null);
+  const lineRef = useRef(null);
   const [mapErr, setMapErr] = useState(false);
   const pts = trackPts(track).map(p => [p[0], p[1]]);
   const catchPts = (catches || []).filter(c => c.gps)
@@ -4268,7 +4415,8 @@ function TrollMap({ track, catches, highlightId }) {
         attribution: "&copy; OpenStreetMap"
       }).addTo(map);
       let bounds = L.latLngBounds([]);
-      if (pts.length >= 2) bounds.extend(L.polyline(pts, { color: "#2b5d75", weight: 3 }).addTo(map).getBounds());
+      lineRef.current = L.polyline(pts, { color: "#2b5d75", weight: 3 }).addTo(map);
+      if (pts.length >= 2) bounds.extend(lineRef.current.getBounds());
       else if (pts.length === 1) bounds.extend(pts[0]);
       catchPts.forEach(cp => {
         const hot = cp.id === highlightId;
@@ -4281,9 +4429,15 @@ function TrollMap({ track, catches, highlightId }) {
     }).catch(() => { if (!dead) setMapErr(true); });
     return () => {
       dead = true;
+      lineRef.current = null;
       if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; }
     };
   }, [hasData]);
+  // Live update: extend the route line as new points arrive (map stays put —
+  // no refit, so the user's pan/zoom is preserved)
+  useEffect(() => {
+    if (mapRef.current && lineRef.current && pts.length) lineRef.current.setLatLngs(pts);
+  }, [pts.length]);
   if (!hasData) return /*#__PURE__*/React.createElement("div", {
     style: { fontSize: 11, color: "#ccc", padding: "4px 0" }
   }, "No route recorded yet");
@@ -4504,7 +4658,7 @@ function TripDetail({
     className: "mini-catch-species"
   }, c.species), /*#__PURE__*/React.createElement("div", {
     className: "mini-catch-time"
-  }, fmtTime(c.timestamp), c.size ? ` · ${c.size}` : "", c.trollDepth ? ` · ${c.trollDepth}` : "", c.tide?.seasonal != null ? ` · ${tidePct(c.tide.seasonal)}%${tideArrow(c.tide.direction)}` : "")), /*#__PURE__*/React.createElement("span", {
+  }, fmtTime(c.timestamp), c.size ? ` · ${c.size}` : "", c.trollDepth ? ` · ${c.trollDepth}` : "", c.speedMS != null ? ` · ${fmtKnots(c.speedMS)}` : "", c.tide?.seasonal != null ? ` · ${tidePct(c.tide.seasonal)}%${tideArrow(c.tide.direction)}` : "")), /*#__PURE__*/React.createElement("span", {
     style: {
       color: "#ccc",
       fontSize: 16
@@ -4689,6 +4843,24 @@ function CatchDetail({
   const trolling = trip?.mode === "trolling";
   const tripCatches = trolling ? (catches || []).filter(x => x.tripId === trip.id) : [];
   const fishRef = useRef(), flyRef = useRef();
+  const [editSpecies, setEditSpecies] = useState(c.species || "");
+  const [editSize, setEditSize] = useState(c.size || "");
+  const [editFly, setEditFly] = useState(c.flyPattern || "");
+  const [editDepth, setEditDepth] = useState(c.trollDepth || "");
+  const [editNotes, setEditNotes] = useState(c.notes || "");
+  const editDirty = editSpecies !== (c.species || "") || editSize.trim() !== (c.size || "")
+    || editFly.trim() !== (c.flyPattern || "") || editDepth !== (c.trollDepth || "")
+    || editNotes.trim() !== (c.notes || "");
+  const saveEdits = () => {
+    if (!editSpecies.trim()) { alert("Species can't be empty."); return; }
+    onUpdate(c.id, {
+      species: editSpecies.trim(),
+      size: editSize.trim(),
+      flyPattern: editFly.trim(),
+      notes: editNotes.trim(),
+      ...(trolling ? { trollDepth: editDepth } : {})
+    });
+  };
   return /*#__PURE__*/React.createElement("div", {
     className: "modal-overlay",
     onClick: e => e.target === e.currentTarget && onClose()
@@ -4715,25 +4887,13 @@ function CatchDetail({
     className: "modal-section-title"
   }, "Details"), /*#__PURE__*/React.createElement("div", {
     className: "modal-grid"
-  }, c.flyPattern && /*#__PURE__*/React.createElement("div", {
+  }, c.speedMS != null && /*#__PURE__*/React.createElement("div", {
     className: "modal-stat"
   }, /*#__PURE__*/React.createElement("div", {
     className: "modal-stat-label"
-  }, trip?.mode === "trolling" ? "Lure" : "Fly"), /*#__PURE__*/React.createElement("div", {
+  }, "Boat Speed"), /*#__PURE__*/React.createElement("div", {
     className: "modal-stat-value"
-  }, c.flyPattern)), c.trollDepth && /*#__PURE__*/React.createElement("div", {
-    className: "modal-stat"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "modal-stat-label"
-  }, "Depth"), /*#__PURE__*/React.createElement("div", {
-    className: "modal-stat-value"
-  }, c.trollDepth)), c.size && /*#__PURE__*/React.createElement("div", {
-    className: "modal-stat"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "modal-stat-label"
-  }, "Size"), /*#__PURE__*/React.createElement("div", {
-    className: "modal-stat-value"
-  }, c.size)), /*#__PURE__*/React.createElement("div", {
+  }, fmtKnots(c.speedMS))), /*#__PURE__*/React.createElement("div", {
     className: "modal-stat"
   }, /*#__PURE__*/React.createElement("div", {
     className: "modal-stat-label"
@@ -4868,13 +5028,76 @@ function CatchDetail({
       color: "#ccc",
       marginTop: 4
     }
-  }, "\xA9 Kartverket/NMA \xB7 CC BY 4.0"))), c.notes && /*#__PURE__*/React.createElement("div", {
+  }, "\xA9 Kartverket/NMA \xB7 CC BY 4.0"))), /*#__PURE__*/React.createElement("div", {
     className: "modal-section"
   }, /*#__PURE__*/React.createElement("div", {
     className: "modal-section-title"
-  }, "Notes"), /*#__PURE__*/React.createElement("div", {
-    className: "modal-notes"
-  }, c.notes)), /*#__PURE__*/React.createElement("button", {
+  }, "Catch — tap to edit"), /*#__PURE__*/React.createElement("div", {
+    className: "field-row",
+    style: { padding: "7px 0" }
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "field-label"
+  }, "Species"), /*#__PURE__*/React.createElement(SpeciesSelect, {
+    value: editSpecies,
+    onChange: setEditSpecies
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "field-row",
+    style: { padding: "7px 0" }
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "field-label"
+  }, "Size"), /*#__PURE__*/React.createElement("input", {
+    className: "field-input",
+    value: editSize,
+    onChange: e => setEditSize(e.target.value),
+    placeholder: "42 cm / 16 in"
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "field-row",
+    style: { padding: "7px 0" }
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "field-label"
+  }, trolling ? "Lure" : "Fly Pattern"), /*#__PURE__*/React.createElement("input", {
+    className: "field-input",
+    value: editFly,
+    onChange: e => setEditFly(e.target.value),
+    placeholder: trolling ? "Spoon, wobbler…" : "Elk Hair Caddis #14…"
+  })), trolling && /*#__PURE__*/React.createElement("div", {
+    className: "field-row",
+    style: { padding: "7px 0" }
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "field-label"
+  }, "Depth"), /*#__PURE__*/React.createElement("div", {
+    className: "field-select-wrap"
+  }, /*#__PURE__*/React.createElement("select", {
+    className: "field-select",
+    value: editDepth,
+    onChange: e => setEditDepth(e.target.value)
+  }, /*#__PURE__*/React.createElement("option", {
+    value: ""
+  }, "— select —"), TROLL_DEPTHS.map(d => /*#__PURE__*/React.createElement("option", {
+    key: d,
+    value: d
+  }, d))))), /*#__PURE__*/React.createElement("div", {
+    style: { padding: "7px 0" }
+  }, /*#__PURE__*/React.createElement("textarea", {
+    value: editNotes,
+    onChange: e => setEditNotes(e.target.value),
+    placeholder: "Notes…",
+    rows: 3,
+    style: {
+      width: "100%",
+      padding: "4px 8px",
+      borderRadius: 4,
+      border: "1px solid var(--mist)",
+      fontFamily: "'Source Code Pro',monospace",
+      fontSize: 13,
+      resize: "none",
+      outline: "none"
+    }
+  })), editDirty && /*#__PURE__*/React.createElement("button", {
+    className: "gps-btn",
+    onClick: saveEdits,
+    style: { marginTop: 4 }
+  }, "Save changes")), /*#__PURE__*/React.createElement("button", {
     className: "delete-btn",
     onClick: () => onDelete(c.id)
   }, "Delete this catch")));
@@ -5031,6 +5254,11 @@ function ExportTab({ trips, spots, catches, observations, onRestore, cloudUser, 
       cloudUser
         ? "Your data is backed up automatically. You can also export a local copy as a safety net."
         : "All your data lives in this browser\u2019s local storage. Export a backup regularly and keep it somewhere safe (iCloud, Google Drive). A backup includes everything \u2014 sessions, spots, catches, observations and photos."),
+    /*#__PURE__*/React.createElement("div", { className: "backup-panel-sub", style: { opacity: .7, fontFamily: "'Source Code Pro',monospace", fontSize: 10 } },
+      (function() {
+        var d = daysSinceBackup();
+        return "Last local backup: " + (d == null ? "never" : d === 0 ? "today" : d === 1 ? "yesterday" : d + " days ago");
+      })()),
     /*#__PURE__*/React.createElement("div", { className: "backup-btn-row" },
       /*#__PURE__*/React.createElement("button", {
         className: "backup-btn primary", disabled: !totalItems,
