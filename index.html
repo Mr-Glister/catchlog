@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.32-exp</title>
+  <title>The Catch Log v2.33-exp</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -1994,7 +1994,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.32-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.33-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -3813,7 +3813,8 @@ function Analytics({ catches, spots, trips }) {
     var c = yCatches.find(function(c) { return c.tripId === t.id && c.weather; });
     if (c) return c.weather;
     var s = spots.find(function(s) { return s.tripId === t.id && s.weather; });
-    return s ? s.weather : null;
+    if (s) return s.weather;
+    return t.weather || null; // trolling trips carry start weather themselves
   };
 
   // ── Moon Phase — catches per hour ──
@@ -3877,6 +3878,49 @@ function Analytics({ catches, spots, trips }) {
   var cPressCounts = buildCounts(fcEnded, function(c) { return pressBucket(getPress(c)); }, pressBuckets);
   var pressRates = pressBuckets.map(function(b, i) {
     return pressHours[b] > 0 ? cPressCounts[i] / pressHours[b] : 0;
+  });
+
+  // ── Wind Direction — catches per hour ──
+  // Same hybrid approach as pressure. NB: windDir 0 (north) is valid — every
+  // check must be != null, never truthiness
+  var windBuckets = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+  var windBucket = function(deg) {
+    if (deg == null) return null;
+    var d = ((deg % 360) + 360) % 360;
+    return windBuckets[Math.round(d / 45) % 8];
+  };
+  var getWindDir = function(c) {
+    var d = c.weather ? c.weather.windDir : null;
+    if (d != null) return d;
+    var spot = spots.find(function(s) { return s.id === c.spotId; });
+    var sd = spot && spot.weather ? spot.weather.windDir : null;
+    return sd != null ? sd : null;
+  };
+  var windHours = {};
+  windBuckets.forEach(function(b) { windHours[b] = 0; });
+  kpiTrips.filter(function(t) { return t.endTime; }).forEach(function(t) {
+    var tripSpots = spots.filter(function(s) { return s.tripId === t.id; })
+      .sort(function(a, b) { return new Date(a.timestamp) - new Date(b.timestamp); });
+    var tripEnd = new Date(t.endTime).getTime();
+    var spotsHaveWind = tripSpots.some(function(s) { return s.weather && s.weather.windDir != null; });
+    if (spotsHaveWind) {
+      tripSpots.forEach(function(s, idx) {
+        var start = new Date(s.timestamp).getTime();
+        var end = idx < tripSpots.length - 1 ? new Date(tripSpots[idx + 1].timestamp).getTime() : tripEnd;
+        var hours = Math.max(0, (end - start) / 3600000);
+        var b = windBucket(s.weather ? s.weather.windDir : null);
+        if (b && b in windHours) windHours[b] += hours;
+      });
+    } else {
+      var dur = (new Date(t.endTime) - new Date(t.startTime)) / 3600000;
+      var w = getTripWeather(t);
+      var b = windBucket(w ? w.windDir : null);
+      if (b && b in windHours) windHours[b] += dur;
+    }
+  });
+  var cWindCounts = buildCounts(fcEnded, function(c) { return windBucket(getWindDir(c)); }, windBuckets);
+  var windRates = windBuckets.map(function(b, i) {
+    return windHours[b] > 0 ? cWindCounts[i] / windHours[b] : 0;
   });
 
   // ── Catch rate by method ──
@@ -3967,6 +4011,7 @@ function Analytics({ catches, spots, trips }) {
     React.createElement(StatChart, { title: "Tide Level (catch count)",  buckets: tideBuckets,  values: cTide }),
     React.createElement(StatChart, { title: "Time of Day (catches/hr)", buckets: timeBuckets,  values: timeRates, fmt: function(v) { return v.toFixed(2); }, hours: timeBuckets.map(function(b) { return timeHours[b] || 0; }) }),
     React.createElement(StatChart, { title: "Air Pressure (catches/hr)", buckets: pressBuckets, values: pressRates, fmt: function(v) { return v.toFixed(2); }, hours: pressBuckets.map(function(b) { return pressHours[b] || 0; }) }),
+    React.createElement(StatChart, { title: "Wind Direction (catches/hr)", buckets: windBuckets, values: windRates, fmt: function(v) { return v.toFixed(2); }, hours: windBuckets.map(function(b) { return windHours[b] || 0; }) }),
     React.createElement(StatChart, { title: "Moon Phase (catches/hr)",  buckets: moonBuckets,  values: moonRates, fmt: function(v) { return v.toFixed(2); }, hours: moonBuckets.map(function(b) { return moonHours[b] || 0; }) })
   );
 }
