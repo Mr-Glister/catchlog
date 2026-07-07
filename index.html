@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.35-exp</title>
+  <title>The Catch Log v2.36-exp</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -1855,7 +1855,23 @@ function FishLog() {
     // Wake locks are auto-released when the page hides — re-acquire on return
     const onVis = () => { if (document.visibilityState === "visible") acquireLock(); };
     document.addEventListener("visibilitychange", onVis);
+    let lastRaw = null; // last decent raw fix, for derived-speed fallback
+    let ema = null;     // smoothed live speed (m/s)
     const watchId = navigator.geolocation.watchPosition(pos => {
+      // Live speed: prefer the GPS chip's Doppler speed; fall back to
+      // deriving from successive decent fixes. Broadcast as an event only —
+      // never stored, so no storage writes or cloud pushes
+      const nowMs = Date.now();
+      let spd = (pos.coords.speed != null && pos.coords.speed >= 0) ? pos.coords.speed : null;
+      if (spd == null && pos.coords.accuracy <= 60 && lastRaw) {
+        const dt = (nowMs - lastRaw.t) / 1000;
+        if (dt >= 1 && dt <= 30) spd = geoDistM(lastRaw.lat, lastRaw.lon, pos.coords.latitude, pos.coords.longitude) / dt;
+      }
+      if (pos.coords.accuracy <= 60) lastRaw = { lat: pos.coords.latitude, lon: pos.coords.longitude, t: nowMs };
+      if (spd != null) {
+        ema = ema == null ? spd : ema * 0.7 + spd * 0.3;
+        window.dispatchEvent(new CustomEvent("catchlog-live-speed", { detail: { ms: ema < 0.155 ? 0 : ema } })); // <0.3 kn = GPS jitter at rest
+      }
       if (pos.coords.accuracy > 60) return; // coarse fix — would zigzag the line
       const lat = +pos.coords.latitude.toFixed(5);
       const lon = +pos.coords.longitude.toFixed(5);
@@ -2023,7 +2039,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.35-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.36-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -2049,7 +2065,7 @@ function FishLog() {
     style: { color: "var(--moss-bright, #6f9e85)" }
   }, "● "), "Active Session"), /*#__PURE__*/React.createElement("div", {
     className: "ab-spot"
-  }, activeTrip.mode === "trolling" ? `Trolling · ${fmtTrackDist(trackDistM(activeTrip.track))}` : activeSpot ? (activeSpot.name || "Unnamed spot") : "No spot yet"), (activeTrip.mode === "trolling" ? activeTrip.waterTemp : activeSpot?.waterTemp) != null && /*#__PURE__*/React.createElement("div", {
+  }, activeTrip.mode === "trolling" ? /*#__PURE__*/React.createElement(React.Fragment, null, `Trolling · ${fmtTrackDist(trackDistM(activeTrip.track))}`, /*#__PURE__*/React.createElement(LiveSpeed, null)) : activeSpot ? (activeSpot.name || "Unnamed spot") : "No spot yet"), (activeTrip.mode === "trolling" ? activeTrip.waterTemp : activeSpot?.waterTemp) != null && /*#__PURE__*/React.createElement("div", {
     className: "ab-meta"
   }, "", activeTrip.mode === "trolling" ? activeTrip.waterTemp : activeSpot.waterTemp, "\xB0C")), /*#__PURE__*/React.createElement("div", {
     style: { color: "rgba(255,255,255,.45)", fontSize: 20, lineHeight: 1, paddingRight: 2 }
@@ -2144,8 +2160,10 @@ function FishLog() {
     style: { marginBottom: 2 }
   }, "Live Session"), /*#__PURE__*/React.createElement("div", {
     className: "qa-context",
-    style: { marginBottom: 10 }
-  }, `Trolling · ${[activeTrip.trollLure, activeTrip.trollDepth].filter(Boolean).join(" @ ") || "no setup"}${activeTrip.waterTemp != null ? ` · ${activeTrip.waterTemp}°C` : ""} · ${fmtTrackDist(trackDistM(activeTrip.track))}`), /*#__PURE__*/React.createElement(TrollMap, {
+    style: { marginBottom: 8 }
+  }, `Trolling · ${[activeTrip.trollLure, activeTrip.trollDepth].filter(Boolean).join(" @ ") || "no setup"}${activeTrip.waterTemp != null ? ` · ${activeTrip.waterTemp}°C` : ""} · ${fmtTrackDist(trackDistM(activeTrip.track))}`), /*#__PURE__*/React.createElement(LiveSpeed, {
+    big: true
+  }), /*#__PURE__*/React.createElement(TrollMap, {
     track: activeTrip.track,
     catches: catches.filter(c => c.tripId === activeTrip.id),
     fill: true
@@ -4387,6 +4405,49 @@ function SpotHistory({ spot, allSpots, allCatches, allObs, allTrips, onClose }) 
           style: { fontSize: 11, color: "var(--text-3)" }
         }, fmtDT(o.timestamp), o.count ? ` \xB7 \xD7${o.count}` : "", o.estimatedSize ? ` \xB7 ${o.estimatedSize}` : ""))))));
       })));
+}
+
+// ── Live boat speed readout ──────────────────────────────────────────────────
+// Subscribes to the recorder's catchlog-live-speed events so only this tiny
+// component re-renders on each GPS fix — nothing is stored or synced.
+// Shows "—" when no fix has arrived for >10s (signal lost / app was hidden).
+
+function LiveSpeed({ big }) {
+  const [spd, setSpd] = useState(null);
+  const [stale, setStale] = useState(true);
+  const lastRef = useRef(0);
+  useEffect(() => {
+    const onSpd = e => {
+      lastRef.current = Date.now();
+      setSpd(e.detail.ms);
+      setStale(false);
+    };
+    window.addEventListener("catchlog-live-speed", onSpd);
+    const iv = setInterval(() => {
+      if (Date.now() - lastRef.current > 10000) setStale(true);
+    }, 3000);
+    return () => {
+      window.removeEventListener("catchlog-live-speed", onSpd);
+      clearInterval(iv);
+    };
+  }, []);
+  const txt = stale || spd == null ? "—" : (spd * 1.94384).toFixed(1);
+  if (big) return /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontFamily: "'Source Code Pro',monospace",
+      fontSize: 32,
+      fontWeight: 500,
+      color: "var(--paper)",
+      letterSpacing: 1,
+      lineHeight: 1,
+      margin: "0 0 10px"
+    }
+  }, txt, /*#__PURE__*/React.createElement("span", {
+    style: { fontSize: 13, color: "rgba(255,255,255,.45)", marginLeft: 6 }
+  }, "kn"));
+  // inline variant (banner): silent until there's a live reading
+  if (stale || spd == null) return null;
+  return /*#__PURE__*/React.createElement("span", null, ` · ${txt} kn`);
 }
 
 // ── Trolling route map (Leaflet, lazy-loaded on first use) ───────────────────
