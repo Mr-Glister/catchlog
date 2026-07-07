@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.31-exp</title>
+  <title>The Catch Log v2.32-exp</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -561,11 +561,21 @@ function geoDistM(lat1, lon1, lat2, lon2) {
   const x = dLon * Math.cos((lat1 + lat2) * Math.PI / 360);
   return R * Math.sqrt(dLat * dLat + x * x);
 }
-// Trolling tracks are arrays of [lat, lon, epochSecs] points, thinned to ≥25m
+// Trolling tracks are FLAT number arrays [lat, lon, epochSecs, lat, lon, …],
+// thinned to ≥25m. Flat because Firestore rejects nested arrays — a nested
+// track made every cloudPush fail. trackPts also reads the short-lived
+// nested format from the first v2.31-exp build.
+function trackPts(track) {
+  if (!track || !track.length) return [];
+  if (Array.isArray(track[0])) return track; // legacy nested format
+  const pts = [];
+  for (let i = 0; i + 2 < track.length; i += 3) pts.push([track[i], track[i + 1], track[i + 2]]);
+  return pts;
+}
 function trackDistM(track) {
-  if (!track || track.length < 2) return 0;
+  const pts = trackPts(track);
   let d = 0;
-  for (let i = 1; i < track.length; i++) d += geoDistM(track[i - 1][0], track[i - 1][1], track[i][0], track[i][1]);
+  for (let i = 1; i < pts.length; i++) d += geoDistM(pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1]);
   return d;
 }
 function fmtTrackDist(m) {
@@ -1786,6 +1796,14 @@ function FishLog() {
     });
   }, []);
 
+  // One-time migration: the first v2.31-exp build stored tracks as nested
+  // arrays, which Firestore rejects (broke every cloudPush) — flatten them
+  useEffect(() => {
+    const nested = t => t.track && t.track.length && Array.isArray(t.track[0]);
+    if (!trips.some(nested)) return;
+    mutTrips(p => p.map(t => nested(t) ? { ...t, track: t.track.flat() } : t));
+  }, []);
+
   // Trolling route recorder — while a trolling session is active, follow the
   // boat with watchPosition, thin points to ≥25m spacing, and hold a screen
   // wake lock (a hidden PWA gets no GPS callbacks, so the screen must stay on
@@ -1793,8 +1811,8 @@ function FishLog() {
   useEffect(() => {
     if (!activeTrip || activeTrip.mode !== "trolling") return;
     const tripId = activeTrip.id;
-    const startTrack = activeTrip.track || [];
-    let lastPt = startTrack.length ? startTrack[startTrack.length - 1] : null;
+    const startPts = trackPts(activeTrip.track);
+    let lastPt = startPts.length ? startPts[startPts.length - 1] : null;
     let wakeLock = null;
     let stopped = false;
     const acquireLock = () => {
@@ -1813,9 +1831,8 @@ function FishLog() {
       const lat = +pos.coords.latitude.toFixed(5);
       const lon = +pos.coords.longitude.toFixed(5);
       if (lastPt && geoDistM(lastPt[0], lastPt[1], lat, lon) < 25) return;
-      const pt = [lat, lon, Math.round(pos.timestamp / 1000)];
-      lastPt = pt;
-      mutTrips(p => p.map(t => t.id === tripId ? { ...t, track: [...(t.track || []), pt] } : t));
+      lastPt = [lat, lon];
+      mutTrips(p => p.map(t => t.id === tripId ? { ...t, track: [...(t.track || []), lat, lon, Math.round(pos.timestamp / 1000)] } : t));
     }, () => {}, { enableHighAccuracy: true, maximumAge: 4000, timeout: 60000 });
     return () => {
       stopped = true;
@@ -1977,7 +1994,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.31-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.32-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -2069,7 +2086,8 @@ function FishLog() {
     onDelete: delCatch,
     onUpdate: updCatch,
     trips: trips,
-    spots: spots
+    spots: spots,
+    catches: catches
   }), selObs && /*#__PURE__*/React.createElement(ObsDetail, {
     obs: selObs,
     onClose: () => setSelObs(null),
@@ -2412,6 +2430,9 @@ function TripsList({
       trollLure,
       trollDepth,
       waterTemp: waterTemp ? parseFloat(waterTemp) : null,
+      gps,
+      weather: weather ? (({pressureHistory, ...w}) => w)(weather) : null,
+      tide,
       track: []
     });
     setShowForm(false);
@@ -2438,7 +2459,108 @@ function TripsList({
     className: "save-btn",
     style: {borderRadius: 6, borderTop: "none", marginTop: 0},
     onClick: () => setShowConditions(true)
-  }, "Live Conditions"), showForm && !activeTrip && !trollMode && /*#__PURE__*/React.createElement("div", {
+  }, "Live Conditions"), showForm && !activeTrip && trollMode && /*#__PURE__*/React.createElement("div", {
+    className: "field-group"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "field-group-title moss"
+  }, "Trolling Session", /*#__PURE__*/React.createElement("button", {
+    className: "form-x",
+    onClick: () => { setShowForm(false); setTrollMode(false); }
+  }, "\xD7")), /*#__PURE__*/React.createElement("div", {
+    className: "field-row"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "field-icon"
+  }, ""), /*#__PURE__*/React.createElement("span", {
+    className: "field-label"
+  }, "Targeting"), /*#__PURE__*/React.createElement(TargetSelect, {
+    value: targetSpecies,
+    onChange: setTargetSpecies
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "field-row"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "field-icon"
+  }, "📍"), /*#__PURE__*/React.createElement("span", {
+    className: "field-label"
+  }, "GPS"), gpsStatus === "idle" && /*#__PURE__*/React.createElement("button", {
+    className: "gps-btn",
+    onClick: () => getGPS(timestamp)
+  }, "Get GPS"), gpsStatus === "loading" && /*#__PURE__*/React.createElement("span", {
+    className: "status-badge status-loading"
+  }, "Acquiring…"), gpsStatus === "error" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
+    className: "status-badge status-error"
+  }, "Failed"), /*#__PURE__*/React.createElement("button", {
+    className: "gps-btn",
+    style: { marginLeft: 6 },
+    onClick: () => getGPS(timestamp)
+  }, "Retry")), gpsStatus === "ok" && gps && /*#__PURE__*/React.createElement("span", {
+    className: "gps-coords"
+  }, formatCoords(gps.lat, gps.lon, gps.acc))), /*#__PURE__*/React.createElement("div", {
+    className: "field-row"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "field-icon"
+  }, ""), /*#__PURE__*/React.createElement("span", {
+    className: "field-label"
+  }, "Lure"), /*#__PURE__*/React.createElement("div", {
+    className: "field-select-wrap"
+  }, /*#__PURE__*/React.createElement("select", {
+    className: "field-select",
+    value: trollLure,
+    onChange: e => setTrollLure(e.target.value)
+  }, /*#__PURE__*/React.createElement("option", {
+    value: ""
+  }, "— select —"), SPIN_LINES.map(l => /*#__PURE__*/React.createElement("option", {
+    key: l,
+    value: l
+  }, l))))), /*#__PURE__*/React.createElement("div", {
+    className: "field-row"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "field-icon"
+  }, ""), /*#__PURE__*/React.createElement("span", {
+    className: "field-label"
+  }, "Trolling Depth"), /*#__PURE__*/React.createElement("div", {
+    className: "field-select-wrap"
+  }, /*#__PURE__*/React.createElement("select", {
+    className: "field-select",
+    value: trollDepth,
+    onChange: e => setTrollDepth(e.target.value)
+  }, /*#__PURE__*/React.createElement("option", {
+    value: ""
+  }, "— select —"), TROLL_DEPTHS.map(d => /*#__PURE__*/React.createElement("option", {
+    key: d,
+    value: d
+  }, d))))), /*#__PURE__*/React.createElement("div", {
+    className: "field-row"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "field-icon"
+  }, "💧"), /*#__PURE__*/React.createElement("span", {
+    className: "field-label"
+  }, "Water Temp"), /*#__PURE__*/React.createElement(TempSelect, {
+    value: waterTemp,
+    onChange: setWaterTemp
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "field-row top"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "field-icon",
+    style: { marginTop: 2 }
+  }, "📝"), /*#__PURE__*/React.createElement("span", {
+    className: "field-label top",
+    style: { marginTop: 2 }
+  }, "Notes"), /*#__PURE__*/React.createElement("textarea", {
+    className: "field-input",
+    value: spotNotes,
+    onChange: e => setSpotNotes(e.target.value),
+    placeholder: "Boat, area, plan…",
+    rows: 2,
+    style: { padding: "2px 0", resize: "none" }
+  })), /*#__PURE__*/React.createElement("button", {
+    className: "save-btn green",
+    onClick: handleStartTroll
+  }, "Start & Begin Tracking"), /*#__PURE__*/React.createElement("div", {
+    className: "mode-switch-link",
+    onClick: () => setTrollMode(false)
+  }, "← Shore session instead"), /*#__PURE__*/React.createElement("div", {
+    className: "info-note"
+  }, "Route recording keeps the screen awake while the app is open — use a charger on board. Catches capture GPS, weather & tide as usual.")), showForm && !activeTrip && !trollMode && /*#__PURE__*/React.createElement("div", {
     className: "field-group"
   }, /*#__PURE__*/React.createElement("div", {
     className: "field-group-title moss"
@@ -2558,7 +2680,10 @@ function TripsList({
   }, "Start Session"), /*#__PURE__*/React.createElement("div", {
     className: "mode-switch-link",
     onClick: () => setTrollMode(true)
-  }, "Trolling session instead →"), /*#__PURE__*/React.createElement("div", {
+  }, "Trolling session instead →")), showForm && !activeTrip && /*#__PURE__*/React.createElement("div", {
+    className: "field-group",
+    style: { marginTop: 10 }
+  }, /*#__PURE__*/React.createElement("div", {
     className: "field-group-title"
   }, "Conditions", (weatherStatus === "loading" || tideStatus === "loading") && /*#__PURE__*/React.createElement("span", {
     style: {opacity: .5, fontSize: 9}
@@ -2642,89 +2767,7 @@ function TripsList({
     className: "info-note"
   }, "Get GPS fix to auto-load air temp, pressure, wind & tide"), tideStatus === "ok" && /*#__PURE__*/React.createElement("div", {
     className: "info-note"
-  }, "Tide \xA9 Kartverket/NMA (CC BY 4.0)")), showForm && !activeTrip && trollMode && /*#__PURE__*/React.createElement("div", {
-    className: "field-group"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "field-group-title moss"
-  }, "Trolling Session", /*#__PURE__*/React.createElement("button", {
-    className: "form-x",
-    onClick: () => { setShowForm(false); setTrollMode(false); }
-  }, "\xD7")), /*#__PURE__*/React.createElement("div", {
-    className: "field-row"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "field-icon"
-  }, ""), /*#__PURE__*/React.createElement("span", {
-    className: "field-label"
-  }, "Targeting"), /*#__PURE__*/React.createElement(TargetSelect, {
-    value: targetSpecies,
-    onChange: setTargetSpecies
-  })), /*#__PURE__*/React.createElement("div", {
-    className: "field-row"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "field-icon"
-  }, ""), /*#__PURE__*/React.createElement("span", {
-    className: "field-label"
-  }, "Lure"), /*#__PURE__*/React.createElement("div", {
-    className: "field-select-wrap"
-  }, /*#__PURE__*/React.createElement("select", {
-    className: "field-select",
-    value: trollLure,
-    onChange: e => setTrollLure(e.target.value)
-  }, /*#__PURE__*/React.createElement("option", {
-    value: ""
-  }, "— select —"), SPIN_LINES.map(l => /*#__PURE__*/React.createElement("option", {
-    key: l,
-    value: l
-  }, l))))), /*#__PURE__*/React.createElement("div", {
-    className: "field-row"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "field-icon"
-  }, ""), /*#__PURE__*/React.createElement("span", {
-    className: "field-label"
-  }, "Trolling Depth"), /*#__PURE__*/React.createElement("div", {
-    className: "field-select-wrap"
-  }, /*#__PURE__*/React.createElement("select", {
-    className: "field-select",
-    value: trollDepth,
-    onChange: e => setTrollDepth(e.target.value)
-  }, /*#__PURE__*/React.createElement("option", {
-    value: ""
-  }, "— select —"), TROLL_DEPTHS.map(d => /*#__PURE__*/React.createElement("option", {
-    key: d,
-    value: d
-  }, d))))), /*#__PURE__*/React.createElement("div", {
-    className: "field-row"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "field-icon"
-  }, "💧"), /*#__PURE__*/React.createElement("span", {
-    className: "field-label"
-  }, "Water Temp"), /*#__PURE__*/React.createElement(TempSelect, {
-    value: waterTemp,
-    onChange: setWaterTemp
-  })), /*#__PURE__*/React.createElement("div", {
-    className: "field-row top"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "field-icon",
-    style: { marginTop: 2 }
-  }, "📝"), /*#__PURE__*/React.createElement("span", {
-    className: "field-label top",
-    style: { marginTop: 2 }
-  }, "Notes"), /*#__PURE__*/React.createElement("textarea", {
-    className: "field-input",
-    value: spotNotes,
-    onChange: e => setSpotNotes(e.target.value),
-    placeholder: "Boat, area, plan…",
-    rows: 2,
-    style: { padding: "2px 0", resize: "none" }
-  })), /*#__PURE__*/React.createElement("button", {
-    className: "save-btn green",
-    onClick: handleStartTroll
-  }, "Start & Begin Tracking"), /*#__PURE__*/React.createElement("div", {
-    className: "mode-switch-link",
-    onClick: () => setTrollMode(false)
-  }, "← Shore session instead"), /*#__PURE__*/React.createElement("div", {
-    className: "info-note"
-  }, "Route recording keeps the screen awake while the app is open — use a charger on board. Catches capture GPS, weather & tide as usual.")), sorted.length === 0 && !showForm && /*#__PURE__*/React.createElement("div", {
+  }, "Tide \xA9 Kartverket/NMA (CC BY 4.0)")), sorted.length === 0 && !showForm && /*#__PURE__*/React.createElement("div", {
     className: "empty-state"
   }, /*#__PURE__*/React.createElement("div", {
     className: "empty-icon"
@@ -4159,12 +4202,14 @@ function loadLeaflet() {
   return _leafletPromise;
 }
 
-function TrollMap({ track, catches }) {
+function TrollMap({ track, catches, highlightId }) {
   const boxRef = useRef(null);
   const mapRef = useRef(null);
   const [mapErr, setMapErr] = useState(false);
-  const pts = (track || []).map(p => [p[0], p[1]]);
-  const catchPts = (catches || []).filter(c => c.gps).map(c => ({ lat: c.gps.lat, lon: c.gps.lon, label: c.species }));
+  const pts = trackPts(track).map(p => [p[0], p[1]]);
+  const catchPts = (catches || []).filter(c => c.gps)
+    .map(c => ({ id: c.id, lat: c.gps.lat, lon: c.gps.lon, label: c.species }))
+    .sort((a, b) => (a.id === highlightId) - (b.id === highlightId)); // highlighted marker drawn last, on top
   const hasData = pts.length > 0 || catchPts.length > 0;
   useEffect(() => {
     if (!hasData) return;
@@ -4181,7 +4226,9 @@ function TrollMap({ track, catches }) {
       if (pts.length >= 2) bounds.extend(L.polyline(pts, { color: "#2b5d75", weight: 3 }).addTo(map).getBounds());
       else if (pts.length === 1) bounds.extend(pts[0]);
       catchPts.forEach(cp => {
-        const m = L.circleMarker([cp.lat, cp.lon], { radius: 7, color: "#3d5a4a", fillColor: "#3d5a4a", fillOpacity: .85 }).addTo(map);
+        const hot = cp.id === highlightId;
+        const col = hot ? "#b85a4a" : "#3d5a4a";
+        const m = L.circleMarker([cp.lat, cp.lon], { radius: hot ? 9 : 7, color: col, fillColor: col, fillOpacity: .85 }).addTo(map);
         if (cp.label) m.bindTooltip(cp.label);
         bounds.extend([cp.lat, cp.lon]);
       });
@@ -4353,7 +4400,9 @@ function TripDetail({
       fontSize: 13,
       color: "var(--ink)"
     }
-  }, [t.trollLure, t.trollDepth].filter(Boolean).join(" @ "), t.waterTemp != null ? ` · ${t.waterTemp}°C` : "")), /*#__PURE__*/React.createElement("div", {
+  }, [t.trollLure, t.trollDepth].filter(Boolean).join(" @ "), t.waterTemp != null ? ` · ${t.waterTemp}°C` : "")), t.mode === "trolling" && (t.weather || t.tide) && /*#__PURE__*/React.createElement("div", {
+    style: {fontSize: 10, color: "#999", padding: "4px 0 2px", lineHeight: 1.6, fontFamily: "'Source Code Pro',monospace"}
+  }, [t.weather?.airTemp != null ? `${t.weather.airTemp}\xB0C air` : null, t.weather?.pressure != null ? `${t.weather.pressure} hPa${t.weather.pressureLevel ? ` ${t.weather.pressureLevel}` : ""}` : null, t.weather?.windSpeed != null ? `${t.weather.windSpeed} m/s ${windCompass(t.weather.windDir)}` : null, t.tide?.seasonal != null ? `Tide ${tidePct(t.tide.seasonal)}%${tideArrow(t.tide.direction)}` : null, t.weather?.moon || null].filter(Boolean).join(" \xB7 ")), /*#__PURE__*/React.createElement("div", {
     style: {
       padding: "7px 0"
     }
@@ -4385,14 +4434,14 @@ function TripDetail({
   }, t.mode === "trolling" ? "Route & Activity" : "Spots & Activity"), t.mode === "trolling" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(TrollMap, {
     track: t.track,
     catches: catches
-  }), (t.track || []).length > 1 && /*#__PURE__*/React.createElement("div", {
+  }), trackPts(t.track).length > 1 && /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 10,
       color: "var(--water)",
       fontFamily: "'Source Code Pro',monospace",
       marginBottom: 8
     }
-  }, "Distance trolled: ", fmtTrackDist(trackDistM(t.track)), " \xB7 ", t.track.length, " track points"), /*#__PURE__*/React.createElement("div", {
+  }, "Distance trolled: ", fmtTrackDist(trackDistM(t.track)), " \xB7 ", trackPts(t.track).length, " track points"), /*#__PURE__*/React.createElement("div", {
     className: "spot-items"
   }, catches.map(c => /*#__PURE__*/React.createElement("div", {
     key: c.id,
@@ -4410,7 +4459,7 @@ function TripDetail({
     className: "mini-catch-species"
   }, c.species), /*#__PURE__*/React.createElement("div", {
     className: "mini-catch-time"
-  }, fmtTime(c.timestamp), c.size ? ` · ${c.size}` : "", c.trollDepth ? ` · ${c.trollDepth}` : "")), /*#__PURE__*/React.createElement("span", {
+  }, fmtTime(c.timestamp), c.size ? ` · ${c.size}` : "", c.trollDepth ? ` · ${c.trollDepth}` : "", c.tide?.seasonal != null ? ` · ${tidePct(c.tide.seasonal)}%${tideArrow(c.tide.direction)}` : "")), /*#__PURE__*/React.createElement("span", {
     style: {
       color: "#ccc",
       fontSize: 16
@@ -4586,11 +4635,14 @@ function CatchDetail({
   onDelete,
   onUpdate,
   trips,
-  spots
+  spots,
+  catches
 }) {
   const norm = c.tide?.seasonal;
   const trip = trips?.find(t => t.id === c.tripId);
   const spot = spots?.find(s => s.id === c.spotId);
+  const trolling = trip?.mode === "trolling";
+  const tripCatches = trolling ? (catches || []).filter(x => x.tripId === trip.id) : [];
   const fishRef = useRef(), flyRef = useRef();
   return /*#__PURE__*/React.createElement("div", {
     className: "modal-overlay",
@@ -4666,7 +4718,15 @@ function CatchDetail({
     className: "modal-stat-label"
   }, "Session"), /*#__PURE__*/React.createElement("div", {
     className: "modal-stat-value"
-  }, trip.name)))), /*#__PURE__*/React.createElement("div", {
+  }, trip.name)))), trolling && /*#__PURE__*/React.createElement("div", {
+    className: "modal-section"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "modal-section-title"
+  }, "Route"), /*#__PURE__*/React.createElement(TrollMap, {
+    track: trip.track,
+    catches: tripCatches,
+    highlightId: c.id
+  })), /*#__PURE__*/React.createElement("div", {
     className: "modal-section"
   }, /*#__PURE__*/React.createElement("div", {
     className: "modal-section-title"
