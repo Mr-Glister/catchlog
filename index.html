@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.36-exp</title>
+  <title>The Catch Log v2.37-exp</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -2039,7 +2039,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.36-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.37-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -2151,17 +2151,14 @@ function FishLog() {
     spots: spots
   }), activeTrip && showQuickAction && (activeTrip.mode === "trolling" ? /*#__PURE__*/React.createElement("div", {
     className: "quick-overlay",
-    style: { justifyContent: "flex-start" }
+    style: { justifyContent: "flex-start", gap: 6 }
   }, /*#__PURE__*/React.createElement("button", {
     className: "qa-close",
     onClick: () => setShowQuickAction(false)
   }, "\xD7"), /*#__PURE__*/React.createElement("div", {
     className: "qa-heading",
     style: { marginBottom: 2 }
-  }, "Live Session"), /*#__PURE__*/React.createElement("div", {
-    className: "qa-context",
-    style: { marginBottom: 8 }
-  }, `Trolling · ${[activeTrip.trollLure, activeTrip.trollDepth].filter(Boolean).join(" @ ") || "no setup"}${activeTrip.waterTemp != null ? ` · ${activeTrip.waterTemp}°C` : ""} · ${fmtTrackDist(trackDistM(activeTrip.track))}`), /*#__PURE__*/React.createElement(LiveSpeed, {
+  }, "Live Session"), /*#__PURE__*/React.createElement(LiveSpeed, {
     big: true
   }), /*#__PURE__*/React.createElement(TrollMap, {
     track: activeTrip.track,
@@ -2169,19 +2166,21 @@ function FishLog() {
     fill: true
   }), /*#__PURE__*/React.createElement("button", {
     className: "qa-btn primary",
+    style: { minHeight: 50, padding: "14px 16px" },
     onClick: () => { setShowQuickAction(false); setLogMode("catch"); setTab("log"); }
   }, "Record Catch"), /*#__PURE__*/React.createElement("div", {
-    style: { display: "flex", gap: 12, width: "100%", maxWidth: 340 }
+    style: { display: "flex", gap: 6, width: "100%", maxWidth: 340 }
   }, /*#__PURE__*/React.createElement("button", {
     className: "qa-btn",
-    style: { flex: 1, minHeight: 56 },
+    style: { flex: 1, minHeight: 39, padding: "11px 10px", fontSize: 11, letterSpacing: 1, whiteSpace: "nowrap" },
     onClick: () => { setShowQuickAction(false); setLogMode("obs"); setTab("log"); }
   }, "Observation"), /*#__PURE__*/React.createElement("button", {
     className: "qa-btn",
-    style: { flex: 1, minHeight: 56 },
+    style: { flex: 1, minHeight: 39, padding: "11px 10px", fontSize: 11, letterSpacing: 1, whiteSpace: "nowrap" },
     onClick: () => setShowConditions(true)
   }, "Live Conditions")), /*#__PURE__*/React.createElement("button", {
     className: "qa-btn end",
+    style: { minHeight: 34, padding: "12px 16px" },
     onClick: endTrip
   }, "End Session")) : /*#__PURE__*/React.createElement("div", {
     className: "quick-overlay"
