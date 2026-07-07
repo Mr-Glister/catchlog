@@ -2159,10 +2159,13 @@ function FishLog() {
     style: { flex: 1, minHeight: 56 },
     onClick: () => { setShowQuickAction(false); setLogMode("obs"); setTab("log"); }
   }, "Observation"), /*#__PURE__*/React.createElement("button", {
-    className: "qa-btn end",
+    className: "qa-btn",
     style: { flex: 1, minHeight: 56 },
+    onClick: () => setShowConditions(true)
+  }, "Live Conditions")), /*#__PURE__*/React.createElement("button", {
+    className: "qa-btn end",
     onClick: endTrip
-  }, "End Session"))) : /*#__PURE__*/React.createElement("div", {
+  }, "End Session")) : /*#__PURE__*/React.createElement("div", {
     className: "quick-overlay"
   }, /*#__PURE__*/React.createElement("button", {
     className: "qa-close",
