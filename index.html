@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.37-exp</title>
+  <title>The Catch Log v2.38-exp</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -2039,7 +2039,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.37-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.38-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -2104,7 +2104,8 @@ function FishLog() {
   }), tab === "insights" && /*#__PURE__*/React.createElement(Analytics, {
     catches: catches,
     spots: spots,
-    trips: trips
+    trips: trips,
+    observations: observations
   }), tab === "export" && /*#__PURE__*/React.createElement(ExportTab, {
     trips: trips,
     spots: spots,
@@ -3729,12 +3730,16 @@ function StatChart({ title, buckets, values, fmt, hours }) {
   );
 }
 
-function Analytics({ catches, spots, trips }) {
+function Analytics({ catches, spots, trips, observations }) {
   var useState = React.useState;
   var speciesState = useState("all");
   var speciesFilter = speciesState[0], setSpeciesFilter = speciesState[1];
   var yearState = useState("all");
   var yearFilter = yearState[0], setYearFilter = yearState[1];
+  var showCState = useState(true);
+  var showMapCatches = showCState[0], setShowMapCatches = showCState[1];
+  var showOState = useState(true);
+  var showMapObs = showOState[0], setShowMapObs = showOState[1];
 
   // All unique years from completed trips
   var allYears = Array.from(new Set(
@@ -3755,6 +3760,12 @@ function Analytics({ catches, spots, trips }) {
 
   // Species-filtered catches (on top of year filter)
   var fc = speciesFilter === "all" ? yCatches : yCatches.filter(function(c) { return c.species === speciesFilter; });
+
+  // Observations filtered the same way (for the map)
+  var yObs = yearFilter === "all" ? (observations || []) : (observations || []).filter(function(o) {
+    return new Date(o.timestamp).getFullYear() === parseInt(yearFilter);
+  });
+  var fObs = speciesFilter === "all" ? yObs : yObs.filter(function(o) { return o.species === speciesFilter; });
 
   // When a species filter is active, narrow sessions to those targeting that species
   var kpiTrips = speciesFilter === "all" ? yTrips
@@ -4131,14 +4142,34 @@ function Analytics({ catches, spots, trips }) {
     React.createElement(StatChart, { title: "Wind Direction (catches/hr)", buckets: windBuckets, values: windRates, fmt: function(v) { return v.toFixed(2); }, hours: windBuckets.map(function(b) { return windHours[b] || 0; }) }),
     React.createElement(StatChart, { title: "Trolling Speed (catches/hr)", buckets: speedBuckets, values: speedRates, fmt: function(v) { return v.toFixed(2); }, hours: speedBuckets.map(function(b) { return speedHours[b] || 0; }) }),
     React.createElement(StatChart, { title: "Moon Phase (catches/hr)",  buckets: moonBuckets,  values: moonRates, fmt: function(v) { return v.toFixed(2); }, hours: moonBuckets.map(function(b) { return moonHours[b] || 0; }) }),
-    // ── Catch map — every filtered catch with a GPS fix ──
+    // ── Catch map — clustered catches + observations (badge = fish count) ──
     (function() {
       var mapCatches = fc.filter(function(c) { return c.gps; });
-      if (!mapCatches.length) return null;
+      var mapObs = fObs.filter(function(o) { return o.gps; });
+      if (!mapCatches.length && !mapObs.length) return null;
+      var obsFish = mapObs.reduce(function(s, o) {
+        var n = parseInt(o.count, 10);
+        return s + (n > 0 ? n : 1);
+      }, 0);
+      var chip = function(on, toggle, col, label) {
+        return React.createElement("button", {
+          onClick: toggle,
+          style: { display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, padding: "3px 10px", borderRadius: 12, border: "1px solid var(--rule)", background: "none", color: "inherit", opacity: on ? 1 : .35, cursor: "pointer", fontFamily: "inherit" }
+        },
+          React.createElement("span", { style: { width: 9, height: 9, borderRadius: "50%", background: col, display: "inline-block" } }),
+          label);
+      };
       return React.createElement("div", { className: "stat-card" },
-        React.createElement("div", { className: "stat-card-title" }, "Catch Map (" + mapCatches.length + ")"),
-        // key remounts the map when filters change — markers are drawn once at mount
-        React.createElement(TrollMap, { key: speciesFilter + "|" + yearFilter + "|" + mapCatches.length, catches: mapCatches }));
+        React.createElement("div", { className: "stat-card-title" }, "Map (" + mapCatches.length + " catches · " + obsFish + " fish observed)"),
+        React.createElement("div", { style: { display: "flex", gap: 6, margin: "0 0 8px" } },
+          chip(showMapCatches, function() { setShowMapCatches(!showMapCatches); }, "#3d5a4a", "Catches"),
+          chip(showMapObs, function() { setShowMapObs(!showMapObs); }, "#b8863b", "Observed")),
+        // key remounts the map when filters/toggles change — markers are drawn once at mount
+        React.createElement(ClusterMap, {
+          key: speciesFilter + "|" + yearFilter + "|" + showMapCatches + "|" + showMapObs + "|" + mapCatches.length + "|" + mapObs.length,
+          catches: showMapCatches ? mapCatches : [],
+          obs: showMapObs ? mapObs : []
+        }));
     })()
   );
 }
@@ -4469,6 +4500,25 @@ function loadLeaflet() {
   return _leafletPromise;
 }
 
+// Marker clustering plugin (Insights map only) — lazy-loaded on top of Leaflet
+let _clusterPromise = null;
+function loadLeafletCluster() {
+  if (window.L && window.L.markerClusterGroup) return Promise.resolve(window.L);
+  if (_clusterPromise) return _clusterPromise;
+  _clusterPromise = loadLeaflet().then(L => new Promise((resolve, reject) => {
+    const css = document.createElement("link");
+    css.rel = "stylesheet";
+    css.href = "https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css";
+    document.head.appendChild(css);
+    const s = document.createElement("script");
+    s.src = "https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js";
+    s.onload = () => resolve(L);
+    s.onerror = () => { _clusterPromise = null; reject(new Error("Cluster plugin load failed")); };
+    document.head.appendChild(s);
+  }));
+  return _clusterPromise;
+}
+
 function TrollMap({ track, catches, highlightId, fill }) {
   const boxRef = useRef(null);
   const mapRef = useRef(null);
@@ -4529,6 +4579,84 @@ function TrollMap({ track, catches, highlightId, fill }) {
     style: fill
       ? { flex: 1, minHeight: 0, width: "100%", borderRadius: 4, overflow: "hidden" }
       : { height: 240, borderRadius: 4, border: "1px solid var(--rule)", marginBottom: 10, overflow: "hidden" }
+  });
+}
+
+// ── Insights map: clustered catches + observations ───────────────────────────
+// Nearby markers merge into a badge showing the FISH count (observations are
+// weighted by their entered count, so 1 obs of 20 fish reads as 20, not 1).
+// Zooming in splits clusters apart; at max zoom overlapping markers spiderfy.
+function ClusterMap({ catches, obs }) {
+  const boxRef = useRef(null);
+  const mapRef = useRef(null);
+  const [mapErr, setMapErr] = useState(false);
+  const cPts = (catches || []).filter(c => c.gps).map(c => (
+    { lat: c.gps.lat, lon: c.gps.lon, w: 1, label: c.species || "Catch" }));
+  const oPts = (obs || []).filter(o => o.gps).map(o => {
+    const n = parseInt(o.count, 10);
+    const w = n > 0 ? n : 1;
+    return { lat: o.gps.lat, lon: o.gps.lon, w, label: (o.species || "Fish") + " × " + w + " observed" };
+  });
+  const hasData = cPts.length > 0 || oPts.length > 0;
+  useEffect(() => {
+    if (!hasData) return;
+    let dead = false;
+    loadLeafletCluster().then(L => {
+      if (dead || !boxRef.current || mapRef.current) return;
+      const map = L.map(boxRef.current);
+      mapRef.current = map;
+      L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        attribution: "&copy; OpenStreetMap"
+      }).addTo(map);
+      const badge = (n, col, single) => {
+        const plain = single && n === 1; // lone catch / 1-fish obs: small plain dot
+        const d = plain ? 14 : n < 10 ? 26 : n < 100 ? 32 : 38;
+        return L.divIcon({
+          className: "",
+          html: '<div style="width:' + d + 'px;height:' + d + 'px;border-radius:50%;background:' + col +
+            ';border:2px solid rgba(255,255,255,.85);box-shadow:0 1px 4px rgba(0,0,0,.4);' +
+            'display:flex;align-items:center;justify-content:center;color:#fff;' +
+            'font:600 ' + (n < 100 ? 12 : 11) + 'px Inter,sans-serif;">' + (plain ? "" : n) + '</div>',
+          iconSize: [d, d]
+        });
+      };
+      const bounds = L.latLngBounds([]);
+      const addLayer = (pts, col) => {
+        if (!pts.length) return;
+        const grp = L.markerClusterGroup({
+          maxClusterRadius: 50,
+          showCoverageOnHover: false,
+          iconCreateFunction: cl => {
+            let w = 0;
+            cl.getAllChildMarkers().forEach(m => { w += m.options.clWeight || 1; });
+            return badge(w, col, false);
+          }
+        });
+        pts.forEach(p => {
+          const m = L.marker([p.lat, p.lon], { icon: badge(p.w, col, true), clWeight: p.w });
+          if (p.label) m.bindTooltip(p.label);
+          grp.addLayer(m);
+          bounds.extend([p.lat, p.lon]);
+        });
+        map.addLayer(grp);
+      };
+      addLayer(cPts, "#3d5a4a"); // catches: moss green
+      addLayer(oPts, "#b8863b"); // observations: amber
+      map.fitBounds(bounds.pad(0.2), { maxZoom: 15 });
+    }).catch(() => { if (!dead) setMapErr(true); });
+    return () => {
+      dead = true;
+      if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; }
+    };
+  }, [hasData]);
+  if (!hasData) return null;
+  if (mapErr) return /*#__PURE__*/React.createElement("div", {
+    style: { fontSize: 11, color: "#ccc", padding: "4px 0" }
+  }, "Map unavailable (offline?)");
+  return /*#__PURE__*/React.createElement("div", {
+    ref: boxRef,
+    style: { height: 280, borderRadius: 4, border: "1px solid var(--rule)", overflow: "hidden" }
   });
 }
 
