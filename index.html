@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.38-exp</title>
+  <title>The Catch Log v2.39-exp</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -161,6 +161,44 @@
     }
     function cloudSignOut() {
       return fbAuth.signOut();
+    }
+    // Permanently delete the user's cloud footprint: every photo under
+    // users/{uid}/photos/, then the single data doc, then sign out.
+    // Partial failures reject with an honest message — retrying is safe
+    // (doc delete is idempotent, remaining photos get re-listed).
+    function cloudDeleteAccount() {
+      var user = fbAuth.currentUser;
+      if (!user) return Promise.reject(new Error('Not signed in'));
+      var uid = user.uid;
+      clearTimeout(_cloudSyncTimer); // cancel any queued auto-push
+      _cloudLoading = true;          // block interceptor re-pushes while deleting
+      var failed = [];
+      return fbStorage.ref('users/' + uid + '/photos').listAll()
+        .then(function(res) {
+          return Promise.all(res.items.map(function(item) {
+            return item.delete().catch(function() { failed.push(item.fullPath); });
+          }));
+        })
+        .catch(function() { failed.push('photo listing'); })
+        .then(function() { return cloudDoc(uid).delete(); })
+        .then(function() {
+          if (failed.length) {
+            throw new Error(failed.length + ' photo file(s) could not be deleted. Check your connection and try again.');
+          }
+          _origLocalStorageSet('cl_photo_urls', '{}'); // those uploads no longer exist
+          return fbAuth.signOut();
+        })
+        .finally(function() { _cloudLoading = false; });
+    }
+    // Wipe THIS DEVICE only: localStorage records + the IndexedDB photo store.
+    // Independent of cloud deletion — if still signed in, cloud data will sync
+    // back on next launch (the UI warns about this).
+    function wipeLocalData() {
+      ['fl_trips_v3', 'fl_spots_v2', 'fl_catches_v3', 'fl_obs_v2', 'fl_deleted_v1',
+       'cl_lastUpdated', 'cl_photo_urls', 'cl_photos_migrated', 'cl_lastBackup'
+      ].forEach(function(k) { localStorage.removeItem(k); });
+      try { indexedDB.deleteDatabase('catchlog-photos'); } catch (e) {}
+      location.reload();
     }
     // Intercept all localStorage writes to CatchLog keys → schedule auto-push
     // Also stamp cl_lastUpdated so we can compare against cloud on sign-in
@@ -2039,7 +2077,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.38-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.39-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -5397,6 +5435,9 @@ function ObsDetail({
 
 function ExportTab({ trips, spots, catches, observations, onRestore, cloudUser, cloudStatus, cloudLastSynced }) {
   const [restoreStep, setRestoreStep] = useState("idle");
+  const [delStep, setDelStep] = useState("idle");   // idle | confirm | working | error
+  const [delErr, setDelErr] = useState("");
+  const [wipeStep, setWipeStep] = useState("idle"); // idle | confirm
   const restoreRef = useRef();
   const today = new Date().toISOString().slice(0, 10);
   const totalItems = trips.length + catches.length + observations.length;
@@ -5456,7 +5497,13 @@ function ExportTab({ trips, spots, catches, observations, onRestore, cloudUser, 
           /*#__PURE__*/React.createElement("button", {
             className: "backup-btn primary",
             onClick: function() { cloudSignIn().catch(function(e) { alert("Sign-in failed: " + e.message); }); }
-          }, "Sign in with Google"))),
+          }, "Sign in with Google"),
+          /*#__PURE__*/React.createElement("div", { style: { fontSize: 10, color: "#98a1a8", marginTop: 8, lineHeight: 1.5 } },
+            "By signing in you agree to the ",
+            /*#__PURE__*/React.createElement("a", { href: "terms.html", target: "_blank", rel: "noopener", style: { color: "inherit", textDecoration: "underline" } }, "Terms of Service"),
+            " and ",
+            /*#__PURE__*/React.createElement("a", { href: "privacy.html", target: "_blank", rel: "noopener", style: { color: "inherit", textDecoration: "underline" } }, "Privacy Policy"),
+            "."))),
 
   /*#__PURE__*/React.createElement("div", { className: "backup-panel" },
     /*#__PURE__*/React.createElement("div", { className: "backup-panel-title" }, "Data Backup"),
@@ -5532,6 +5579,70 @@ function ExportTab({ trips, spots, catches, observations, onRestore, cloudUser, 
     /*#__PURE__*/React.createElement("div", { className: "export-step" },
       /*#__PURE__*/React.createElement("div", { className: "export-step-num" }, "5"),
       /*#__PURE__*/React.createElement("span", null, "Join on ", /*#__PURE__*/React.createElement("strong", null, "trip_id"), " and ", /*#__PURE__*/React.createElement("strong", null, "spot_id"), " for comparisons and pivot tables"))),
+  // \u2500\u2500 Privacy & account \u2500\u2500
+  /*#__PURE__*/React.createElement("div", { className: "backup-panel" },
+    /*#__PURE__*/React.createElement("div", { className: "backup-panel-title" }, "Privacy & Account"),
+    cloudUser && delStep === "idle" && /*#__PURE__*/React.createElement("button", {
+      className: "backup-btn danger",
+      onClick: () => { setDelErr(""); setDelStep("confirm"); }
+    }, "Delete cloud data"),
+    cloudUser && delStep === "confirm" && /*#__PURE__*/React.createElement(React.Fragment, null,
+      /*#__PURE__*/React.createElement("div", { className: "backup-restore-confirm" },
+        "\u26a0 This permanently deletes your synced data and photos from the cloud, then signs you out. Data on this device is NOT affected. Your Google account itself is untouched. Continue?"),
+      /*#__PURE__*/React.createElement("div", { className: "backup-btn-row" },
+        /*#__PURE__*/React.createElement("button", {
+          className: "backup-btn danger",
+          onClick: () => {
+            setDelStep("working");
+            cloudDeleteAccount()
+              .then(() => setDelStep("idle"))
+              .catch(e => { setDelErr(e.message); setDelStep("error"); });
+          }
+        }, "Delete permanently"),
+        /*#__PURE__*/React.createElement("button", {
+          className: "backup-btn secondary", onClick: () => setDelStep("idle")
+        }, "Cancel"))),
+    cloudUser && delStep === "working" && /*#__PURE__*/React.createElement("div", {
+      style: { fontSize: 11, color: "#98a1a8", letterSpacing: 1 }
+    }, "Deleting cloud data\u2026"),
+    cloudUser && delStep === "error" && /*#__PURE__*/React.createElement(React.Fragment, null,
+      /*#__PURE__*/React.createElement("div", { className: "backup-restore-confirm" },
+        "\u26a0 Deletion incomplete: " + delErr),
+      /*#__PURE__*/React.createElement("div", { className: "backup-btn-row" },
+        /*#__PURE__*/React.createElement("button", {
+          className: "backup-btn danger",
+          onClick: () => {
+            setDelStep("working");
+            cloudDeleteAccount()
+              .then(() => setDelStep("idle"))
+              .catch(e => { setDelErr(e.message); setDelStep("error"); });
+          }
+        }, "Retry"),
+        /*#__PURE__*/React.createElement("button", {
+          className: "backup-btn secondary", onClick: () => setDelStep("idle")
+        }, "Close"))),
+    /*#__PURE__*/React.createElement("div", { className: "backup-divider" }),
+    wipeStep === "idle" && /*#__PURE__*/React.createElement("button", {
+      className: "backup-btn secondary",
+      onClick: () => setWipeStep("confirm")
+    }, "Erase local data on this device"),
+    wipeStep === "confirm" && /*#__PURE__*/React.createElement(React.Fragment, null,
+      /*#__PURE__*/React.createElement("div", { className: "backup-restore-confirm" },
+        "\u26a0 This erases all sessions, spots, catches, observations and photos stored on THIS device. Cloud data is not affected" +
+        (cloudUser ? " \u2014 you are signed in, so it will sync back on next launch. To remove everything, delete cloud data first." : ".") +
+        " Continue?"),
+      /*#__PURE__*/React.createElement("div", { className: "backup-btn-row" },
+        /*#__PURE__*/React.createElement("button", {
+          className: "backup-btn danger", onClick: () => wipeLocalData()
+        }, "Erase this device"),
+        /*#__PURE__*/React.createElement("button", {
+          className: "backup-btn secondary", onClick: () => setWipeStep("idle")
+        }, "Cancel"))),
+    /*#__PURE__*/React.createElement("div", { style: { fontSize: 10, color: "#98a1a8", marginTop: 12, lineHeight: 1.6 } },
+      /*#__PURE__*/React.createElement("a", { href: "privacy.html", target: "_blank", rel: "noopener", style: { color: "inherit", textDecoration: "underline" } }, "Privacy Policy"),
+      " \xB7 ",
+      /*#__PURE__*/React.createElement("a", { href: "terms.html", target: "_blank", rel: "noopener", style: { color: "inherit", textDecoration: "underline" } }, "Terms of Service"))),
+
   /*#__PURE__*/React.createElement("div", {
     style: { fontSize: 10, color: "#bbb", textAlign: "center", paddingBottom: 8, lineHeight: 1.6 }
   }, "Photos exported separately via \u201cExport photos\u201d above \xB7 filenames keyed to catch_id"));

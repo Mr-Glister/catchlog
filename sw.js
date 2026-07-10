@@ -1,7 +1,9 @@
-const CACHE = 'catchlog-v29-42';
+const CACHE = 'catchlog-v29-43';
 const ASSETS = [
   '/catchlog/',
   '/catchlog/index.html',
+  '/catchlog/privacy.html',
+  '/catchlog/terms.html',
   '/catchlog/manifest.json',
   '/catchlog/icon-192.png',
   '/catchlog/icon-512.png',
@@ -56,6 +58,22 @@ self.addEventListener('fetch', e => {
   if (url.hostname.endsWith('googleapis.com') ||
       url.hostname.endsWith('firebasestorage.app') ||
       url.hostname.endsWith('firebaseapp.com')) {
+    return;
+  }
+
+  // Legal pages: standalone documents — network first, fall back to their OWN
+  // cached copy. Must be handled BEFORE the shell branch, or the navigate-mode
+  // check would hijack them into the index.html fallback offline.
+  if (url.pathname.endsWith('/privacy.html') || url.pathname.endsWith('/terms.html')) {
+    e.respondWith(
+      fetch(e.request).then(response => {
+        if (response.ok) {
+          const clone = response.clone();
+          caches.open(CACHE).then(cache => cache.put(e.request, clone)).catch(() => {});
+        }
+        return response;
+      }).catch(() => caches.match(e.request))
+    );
     return;
   }
 
