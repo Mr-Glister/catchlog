@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.42-exp</title>
+  <title>The Catch Log v2.43-exp</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -2105,7 +2105,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.42-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.43-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -3805,6 +3805,24 @@ function StatChart({ title, buckets, values, fmt, hours }) {
   );
 }
 
+function SizeHistogram({ title, buckets, values }) {
+  var maxVal = Math.max.apply(null, values.concat([0.001]));
+  if (!values.some(function(v) { return v > 0; })) return null;
+  return React.createElement("div", { className: "stat-card" },
+    React.createElement("div", { className: "stat-card-title" }, title),
+    React.createElement("div", { style: { display: "flex", alignItems: "flex-end", gap: 4, padding: "10px 14px 14px", height: 110 } },
+      buckets.map(function(lbl, i) {
+        var pct = Math.max(values[i] / maxVal * 100, values[i] > 0 ? 4 : 0);
+        return React.createElement("div", { key: lbl, style: { flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-end", height: "100%" } },
+          React.createElement("div", { style: { fontSize: 9, color: "var(--text-2)", marginBottom: 3, fontFamily: "'Source Code Pro', monospace" } }, values[i] || ""),
+          React.createElement("div", { style: { width: "100%", background: "var(--slate-light)", borderRadius: "2px 2px 0 0", height: pct + "%", opacity: values[i] > 0 ? 1 : 0 } }),
+          React.createElement("div", { style: { fontSize: 8, color: "var(--text-3)", marginTop: 5, textAlign: "center", whiteSpace: "nowrap" } }, lbl)
+        );
+      })
+    )
+  );
+}
+
 function Analytics({ catches, spots, trips, observations }) {
   var useState = React.useState;
   var speciesState = useState("all");
@@ -4273,8 +4291,9 @@ function Analytics({ catches, spots, trips, observations }) {
   var totalHours    = kpiTrips.filter(function(t) { return t.endTime; }).reduce(function(sum, t) {
     return sum + segHours(t);
   }, 0);
-  var endedFish     = fEventsEnded.reduce(function(s, e) { return s + (e._w || 1); }, 0);
-  var hrsPerCatch   = endedFish > 0 ? (totalHours / endedFish).toFixed(1) : "—";
+  // Hrs/Fish counts EVENTS, not fish — one observation of 50 fish is still one
+  // event, not 50, so it doesn't crush the rate the way summed fish would
+  var hrsPerCatch   = fEventsEnded.length > 0 ? (totalHours / fEventsEnded.length).toFixed(1) : "—";
   // Largest fish across catches AND observations: take the biggest number in
   // the size text ("30–50 cm" → 50, "2,3-2,9" → 2.9) — unit interpretation
   // stays with the user, same as it always has for catch sizes
@@ -4291,6 +4310,38 @@ function Analytics({ catches, spots, trips, observations }) {
   // Labels adapt to what's included
   var fishLbl = incCatches ? (incObs ? "Fish (C+O)" : "Catches") : "Fish Observed";
   var unit = incObs ? "fish" : "catches";
+
+  // ── Size distribution: same size/estimatedSize parsing as "Largest Fish" ──
+  var sizeOf = function(e) {
+    var sz = maxNum(e.size != null && e.size !== "" ? e.size : e.estimatedSize);
+    return isNaN(sz) ? null : sz;
+  };
+  var sizedEvents = fEvents.map(function(e) { return { species: e.species, sz: sizeOf(e) }; })
+    .filter(function(x) { return x.sz != null; });
+  var allSizeVals = sizedEvents.map(function(x) { return x.sz; });
+  // Best-effort unit guess from the raw text, purely for display labels
+  var sizeUnit = (function() {
+    var raw = fEvents.map(function(e) { return e.size || e.estimatedSize || ""; }).join(" ").toLowerCase();
+    if (raw.indexOf("cm") >= 0) return "cm";
+    if (raw.indexOf("in") >= 0 || raw.indexOf("\"") >= 0) return "in";
+    return "";
+  })();
+  // Histogram buckets sized to the data's own range
+  var sizeBuckets = [], sizeCounts = [];
+  if (allSizeVals.length) {
+    var minS = Math.min.apply(null, allSizeVals), maxS = Math.max.apply(null, allSizeVals);
+    var range = maxS - minS;
+    var step = range <= 20 ? 2 : range <= 50 ? 5 : range <= 150 ? 10 : 20;
+    var lo = Math.floor(minS / step) * step;
+    var hi = Math.floor(maxS / step) * step + step;
+    var counts = {};
+    for (var v = lo; v < hi; v += step) { var lbl = v + "–" + (v + step); sizeBuckets.push(lbl); counts[lbl] = 0; }
+    allSizeVals.forEach(function(s) {
+      var b = Math.min(hi - step, Math.floor((s - lo) / step) * step + lo);
+      counts[b + "–" + (b + step)]++;
+    });
+    sizeCounts = sizeBuckets.map(function(b) { return counts[b]; });
+  }
 
   if (!catches.length && !(observations || []).length && !totalSessions) {
     return React.createElement("div", { className: "stat-empty-msg" }, "No data yet — log sessions and catches to see insights");
@@ -4346,6 +4397,8 @@ function Analytics({ catches, spots, trips, observations }) {
         React.createElement("div", { className: "stat-kpi-lbl" }, incObs ? "Hrs / Fish" : "Hrs / Catch")
       )
     ),
+    // ── Fish size ──
+    sizeBuckets.length > 0 && React.createElement(SizeHistogram, { title: "Fish Size" + (sizeUnit ? " (" + sizeUnit + ")" : ""), buckets: sizeBuckets, values: sizeCounts }),
     // ── Charts (ordered: Method, Temp, Tide, Time, Pressure, Moon) ──
     methodBuckets.length > 0 && React.createElement(StatChart, { title: "Method (" + unit + "/hr)", buckets: methodBuckets, values: methodValues, fmt: function(v) { return v.toFixed(2); }, hours: methodBuckets.map(function(b) { return methodHours[b] || 0; }) }),
     tempBucketsAll.length > 0 && React.createElement(StatChart, { title: "Water Temp (" + unit + "/hr)", buckets: tempBucketsAll, values: tempRates, fmt: function(v) { return v.toFixed(2); }, hours: tempBucketsAll.map(function(b) { return tempHours[b] || 0; }) }),
@@ -4419,6 +4472,7 @@ function Journal({
   const [spotFilter, setSpotFilter] = useState("all");
   const [yearFilter, setYearFilter] = useState("all");
   const [monthFilter, setMonthFilter] = useState("all");
+  const [typeFilter, setTypeFilter] = useState("all");
   const spotName = id => spots.find(s => s.id === id)?.name || null;
   const items = [...catches.map(c => ({
     ...c,
@@ -4450,6 +4504,7 @@ function Journal({
   const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
   const hasTrolling = trips.some(t => t.mode === "trolling");
   const fItems = items.filter(it => {
+    if (typeFilter !== "all" && it._type !== typeFilter) return false;
     const d = new Date(it.timestamp);
     if (yearFilter !== "all" && d.getFullYear() !== parseInt(yearFilter)) return false;
     if (monthFilter !== "all" && d.getMonth() !== parseInt(monthFilter)) return false;
@@ -4461,7 +4516,7 @@ function Journal({
     const n = spotName(it.spotId);
     return !!n && n.trim().toLowerCase() === spotFilter;
   });
-  const filtersActive = spotFilter !== "all" || yearFilter !== "all" || monthFilter !== "all";
+  const filtersActive = spotFilter !== "all" || yearFilter !== "all" || monthFilter !== "all" || typeFilter !== "all";
   const tabBtn = active => ({
     flex: 1, padding: "9px 4px", fontSize: 9, fontWeight: 700, letterSpacing: .8, textTransform: "uppercase",
     border: "1px solid var(--mist)", borderRadius: 4, cursor: "pointer",
@@ -4485,6 +4540,15 @@ function Journal({
     className: "stat-filter",
     style: { padding: "2px 0 8px" }
   }, /*#__PURE__*/React.createElement("select", {
+    value: typeFilter,
+    onChange: e => setTypeFilter(e.target.value)
+  }, /*#__PURE__*/React.createElement("option", {
+    value: "all"
+  }, "Caught + Observed"), /*#__PURE__*/React.createElement("option", {
+    value: "catch"
+  }, "Caught Only"), /*#__PURE__*/React.createElement("option", {
+    value: "obs"
+  }, "Observed Only")), /*#__PURE__*/React.createElement("select", {
     value: spotFilter,
     onChange: e => setSpotFilter(e.target.value)
   }, /*#__PURE__*/React.createElement("option", {
