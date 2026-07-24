@@ -4437,15 +4437,16 @@ function Analytics({ catches, spots, trips, observations }) {
     // ── Charts (ordered: Method, Temp, Tide, Time, Pressure, Moon) ──
     methodBuckets.length > 0 && React.createElement(StatChart, { title: "Method (" + rateUnit + ")", buckets: methodBuckets, values: methodValues, fmt: fmtRate, hours: methodBuckets.map(function(b) { return methodHours[b] || 0; }) }),
     tempBucketsAll.length > 0 && React.createElement(StatChart, { title: "Water Temp (" + rateUnit + ")", buckets: tempBucketsAll, values: tempRates, fmt: fmtRate, hours: tempBucketsAll.map(function(b) { return tempHours[b] || 0; }) }),
-    tideHierarchy.some(function(g) { return g.total > 0; }) && React.createElement("div", { className: "stat-card" },
+    tideHierarchy.some(function(g) { return g.total > 0; }) && (function() {
+      var tideMax = Math.max.apply(null, tideHierarchy.reduce(function(a, g) { return a.concat(g.counts); }, []).concat([0.001]));
+      return React.createElement("div", { className: "stat-card" },
       React.createElement("div", { className: "stat-card-title" }, "Tide Level (" + (incObs ? "fish" : "catch") + " count)"),
       tideHierarchy.filter(function(g) { return g.total > 0; }).map(function(g) {
-        var gMax = Math.max.apply(null, g.counts.concat([0.001]));
         return React.createElement("div", { key: g.label, style: { marginBottom: 10 } },
           React.createElement("div", { style: { fontSize: 10, fontWeight: 700, letterSpacing: .5, textTransform: "uppercase", color: "var(--text-2)", padding: "6px 14px 2px", fontFamily: "'Source Code Pro', monospace" } }, g.label + "  (" + g.total + ")"),
           g.buckets.map(function(lbl, i) {
             if (g.counts[i] === 0) return null;
-            var pct = Math.round(g.counts[i] / gMax * 100);
+            var pct = Math.round(g.counts[i] / tideMax * 100);
             return React.createElement("div", { key: lbl, className: "stat-row" },
               React.createElement("div", { className: "stat-lbl", style: { paddingLeft: 10 } }, lbl),
               React.createElement("div", { className: "stat-bars" },
@@ -4460,7 +4461,7 @@ function Analytics({ catches, spots, trips, observations }) {
           })
         );
       })
-    ),
+    ); })(),
     React.createElement(StatChart, { title: "Time of Day (" + rateUnit + ")", buckets: timeBuckets,  values: timeRates, fmt: fmtRate, hours: timeBuckets.map(function(b) { return timeHours[b] || 0; }) }),
     React.createElement(StatChart, { title: "Air Pressure (" + rateUnit + ")", buckets: pressBuckets, values: pressRates, fmt: fmtRate, hours: pressBuckets.map(function(b) { return pressHours[b] || 0; }) }),
     React.createElement(StatChart, { title: "Wind Direction (" + rateUnit + ")", buckets: windBuckets, values: windRates, fmt: fmtRate, hours: windBuckets.map(function(b) { return windHours[b] || 0; }) }),
