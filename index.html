@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.43-exp</title>
+  <title>The Catch Log v2.44-exp</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -2105,7 +2105,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.43-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.44-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -3808,14 +3808,17 @@ function StatChart({ title, buckets, values, fmt, hours }) {
 function SizeHistogram({ title, buckets, values }) {
   var maxVal = Math.max.apply(null, values.concat([0.001]));
   if (!values.some(function(v) { return v > 0; })) return null;
+  var TRACK_H = 70; // fixed pixel track so the bar's %-height has no sibling competing for space
   return React.createElement("div", { className: "stat-card" },
     React.createElement("div", { className: "stat-card-title" }, title),
-    React.createElement("div", { style: { display: "flex", alignItems: "flex-end", gap: 4, padding: "10px 14px 14px", height: 110 } },
+    React.createElement("div", { style: { display: "flex", alignItems: "flex-end", gap: 4, padding: "10px 14px 14px" } },
       buckets.map(function(lbl, i) {
-        var pct = Math.max(values[i] / maxVal * 100, values[i] > 0 ? 4 : 0);
-        return React.createElement("div", { key: lbl, style: { flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-end", height: "100%" } },
-          React.createElement("div", { style: { fontSize: 9, color: "var(--text-2)", marginBottom: 3, fontFamily: "'Source Code Pro', monospace" } }, values[i] || ""),
-          React.createElement("div", { style: { width: "100%", background: "var(--slate-light)", borderRadius: "2px 2px 0 0", height: pct + "%", opacity: values[i] > 0 ? 1 : 0 } }),
+        var barH = Math.max(values[i] / maxVal * TRACK_H, values[i] > 0 ? 3 : 0);
+        return React.createElement("div", { key: lbl, style: { flex: 1, display: "flex", flexDirection: "column", alignItems: "center" } },
+          React.createElement("div", { style: { width: "100%", height: TRACK_H + 14, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-end" } },
+            React.createElement("div", { style: { fontSize: 9, color: "var(--text-2)", marginBottom: 3, fontFamily: "'Source Code Pro', monospace" } }, values[i] || ""),
+            React.createElement("div", { style: { width: "100%", background: "var(--slate-light)", borderRadius: "2px 2px 0 0", height: barH, opacity: values[i] > 0 ? 1 : 0 } })
+          ),
           React.createElement("div", { style: { fontSize: 8, color: "var(--text-3)", marginTop: 5, textAlign: "center", whiteSpace: "nowrap" } }, lbl)
         );
       })
@@ -3835,6 +3838,8 @@ function Analytics({ catches, spots, trips, observations }) {
   var showMapObs = showOState[0], setShowMapObs = showOState[1];
   var dataState = useState("catches");
   var dataFilter = dataState[0], setDataFilter = dataState[1];
+  var monthState = useState([]);
+  var monthFilter = monthState[0], setMonthFilter = monthState[1];
   var areaState = useState(null); // {n,s,w,e} picked on the Insights map, or null
   var area = areaState[0], setArea = areaState[1];
   var incCatches = dataFilter !== "obs";
@@ -3853,12 +3858,18 @@ function Analytics({ catches, spots, trips, observations }) {
       .filter(Boolean)
   )).sort();
 
-  // Year-filtered data
-  var yTrips = yearFilter === "all" ? trips : trips.filter(function(t) {
-    return new Date(t.startTime).getFullYear() === parseInt(yearFilter);
+  // Year + month filtered data
+  var mPass = function(ts) {
+    if (!monthFilter.length) return true;
+    return monthFilter.indexOf(new Date(ts).getMonth()) >= 0;
+  };
+  var yTrips = trips.filter(function(t) {
+    if (yearFilter !== "all" && new Date(t.startTime).getFullYear() !== parseInt(yearFilter)) return false;
+    return mPass(t.startTime);
   });
-  var yCatches = yearFilter === "all" ? catches : catches.filter(function(c) {
-    return new Date(c.timestamp).getFullYear() === parseInt(yearFilter);
+  var yCatches = catches.filter(function(c) {
+    if (yearFilter !== "all" && new Date(c.timestamp).getFullYear() !== parseInt(yearFilter)) return false;
+    return mPass(c.timestamp);
   });
 
   // Area filter: a lat/lon box picked on the Insights map ("Filter this view")
@@ -3889,8 +3900,9 @@ function Analytics({ catches, spots, trips, observations }) {
   var fc = speciesFilter === "all" ? lc : lc.filter(function(c) { return c.species === speciesFilter; });
 
   // Observations filtered the same way (for the map)
-  var yObs = yearFilter === "all" ? (observations || []) : (observations || []).filter(function(o) {
-    return new Date(o.timestamp).getFullYear() === parseInt(yearFilter);
+  var yObs = (observations || []).filter(function(o) {
+    if (yearFilter !== "all" && new Date(o.timestamp).getFullYear() !== parseInt(yearFilter)) return false;
+    return mPass(o.timestamp);
   });
   var lObs = yObs.filter(inLoc);
   var fObs = speciesFilter === "all" ? lObs : lObs.filter(function(o) { return o.species === speciesFilter; });
@@ -3984,9 +3996,9 @@ function Analytics({ catches, spots, trips, observations }) {
   var pressBucket = function(p) {
     if (p == null) return null;
     if (p < 1000) return "<1000";
-    if (p < 1010) return "1000–1010";
-    if (p < 1020) return "1010–1020";
-    return ">1020";
+    if (p >= 1030) return ">1030";
+    var lo = Math.floor(p / 5) * 5;
+    return lo + "–" + (lo + 5);
   };
   var moonBucket = function(m) {
     if (!m) return null;
@@ -4018,7 +4030,7 @@ function Analytics({ catches, spots, trips, observations }) {
   // ── Bucket definitions ──
   var timeBuckets  = ["04–07", "07–11", "11–14", "14–17", "17–20", "20–04"];
   var tideBuckets  = ["Very Low", "Low", "Medium", "High", "Very High"];
-  var pressBuckets = ["<1000", "1000–1010", "1010–1020", ">1020"];
+  var pressBuckets = ["<1000", "1000–1005", "1005–1010", "1010–1015", "1015–1020", "1020–1025", "1025–1030", ">1030"];
   var moonBuckets  = ["🌑 New", "🌒 Wax.Cres.", "🌓 First Q.", "🌔 Wax.Gib.", "🌕 Full", "🌖 Wan.Gib.", "🌗 Last Q.", "🌘 Wan.Cres."];
 
   var getWT = function(c) { return c.waterTemp != null ? c.waterTemp : (spots.find(function(s) { return s.id === c.spotId; }) || {}).waterTemp || null; };
@@ -4049,25 +4061,30 @@ function Analytics({ catches, spots, trips, observations }) {
     return out;
   })();
 
-  // ── Raw catch counts (Tide) — level split by rising/falling direction ──
-  var tideDirBucket = function(c) {
-    var lvl = tideBucket(c.tide ? c.tide.seasonal : null);
-    if (lvl == null) return null;
-    var d = c.tide.direction;
-    // no arrow = legacy entries recorded before direction existed
-    return d === "rising" ? lvl + " ↑" : d === "falling" ? lvl + " ↓" : lvl;
+  // ── Raw catch counts (Tide) — grouped by Rising / Falling ──
+  var tideLevelBucket = function(c) {
+    return tideBucket(c.tide ? c.tide.seasonal : null);
   };
-  var tideDirBucketsAll = [];
-  tideBuckets.forEach(function(b) { tideDirBucketsAll.push(b + " ↑", b + " ↓", b); });
-  var cTideAll = buildCounts(fEvents, tideDirBucket, tideDirBucketsAll);
-  // keep all ↑/↓ rows; show a plain (directionless) row only if it has data
-  var tideDirBuckets = [], cTide = [];
-  tideDirBucketsAll.forEach(function(b, i) {
-    if (tideBuckets.indexOf(b) >= 0 && cTideAll[i] === 0) return;
-    tideDirBuckets.push(b); cTide.push(cTideAll[i]);
+  var tideDir = function(c) {
+    return c.tide ? c.tide.direction : null;
+  };
+  var tideGroups = [
+    { key: "rising", label: "Rising ↑" },
+    { key: "falling", label: "Falling ↓" }
+  ];
+  var tideHierarchy = tideGroups.map(function(g) {
+    var dirEvents = fEvents.filter(function(e) { return tideDir(e) === g.key; });
+    var counts = buildCounts(dirEvents, tideLevelBucket, tideBuckets);
+    var total = counts.reduce(function(s, v) { return s + v; }, 0);
+    return { label: g.label, buckets: tideBuckets, counts: counts, total: total };
   });
+  var untagged = fEvents.filter(function(e) { return tideLevelBucket(e) && !tideDir(e); });
+  if (untagged.length) {
+    var uCounts = buildCounts(untagged, tideLevelBucket, tideBuckets);
+    tideHierarchy.push({ label: "Unknown dir.", buckets: tideBuckets, counts: uCounts, total: untagged.length });
+  }
 
-  // ── Time of Day — catches per hour ──
+  // ── Time of Day — hours per catch ──
   var timeHours = {};
   timeBuckets.forEach(function(b) { timeHours[b] = 0; });
   kpiTrips.filter(function(t) { return t.endTime; }).forEach(function(t) {
@@ -4084,7 +4101,7 @@ function Analytics({ catches, spots, trips, observations }) {
     return timeHours[b] > 0 ? cTimeCounts[i] / timeHours[b] : 0;
   });
 
-  // ── Water Temp — catches per hour (temp assumed constant per spot) ──
+  // ── Water Temp — hours per catch (temp assumed constant per spot) ──
   var tempHours = {};
   tempBucketsAll.forEach(function(b) { tempHours[b] = 0; });
   kpiTrips.filter(function(t) { return t.endTime; }).forEach(function(t) {
@@ -4114,7 +4131,7 @@ function Analytics({ catches, spots, trips, observations }) {
     return t.weather || null; // trolling trips carry start weather themselves
   };
 
-  // ── Moon Phase — catches per hour ──
+  // ── Moon Phase — hours per catch ──
   // Use spot-level weather when available (more accurate for long sessions),
   // fall back to trip-level weather for older data where spots lack weather
   var moonHours = {};
@@ -4147,7 +4164,7 @@ function Analytics({ catches, spots, trips, observations }) {
     return moonHours[b] > 0 ? cMoonCounts[i] / moonHours[b] : 0;
   });
 
-  // ── Air Pressure — catches per hour ──
+  // ── Air Pressure — hours per catch ──
   // Same hybrid approach: spot-level when available, trip-level fallback
   var pressHours = {};
   pressBuckets.forEach(function(b) { pressHours[b] = 0; });
@@ -4179,7 +4196,7 @@ function Analytics({ catches, spots, trips, observations }) {
     return pressHours[b] > 0 ? cPressCounts[i] / pressHours[b] : 0;
   });
 
-  // ── Wind Direction — catches per hour ──
+  // ── Wind Direction — hours per catch ──
   // Same hybrid approach as pressure. NB: windDir 0 (north) is valid — every
   // check must be != null, never truthiness
   var windBuckets = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
@@ -4223,7 +4240,7 @@ function Analytics({ catches, spots, trips, observations }) {
     return windHours[b] > 0 ? cWindCounts[i] / windHours[b] : 0;
   });
 
-  // ── Trolling Speed — catches per hour ──
+  // ── Trolling Speed — hours per catch ──
   // Hours come straight from the track: each segment's duration lands in the
   // bucket of that segment's speed. Gaps >10 min (screen off, paused) are
   // skipped rather than counted as ultra-slow trolling.
@@ -4309,7 +4326,9 @@ function Analytics({ catches, spots, trips, observations }) {
   var largestFish = largest.e;
   // Labels adapt to what's included
   var fishLbl = incCatches ? (incObs ? "Fish (C+O)" : "Catches") : "Fish Observed";
-  var unit = incObs ? "fish" : "catches";
+  var unit = incObs ? "fish" : "catch";
+  var rateUnit = "hrs/" + unit;
+  var fmtRate = function(v) { return v > 0 ? (1 / v).toFixed(1) + "h" : "—"; };
 
   // ── Size distribution: same size/estimatedSize parsing as "Largest Fish" ──
   var sizeOf = function(e) {
@@ -4378,6 +4397,22 @@ function Analytics({ catches, spots, trips, observations }) {
         allSpecies.map(function(sp) { return React.createElement("option", { key: sp, value: sp }, sp); })
       )
     ),
+    React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 4, padding: "0 6px 6px" } },
+      ["J","F","M","A","M","J","J","A","S","O","N","D"].map(function(lbl, i) {
+        var on = monthFilter.indexOf(i) >= 0;
+        return React.createElement("button", {
+          key: i,
+          onClick: function() {
+            setMonthFilter(on ? monthFilter.filter(function(m) { return m !== i; }) : monthFilter.concat([i]));
+          },
+          style: { padding: "3px 0", width: 28, fontSize: 10, fontWeight: 700, fontFamily: "inherit", letterSpacing: .5, border: "1px solid var(--rule)", borderRadius: 6, cursor: "pointer", background: on ? "var(--moss)" : "none", color: on ? "var(--paper, #fff)" : "var(--text-2)", transition: "all .15s" }
+        }, lbl);
+      }),
+      monthFilter.length > 0 && React.createElement("button", {
+        onClick: function() { setMonthFilter([]); },
+        style: { padding: "3px 6px", fontSize: 10, fontFamily: "inherit", border: "1px solid var(--rule)", borderRadius: 6, cursor: "pointer", background: "none", color: "var(--text-3)" }
+      }, "Clear")
+    ),
     // ── KPI cards ──
     React.createElement("div", { className: "stat-summary" },
       React.createElement("div", { className: "stat-kpi" },
@@ -4400,14 +4435,37 @@ function Analytics({ catches, spots, trips, observations }) {
     // ── Fish size ──
     sizeBuckets.length > 0 && React.createElement(SizeHistogram, { title: "Fish Size" + (sizeUnit ? " (" + sizeUnit + ")" : ""), buckets: sizeBuckets, values: sizeCounts }),
     // ── Charts (ordered: Method, Temp, Tide, Time, Pressure, Moon) ──
-    methodBuckets.length > 0 && React.createElement(StatChart, { title: "Method (" + unit + "/hr)", buckets: methodBuckets, values: methodValues, fmt: function(v) { return v.toFixed(2); }, hours: methodBuckets.map(function(b) { return methodHours[b] || 0; }) }),
-    tempBucketsAll.length > 0 && React.createElement(StatChart, { title: "Water Temp (" + unit + "/hr)", buckets: tempBucketsAll, values: tempRates, fmt: function(v) { return v.toFixed(2); }, hours: tempBucketsAll.map(function(b) { return tempHours[b] || 0; }) }),
-    React.createElement(StatChart, { title: "Tide Level (" + (incObs ? "fish" : "catch") + " count)",  buckets: tideDirBuckets,  values: cTide }),
-    React.createElement(StatChart, { title: "Time of Day (" + unit + "/hr)", buckets: timeBuckets,  values: timeRates, fmt: function(v) { return v.toFixed(2); }, hours: timeBuckets.map(function(b) { return timeHours[b] || 0; }) }),
-    React.createElement(StatChart, { title: "Air Pressure (" + unit + "/hr)", buckets: pressBuckets, values: pressRates, fmt: function(v) { return v.toFixed(2); }, hours: pressBuckets.map(function(b) { return pressHours[b] || 0; }) }),
-    React.createElement(StatChart, { title: "Wind Direction (" + unit + "/hr)", buckets: windBuckets, values: windRates, fmt: function(v) { return v.toFixed(2); }, hours: windBuckets.map(function(b) { return windHours[b] || 0; }) }),
-    React.createElement(StatChart, { title: "Trolling Speed (" + unit + "/hr)", buckets: speedBuckets, values: speedRates, fmt: function(v) { return v.toFixed(2); }, hours: speedBuckets.map(function(b) { return speedHours[b] || 0; }) }),
-    React.createElement(StatChart, { title: "Moon Phase (" + unit + "/hr)",  buckets: moonBuckets,  values: moonRates, fmt: function(v) { return v.toFixed(2); }, hours: moonBuckets.map(function(b) { return moonHours[b] || 0; }) }),
+    methodBuckets.length > 0 && React.createElement(StatChart, { title: "Method (" + rateUnit + ")", buckets: methodBuckets, values: methodValues, fmt: fmtRate, hours: methodBuckets.map(function(b) { return methodHours[b] || 0; }) }),
+    tempBucketsAll.length > 0 && React.createElement(StatChart, { title: "Water Temp (" + rateUnit + ")", buckets: tempBucketsAll, values: tempRates, fmt: fmtRate, hours: tempBucketsAll.map(function(b) { return tempHours[b] || 0; }) }),
+    tideHierarchy.some(function(g) { return g.total > 0; }) && React.createElement("div", { className: "stat-card" },
+      React.createElement("div", { className: "stat-card-title" }, "Tide Level (" + (incObs ? "fish" : "catch") + " count)"),
+      tideHierarchy.filter(function(g) { return g.total > 0; }).map(function(g) {
+        var gMax = Math.max.apply(null, g.counts.concat([0.001]));
+        return React.createElement("div", { key: g.label, style: { marginBottom: 10 } },
+          React.createElement("div", { style: { fontSize: 10, fontWeight: 700, letterSpacing: .5, textTransform: "uppercase", color: "var(--text-2)", padding: "6px 14px 2px", fontFamily: "'Source Code Pro', monospace" } }, g.label + "  (" + g.total + ")"),
+          g.buckets.map(function(lbl, i) {
+            if (g.counts[i] === 0) return null;
+            var pct = Math.round(g.counts[i] / gMax * 100);
+            return React.createElement("div", { key: lbl, className: "stat-row" },
+              React.createElement("div", { className: "stat-lbl", style: { paddingLeft: 10 } }, lbl),
+              React.createElement("div", { className: "stat-bars" },
+                React.createElement("div", { className: "stat-bar-line" },
+                  React.createElement("div", { className: "stat-track" },
+                    React.createElement("div", { className: "stat-fill-c", style: { width: pct + "%" } })
+                  ),
+                  React.createElement("div", { className: "stat-ct" }, g.counts[i])
+                )
+              )
+            );
+          })
+        );
+      })
+    ),
+    React.createElement(StatChart, { title: "Time of Day (" + rateUnit + ")", buckets: timeBuckets,  values: timeRates, fmt: fmtRate, hours: timeBuckets.map(function(b) { return timeHours[b] || 0; }) }),
+    React.createElement(StatChart, { title: "Air Pressure (" + rateUnit + ")", buckets: pressBuckets, values: pressRates, fmt: fmtRate, hours: pressBuckets.map(function(b) { return pressHours[b] || 0; }) }),
+    React.createElement(StatChart, { title: "Wind Direction (" + rateUnit + ")", buckets: windBuckets, values: windRates, fmt: fmtRate, hours: windBuckets.map(function(b) { return windHours[b] || 0; }) }),
+    React.createElement(StatChart, { title: "Trolling Speed (" + rateUnit + ")", buckets: speedBuckets, values: speedRates, fmt: fmtRate, hours: speedBuckets.map(function(b) { return speedHours[b] || 0; }) }),
+    React.createElement(StatChart, { title: "Moon Phase (" + rateUnit + ")",  buckets: moonBuckets,  values: moonRates, fmt: fmtRate, hours: moonBuckets.map(function(b) { return moonHours[b] || 0; }) }),
     // ── Catch map — clustered catches + observations (badge = fish count) ──
     (function() {
       var mapCatches = (incCatches ? fc : []).filter(function(c) { return c.gps; });
