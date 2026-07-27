@@ -1,4 +1,4 @@
-const CACHE = 'catchlog-v29-46';
+const CACHE = 'catchlog-v29-48';
 const ASSETS = [
   '/catchlog/',
   '/catchlog/index.html',
@@ -44,6 +44,7 @@ self.addEventListener('fetch', e => {
   // grow the cache without bound)
   const isApi = url.hostname.includes('kartverket') ||
                 url.hostname.includes('met.no') ||
+                url.hostname.includes('open-meteo') ||
                 url.hostname.includes('allorigins') ||
                 url.hostname.includes('corsproxy') ||
                 url.hostname.includes('openstreetmap');

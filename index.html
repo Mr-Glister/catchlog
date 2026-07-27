@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.44-exp</title>
+  <title>The Catch Log v2.46-exp</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -33,7 +33,7 @@
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin="anonymous"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin="anonymous"></script>
   <script>
-    const { useState, useRef, useCallback, useEffect } = React;
+    const { useState, useRef, useCallback, useEffect, useContext } = React;
   </script>
 
   <!-- Firebase cloud sync -->
@@ -858,7 +858,7 @@ function useEnv() {
   const [tideStatus, setTideStatus] = useState("idle");
   const fetchEnv = useCallback(async (la, lo, ts) => {
     // Weather and tide run in PARALLEL — tide used to wait behind the whole
-    // weather/Frost chain (up to ~30s on flaky proxies) before even starting
+    // weather/pressure-history chain (up to ~30s on flaky proxies) before even starting
     const weatherTask = (async () => {
     setWeatherStatus("loading");
     try {
@@ -902,68 +902,69 @@ function useEnv() {
         ? Math.round(instant.wind_from_direction)
         : null;
 
-      // --- 24h pressure history from Frost API ---
-      // Route through corsproxy.io: corsproxy.io's own CORS policy allows the
-      // Authorization header (Access-Control-Allow-Headers: *), so the browser
-      // preflight succeeds against corsproxy.io, which then forwards the header
-      // to Frost. client_secret intentionally omitted.
+      // --- 24h pressure history from Open-Meteo ---
+      // Replaces the Frost API, which is a Norwegian station network: its
+      // nearest(POINT(..)) lookup has no distance limit, so abroad it silently
+      // returned a station thousands of km away (Miami and Seattle both
+      // resolved to Iqaluit, Canada) and the sparkline showed Arctic weather
+      // as the local trend. Open-Meteo is a global grid — always genuinely
+      // local — needs no key, and sends Access-Control-Allow-Origin: *, so the
+      // CORS proxies and the embedded Frost client ID both go away.
       let pressureHistory = null;
+      let pressureDelta3h = null;
       try {
-        const FROST_ID = '15f1c5d3-8ff3-4f4e-a7e2-8f358ae24cc3';
-        const frostAuth = 'Basic ' + btoa(FROST_ID + ':');
-        const frostGet = async (path) => {
-          const target = 'https://frost.met.no' + path;
-          // Two-proxy fallback like the tide fetch — one flaky free proxy
-          // shouldn't silently kill the pressure trend for the day
-          const proxies = ['https://corsproxy.io/?', 'https://api.allorigins.win/raw?url='];
-          let lastErr;
-          for (const proxy of proxies) {
-            const ac = new AbortController();
-            const tid = setTimeout(() => ac.abort(), 10000);
-            try {
-              const r = await fetch(proxy + encodeURIComponent(target), { headers: { Authorization: frostAuth }, signal: ac.signal });
-              if (r.ok) return await r.json();
-              lastErr = new Error('Frost HTTP ' + r.status);
-            } catch (e) {
-              lastErr = e;
-            } finally {
-              clearTimeout(tid);
-            }
-          }
-          throw lastErr;
-        };
-        // Step 1: find nearest station with pressure observations
-        const geomParam = encodeURIComponent(`nearest(POINT(${lo} ${la}))`);
-        const srcData = await frostGet(`/sources/v0.jsonld?geometry=${geomParam}&elements=air_pressure_at_sea_level`);
-        const stId = srcData.data?.[0]?.id;
-        if (stId) {
-          // Step 2: fetch last 24h of hourly pressure observations
-          const tTo = new Date();
-          const tFrom = new Date(tTo.getTime() - 24 * 3600000);
-          const isoFrom = tFrom.toISOString().slice(0, 19) + 'Z';
-          const isoTo   = tTo.toISOString().slice(0, 19) + 'Z';
-          const obsData = await frostGet(`/observations/v0.jsonld?sources=${stId}&elements=air_pressure_at_sea_level&referencetime=${isoFrom}/${isoTo}&timeresolutions=PT1H`);
-          if (obsData.data?.length >= 2) {
-            const frostPts = obsData.data
-              .sort((a, b) => new Date(a.referenceTime) - new Date(b.referenceTime))
-              .map(r => r.observations?.[0]?.value)
-              .filter(v => v != null)
-              .map(v => Math.round(v * 10) / 10);
-            // Append current met.no value so sparkline extends to "now"
-            pressureHistory = pressure != null ? [...frostPts, pressure] : frostPts;
-          }
+        const ac = new AbortController();
+        const tid = setTimeout(() => ac.abort(), 10000);
+        let omResp;
+        try {
+          omResp = await fetch(
+            `https://api.open-meteo.com/v1/forecast?latitude=${(+la).toFixed(4)}&longitude=${(+lo).toFixed(4)}&hourly=pressure_msl&past_days=1&forecast_days=1&timezone=GMT`,
+            { signal: ac.signal }
+          );
+        } finally {
+          clearTimeout(tid);
+        }
+        if (!omResp.ok) throw new Error('Open-Meteo HTTP ' + omResp.status);
+        const omData = await omResp.json();
+        const times = omData.hourly?.time || [];
+        const vals  = omData.hourly?.pressure_msl || [];
+        // The response runs to the end of today, so the tail is FORECAST, not
+        // history. Drop anything after now — otherwise the trend below would
+        // compare "now" against a future value and read backwards.
+        const nowMs2 = Date.now();
+        const past = [];
+        for (let i = 0; i < times.length; i++) {
+          if (vals[i] == null) continue;
+          // times are GMT without a zone suffix — mark them UTC explicitly
+          if (new Date(times[i] + 'Z').getTime() > nowMs2) break;
+          past.push(Math.round(vals[i] * 10) / 10);
+        }
+        const omPts = past.slice(-24);
+        if (omPts.length >= 2) {
+          // Append current met.no value so sparkline extends to "now"
+          pressureHistory = pressure != null ? [...omPts, pressure] : omPts;
+          // Measure the trend within Open-Meteo alone. Comparing met.no's
+          // current reading against another provider's history injects the
+          // offset between the two models into the trend: measured at 0 hPa in
+          // Norway (Open-Meteo serves met.no's own model there) but up to
+          // -1.3 hPa in the US, which alone is enough to cross the 1.5 hPa/3h
+          // "rapidly" threshold and report a collapsing front on a calm day.
+          pressureDelta3h = omPts[omPts.length - 1] - omPts[Math.max(0, omPts.length - 4)];
         }
       } catch (fe) {
-        console.warn('Frost API unavailable, sparkline hidden:', fe.message);
+        console.warn('Open-Meteo pressure history unavailable, sparkline hidden:', fe.message);
       }
 
       // Trend: compare current vs 3 hours ago (reflects what is happening now,
       // not a 12h average). Thresholds: rapid ≥1.5 hPa/3h, slow ≥0.5 hPa/3h.
       let pressureTrend = null;
       let pressureLabel = null;
-      if (pressure != null && pressureHistory && pressureHistory.length >= 2) {
-        const oldPressure = pressureHistory[Math.max(0, pressureHistory.length - 4)];
-        const diff = pressure - oldPressure;
+      const diff = pressureDelta3h != null
+        ? pressureDelta3h
+        : (pressure != null && pressureHistory && pressureHistory.length >= 2
+            ? pressure - pressureHistory[Math.max(0, pressureHistory.length - 4)]
+            : null);
+      if (diff != null) {
         const absDiff = Math.abs(diff);
         const dir = diff > 0.3 ? "rising" : diff < -0.3 ? "falling" : "steady";
         const speed = absDiff >= 1.5 ? "rapidly" : absDiff >= 0.5 ? "slowly" : "";
@@ -1702,7 +1703,57 @@ const TEMP_OPTIONS = [
   ...Array.from({length: 21}, (_, i) => `${(8 + i * 0.5).toFixed(1).replace(/\.0$/, '')} °C`),
   ...Array.from({length: 7}, (_, i) => `${i + 19} °C`)
 ];
-const TARGET_SPECIES = ["Sea Trout", "Sea Bass", "Salmon", "Garfish", "Mackerel", "Mullet"];
+// "Various" is a real answer, not a blank. A session target is now required, and
+// without an honest catch-all people pick an arbitrary species, which then lands
+// in the Recent group and pollutes the ordering for everyone.
+const TARGET_SPECIES = ["Sea Trout", "Sea Bass", "Salmon", "Garfish", "Mackerel", "Mullet", "Striped Bass", "Various"];
+// Species that never earn a place in Recent — they carry no targeting signal.
+const UNRANKED_SPECIES = ["Various"];
+// How many recent sessions define "Recent". Deliberately a SESSION count, not a
+// day window: it behaves the same whether you fish twice a week or twice a month.
+const RECENT_SESSION_COUNT = 10;
+// Order the dropdown as Recent (what you're actually fishing for lately) then
+// More (everything else). A single frequency score can't do both jobs — weighted
+// toward history, 50 sea bass sessions bury a sea trout week; weighted toward
+// recency, the list reshuffles after any break. A session window sidesteps the
+// tuning entirely. Ranked by TARGETING, not catches: 50 blank Striped Bass
+// sessions should still rank it. Recent also counts species caught/observed in
+// those sessions, because CatchForm already prefills from the session target —
+// the dropdown only gets opened when you're logging something off-target.
+function buildSpeciesGroups(trips, catches, observations, currentValue) {
+  const recent = [];
+  const seen = new Set();
+  const push = s => {
+    const v = (s || "").trim();
+    if (!v || seen.has(v) || UNRANKED_SPECIES.indexOf(v) >= 0) return;
+    seen.add(v);
+    recent.push(v);
+  };
+  const sessions = (trips || [])
+    .filter(t => t && t.startTime)
+    .sort((a, b) => new Date(b.startTime) - new Date(a.startTime))
+    .slice(0, RECENT_SESSION_COUNT);
+  sessions.forEach(t => {
+    push(t.targetSpecies);
+    // Sessions predating the required-target rule have none — fall back to what
+    // was actually caught there, so old trips still carry a signal.
+    (catches || []).forEach(c => { if (c.tripId === t.id) push(c.species); });
+    (observations || []).forEach(o => { if (o.tripId === t.id) push(o.species); });
+  });
+  // Everything else: the master list plus any species already in the data that
+  // isn't in it (historical entries, and other regions' species) — so a value on
+  // an existing record is always selectable and never silently renders blank.
+  const known = new Set(TARGET_SPECIES);
+  (catches || []).forEach(c => { if (c.species) known.add(c.species.trim()); });
+  (observations || []).forEach(o => { if (o.species) known.add(o.species.trim()); });
+  (trips || []).forEach(t => { if (t.targetSpecies) known.add(t.targetSpecies.trim()); });
+  if (currentValue) known.add(currentValue.trim());
+  const more = Array.from(known).filter(s => s && !seen.has(s)).sort();
+  return { recent, more };
+}
+// Context so the six dropdown call sites don't each need trips/catches threaded
+// through them — CatchForm and ObsForm only receive activeTrip/activeSpot/onSave.
+const SpeciesCtx = React.createContext(null);
 function deriveMethod(tripSpots, trip) {
   if (trip && trip.mode === "trolling") return "Trolling";
   const lines = tripSpots.map(s => s.lineType).filter(Boolean);
@@ -2066,7 +2117,10 @@ function FishLog() {
   const tripSpots = t => [...spots].filter(s => s.tripId === t.id).sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
   const tripCatches = t => catches.filter(c => c.tripId === t.id);
   const tripObs = t => observations.filter(o => o.tripId === t.id);
-  return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("style", null, css), /*#__PURE__*/React.createElement("div", {
+  // Provider stands in for the Fragment that used to be here — same children,
+  // no extra nesting — so the six species dropdowns can read trips/catches
+  // without threading props through CatchForm/ObsForm, which receive neither.
+  return /*#__PURE__*/React.createElement(SpeciesCtx.Provider, { value: { trips, catches, observations } }, /*#__PURE__*/React.createElement("style", null, css), /*#__PURE__*/React.createElement("div", {
     className: "app"
   }, /*#__PURE__*/React.createElement("header", {
     className: "header"
@@ -2105,7 +2159,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.44-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.46-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -2309,27 +2363,13 @@ function TempSelect({
     value: t
   }, t))));
 }
-function TargetSelect({
-  value,
-  onChange
-}) {
-  return /*#__PURE__*/React.createElement("div", {
-    className: "field-select-wrap"
-  }, /*#__PURE__*/React.createElement("select", {
-    className: "field-select",
-    value: value,
-    onChange: e => onChange(e.target.value)
-  }, /*#__PURE__*/React.createElement("option", {
-    value: ""
-  }, "\u2014 select \u2014"), TARGET_SPECIES.map(s => /*#__PURE__*/React.createElement("option", {
-    key: s,
-    value: s
-  }, s))));
-}
 function SpeciesSelect({
   value,
   onChange
 }) {
+  const data = useContext(SpeciesCtx);
+  const groups = buildSpeciesGroups(data?.trips, data?.catches, data?.observations, value);
+  const opt = s => /*#__PURE__*/React.createElement("option", { key: s, value: s }, s);
   return /*#__PURE__*/React.createElement("div", {
     className: "field-select-wrap"
   }, /*#__PURE__*/React.createElement("select", {
@@ -2338,10 +2378,15 @@ function SpeciesSelect({
     onChange: e => onChange(e.target.value)
   }, /*#__PURE__*/React.createElement("option", {
     value: ""
-  }, "\u2014 select \u2014"), TARGET_SPECIES.map(s => /*#__PURE__*/React.createElement("option", {
-    key: s,
-    value: s
-  }, s))));
+  }, "\u2014 select \u2014"),
+    groups.recent.length ? /*#__PURE__*/React.createElement("optgroup", { key: "r", label: "Recent" }, groups.recent.map(opt)) : null,
+    groups.more.length ? /*#__PURE__*/React.createElement("optgroup", { key: "m", label: groups.recent.length ? "More" : "Species" }, groups.more.map(opt)) : null
+  ));
+}
+// Same list, different field label ("Targeting" vs "Species") \u2014 kept as a
+// separate name so the three call sites read correctly at a glance.
+function TargetSelect(props) {
+  return /*#__PURE__*/React.createElement(SpeciesSelect, props);
 }
 function ConditionsModal({ onClose }) {
   const [ts] = useState(new Date().toISOString());
@@ -2716,7 +2761,10 @@ function TripsList({
     style: { padding: "2px 0", resize: "none" }
   })), /*#__PURE__*/React.createElement("button", {
     className: "save-btn green",
-    onClick: handleStartTroll
+    onClick: handleStartTroll,
+    // Target is required — it is the ranking signal for the species dropdowns,
+    // and "Various" exists for genuinely unplanned trips
+    disabled: !targetSpecies.trim()
   }, "Start & Begin Tracking"), /*#__PURE__*/React.createElement("div", {
     className: "mode-switch-link",
     onClick: () => setTrollMode(false)
@@ -2838,7 +2886,8 @@ function TripsList({
     }
   })), /*#__PURE__*/React.createElement("button", {
     className: "save-btn green",
-    onClick: handleStart
+    onClick: handleStart,
+    disabled: !targetSpecies.trim()
   }, "Start Session"), /*#__PURE__*/React.createElement("div", {
     className: "mode-switch-link",
     onClick: () => setTrollMode(true)
