@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.46-exp</title>
+  <title>The Catch Log v2.47-exp</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -686,6 +686,81 @@ function tideArrow(direction) {
   if (direction === "falling") return " ↓";
   return "";
 }
+// Sky/precipitation conditions. We store only the raw facts Open-Meteo gives us
+// (WMO code, cloud %, precipitation mm) and derive every label here, so the
+// wording can be reworked later without migrating a single saved record.
+const WMO_LABELS = {
+  0: "Clear", 1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast",
+  45: "Fog", 48: "Rime fog",
+  51: "Light drizzle", 53: "Drizzle", 55: "Heavy drizzle",
+  56: "Freezing drizzle", 57: "Freezing drizzle",
+  61: "Light rain", 63: "Rain", 65: "Heavy rain",
+  66: "Freezing rain", 67: "Freezing rain",
+  71: "Light snow", 73: "Snow", 75: "Heavy snow", 77: "Snow grains",
+  80: "Light showers", 81: "Showers", 82: "Heavy showers",
+  85: "Light snow showers", 86: "Heavy snow showers",
+  95: "Thunderstorm", 96: "Thunderstorm, hail", 99: "Thunderstorm, hail"
+};
+// met.no's own documented symbol thresholds, so our wording matches the icon
+// yr.no shows for the same hour.
+function skyLabel(cloud) {
+  if (cloud == null) return null;
+  if (cloud < 13) return "Clear";
+  if (cloud < 38) return "Fair";
+  if (cloud < 86) return "Partly cloudy";
+  return "Cloudy";
+}
+// The cloud-free codes (0-3) describe the sky at the top of the hour, but the
+// cloud figure we show is interpolated to the record's actual minute — deriving
+// the sky wording from that number keeps label and number consistent instead of
+// reading "Overcast · 84% cloud". Precipitation, fog and thunder still come from
+// the code, which cloud cover alone cannot tell you about.
+function wxLabel(code, cloud) {
+  if (code != null && code >= 45) return WMO_LABELS[code] || null;
+  const sky = skyLabel(cloud);
+  if (sky) return sky;
+  if (code == null) return null;
+  return WMO_LABELS[code] || null;
+}
+// Coarse buckets for Insights — 28 individual codes would scatter catches too
+// thinly across a chart to show anything.
+function wxGroup(code, cloud) {
+  // Precipitation, fog and thunder are code-only facts. Only classify codes we
+  // actually know — without this an unrecognised code (a WMO table addition, or
+  // corrupt data) falls through the >= 95 test and gets reported as thunder.
+  if (code != null && code >= 45) {
+    if (!(code in WMO_LABELS)) return null;
+    if (code === 45 || code === 48) return "Fog";
+    if (code >= 95) return "Thunder";
+    if ((code >= 71 && code <= 77) || code === 85 || code === 86) return "Snow";
+    return "Rain";
+  }
+  // Sky: bucket from the same cloud figure the label uses, so a chart can never
+  // disagree with the text on the record it came from.
+  const sky = skyLabel(cloud);
+  if (sky) return sky === "Clear" || sky === "Fair" ? "Clear" : "Cloudy";
+  if (code == null || !(code in WMO_LABELS)) return null;
+  return code <= 1 ? "Clear" : "Cloudy";
+}
+// The light end of each precipitation range. One icon for the whole Rain group
+// made 0.1 mm of drizzle look like a downpour.
+const WMO_LIGHT = [51, 56, 61, 66, 80, 71, 77, 85];
+function wxIcon(code, cloud) {
+  const g = wxGroup(code, cloud);
+  if (!g) return "";
+  const light = WMO_LIGHT.indexOf(code) >= 0;
+  if (g === "Fog")     return "🌫️";
+  if (g === "Thunder") return "⛈️";
+  if (g === "Snow")    return light ? "❄️" : "🌨️";
+  if (g === "Rain")    return light ? "🌦️" : "🌧️";
+  if (g === "Clear")   return "☀️";
+  // Cloud figure wins when we have one — letting code 3 force the solid icon
+  // would reinstate the very mismatch the interpolation removes ("☁️ Partly
+  // cloudy" at 84%). The code only decides when there is no cloud figure.
+  const sky = skyLabel(cloud);
+  if (sky) return sky === "Cloudy" ? "☁️" : "⛅";
+  return code === 3 ? "☁️" : "⛅";
+}
 function windCompass(deg) {
   if (deg == null) return "";
   const dirs = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"];
@@ -912,13 +987,14 @@ function useEnv() {
       // CORS proxies and the embedded Frost client ID both go away.
       let pressureHistory = null;
       let pressureDelta3h = null;
+      let weatherCode = null, cloudCover = null, precipMm = null;
       try {
         const ac = new AbortController();
         const tid = setTimeout(() => ac.abort(), 10000);
         let omResp;
         try {
           omResp = await fetch(
-            `https://api.open-meteo.com/v1/forecast?latitude=${(+la).toFixed(4)}&longitude=${(+lo).toFixed(4)}&hourly=pressure_msl&past_days=1&forecast_days=1&timezone=GMT`,
+            `https://api.open-meteo.com/v1/forecast?latitude=${(+la).toFixed(4)}&longitude=${(+lo).toFixed(4)}&hourly=pressure_msl,weather_code,cloud_cover,precipitation&past_days=1&forecast_days=1&timezone=GMT`,
             { signal: ac.signal }
           );
         } finally {
@@ -950,6 +1026,47 @@ function useEnv() {
           // -1.3 hPa in the US, which alone is enough to cross the 1.5 hPa/3h
           // "rapidly" threshold and report a collapsing front on a calm day.
           pressureDelta3h = omPts[omPts.length - 1] - omPts[Math.max(0, omPts.length - 4)];
+        }
+        // --- Sky/precipitation conditions for the hour the record falls in ---
+        // Keyed on the RECORD's timestamp, not Date.now(): a form left open on a
+        // locked phone would otherwise attribute the catch to the wrong hour.
+        // Open-Meteo carries ~38 past hours, so this is a hindcast of an hour
+        // that has happened, not a forecast of one that hasn't — the conditions
+        // that produced the fish rather than the ones that follow it.
+        const tsMs = new Date(ts).getTime();
+        // Clamp to now: a device clock running ahead would otherwise select a
+        // future hour and store a forecast, defeating the whole point of
+        // reading a hindcast.
+        const atMs = Math.min(isNaN(tsMs) ? Date.now() : tsMs, Date.now());
+        let wxIdx = -1;
+        for (let i = 0; i < times.length; i++) {
+          if (new Date(times[i] + 'Z').getTime() <= atMs) wxIdx = i;
+          else break;
+        }
+        if (wxIdx >= 0) {
+          const codes   = omData.hourly?.weather_code || [];
+          const clouds  = omData.hourly?.cloud_cover || [];
+          const precips = omData.hourly?.precipitation || [];
+          // Code and precipitation describe the whole hour the record falls in.
+          // Precipitation especially is an hourly ACCUMULATION, not a reading at
+          // an instant, so interpolating it would be meaningless.
+          if (codes[wxIdx] != null)   weatherCode = codes[wxIdx];
+          if (precips[wxIdx] != null) precipMm    = Math.round(precips[wxIdx] * 10) / 10;
+          // Cloud cover IS an instantaneous value, so interpolate it to the
+          // record's actual minute. Taking the hour's opening value left it up to
+          // 59 minutes stale, which on a fast-changing sky reads as plainly
+          // wrong: at 15:50 local in Bergen it reported the 99% from the top of
+          // the hour while the sky was already down to 84% and yr.no said so.
+          const hi = wxIdx + 1 < times.length ? wxIdx + 1 : wxIdx;
+          const loMs = new Date(times[wxIdx] + 'Z').getTime();
+          const hiMs = new Date(times[hi] + 'Z').getTime();
+          const span = hiMs - loMs;
+          const frac = span > 0 ? Math.max(0, Math.min(1, (atMs - loMs) / span)) : 0;
+          if (clouds[wxIdx] != null) {
+            const a = clouds[wxIdx];
+            const b = clouds[hi] != null ? clouds[hi] : a;
+            cloudCover = Math.round(a + (b - a) * frac);
+          }
         }
       } catch (fe) {
         console.warn('Open-Meteo pressure history unavailable, sparkline hidden:', fe.message);
@@ -986,6 +1103,11 @@ function useEnv() {
         pressureHistory,
         windSpeed,
         windDir,
+        // Raw facts only — wxLabel/wxGroup/wxIcon derive the wording at display
+        // time, so labels stay reworkable without touching saved records
+        weatherCode,
+        cloudCover,
+        precipMm,
         moon: getMoonPhase(new Date())
       });
       setWeatherStatus("ok");
@@ -1130,26 +1252,26 @@ const tripsCSV = (trips, spots, catches, obs) => {
   })].join("\n");
 };
 const spotsCSV = (spots, trips) => {
-  const h = row(["spot_id", "trip_id", "trip_name", "name", "timestamp", "gps_lat", "gps_lon", "line_type", "water_temp", "has_spot_photo", "air_temp_c", "pressure_hpa", "pressure_level", "pressure_trend", "wind_ms", "wind_dir_deg", "moon_phase", "tide_seasonal_pct", "tide_direction", "tide_cm", "notes"]);
+  const h = row(["spot_id", "trip_id", "trip_name", "name", "timestamp", "gps_lat", "gps_lon", "line_type", "water_temp", "has_spot_photo", "air_temp_c", "conditions", "cloud_pct", "precip_mm", "pressure_hpa", "pressure_level", "pressure_trend", "wind_ms", "wind_dir_deg", "moon_phase", "tide_seasonal_pct", "tide_direction", "tide_cm", "notes"]);
   return [h, ...spots.map(s => {
     const t = trips.find(x => x.id === s.tripId);
-    return row([s.id, s.tripId, t?.name || "", s.name || "", s.timestamp, s.gps?.lat ?? "", s.gps?.lon ?? "", s.lineType || "", s.waterTemp || "", s.photo ? "1" : "0", s.weather?.airTemp ?? "", s.weather?.pressure ?? "", s.weather?.pressureLevel || "", s.weather?.pressureTrend || "", s.weather?.windSpeed ?? "", s.weather?.windDir ?? "", moonCSV(s.weather?.moon), s.tide?.seasonal != null ? tidePct(s.tide.seasonal) : "", s.tide?.direction || "", s.tide?.valueCM ?? "", s.notes || ""]);
+    return row([s.id, s.tripId, t?.name || "", s.name || "", s.timestamp, s.gps?.lat ?? "", s.gps?.lon ?? "", s.lineType || "", s.waterTemp || "", s.photo ? "1" : "0", s.weather?.airTemp ?? "", wxLabel(s.weather?.weatherCode, s.weather?.cloudCover) || "", s.weather?.cloudCover ?? "", s.weather?.precipMm ?? "", s.weather?.pressure ?? "", s.weather?.pressureLevel || "", s.weather?.pressureTrend || "", s.weather?.windSpeed ?? "", s.weather?.windDir ?? "", moonCSV(s.weather?.moon), s.tide?.seasonal != null ? tidePct(s.tide.seasonal) : "", s.tide?.direction || "", s.tide?.valueCM ?? "", s.notes || ""]);
   })].join("\n");
 };
 const catchesCSV = (catches, spots, trips) => {
-  const h = row(["catch_id", "trip_id", "trip_name", "spot_id", "spot_name", "timestamp", "species", "fly_pattern", "troll_depth", "size", "gps_lat", "gps_lon", "water_temp", "air_temp_c", "pressure_hpa", "pressure_level", "pressure_trend", "wind_ms", "wind_dir_deg", "moon_phase", "tide_seasonal_pct", "tide_direction", "tide_cm", "tide_mlws_cm", "tide_mhws_cm", "has_fish_photo", "has_fly_photo", "notes"]);
+  const h = row(["catch_id", "trip_id", "trip_name", "spot_id", "spot_name", "timestamp", "species", "fly_pattern", "troll_depth", "size", "gps_lat", "gps_lon", "water_temp", "air_temp_c", "conditions", "cloud_pct", "precip_mm", "pressure_hpa", "pressure_level", "pressure_trend", "wind_ms", "wind_dir_deg", "moon_phase", "tide_seasonal_pct", "tide_direction", "tide_cm", "tide_mlws_cm", "tide_mhws_cm", "has_fish_photo", "has_fly_photo", "notes"]);
   return [h, ...[...catches].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp)).map(c => {
     const t = trips.find(x => x.id === c.tripId),
       s = spots.find(x => x.id === c.spotId);
-    return row([c.id, c.tripId || "", t?.name || "", c.spotId || "", s?.name || "", c.timestamp, c.species, c.flyPattern || "", c.trollDepth || "", c.size || "", c.gps?.lat ?? "", c.gps?.lon ?? "", c.waterTemp ?? "", c.weather?.airTemp ?? "", c.weather?.pressure ?? "", c.weather?.pressureLevel || "", c.weather?.pressureTrend || "", c.weather?.windSpeed ?? "", c.weather?.windDir ?? "", moonCSV(c.weather?.moon), c.tide?.seasonal != null ? tidePct(c.tide.seasonal) : "", c.tide?.direction || "", c.tide?.valueCM ?? "", c.tide?.mlwsCM ?? "", c.tide?.mhwsCM ?? "", c.fishPhoto ? "1" : "0", c.flyPhoto ? "1" : "0", c.notes || ""]);
+    return row([c.id, c.tripId || "", t?.name || "", c.spotId || "", s?.name || "", c.timestamp, c.species, c.flyPattern || "", c.trollDepth || "", c.size || "", c.gps?.lat ?? "", c.gps?.lon ?? "", c.waterTemp ?? "", c.weather?.airTemp ?? "", wxLabel(c.weather?.weatherCode, c.weather?.cloudCover) || "", c.weather?.cloudCover ?? "", c.weather?.precipMm ?? "", c.weather?.pressure ?? "", c.weather?.pressureLevel || "", c.weather?.pressureTrend || "", c.weather?.windSpeed ?? "", c.weather?.windDir ?? "", moonCSV(c.weather?.moon), c.tide?.seasonal != null ? tidePct(c.tide.seasonal) : "", c.tide?.direction || "", c.tide?.valueCM ?? "", c.tide?.mlwsCM ?? "", c.tide?.mhwsCM ?? "", c.fishPhoto ? "1" : "0", c.flyPhoto ? "1" : "0", c.notes || ""]);
   })].join("\n");
 };
 const obsCSV = (observations, spots, trips) => {
-  const h = row(["obs_id", "trip_id", "trip_name", "spot_id", "spot_name", "timestamp", "species", "count", "estimated_size", "gps_lat", "gps_lon", "air_temp_c", "pressure_hpa", "pressure_level", "pressure_trend", "wind_ms", "wind_dir_deg", "moon_phase", "tide_seasonal_pct", "tide_direction", "tide_cm", "notes"]);
+  const h = row(["obs_id", "trip_id", "trip_name", "spot_id", "spot_name", "timestamp", "species", "count", "estimated_size", "gps_lat", "gps_lon", "air_temp_c", "conditions", "cloud_pct", "precip_mm", "pressure_hpa", "pressure_level", "pressure_trend", "wind_ms", "wind_dir_deg", "moon_phase", "tide_seasonal_pct", "tide_direction", "tide_cm", "notes"]);
   return [h, ...[...observations].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp)).map(o => {
     const t = trips.find(x => x.id === o.tripId),
       s = spots.find(x => x.id === o.spotId);
-    return row([o.id, o.tripId || "", t?.name || "", o.spotId || "", s?.name || "", o.timestamp, o.species, o.count || "", o.estimatedSize || "", o.gps?.lat ?? "", o.gps?.lon ?? "", o.weather?.airTemp ?? "", o.weather?.pressure ?? "", o.weather?.pressureLevel || "", o.weather?.pressureTrend || "", o.weather?.windSpeed ?? "", o.weather?.windDir ?? "", moonCSV(o.weather?.moon), o.tide?.seasonal != null ? tidePct(o.tide.seasonal) : "", o.tide?.direction || "", o.tide?.valueCM ?? "", o.notes || ""]);
+    return row([o.id, o.tripId || "", t?.name || "", o.spotId || "", s?.name || "", o.timestamp, o.species, o.count || "", o.estimatedSize || "", o.gps?.lat ?? "", o.gps?.lon ?? "", o.weather?.airTemp ?? "", wxLabel(o.weather?.weatherCode, o.weather?.cloudCover) || "", o.weather?.cloudCover ?? "", o.weather?.precipMm ?? "", o.weather?.pressure ?? "", o.weather?.pressureLevel || "", o.weather?.pressureTrend || "", o.weather?.windSpeed ?? "", o.weather?.windDir ?? "", moonCSV(o.weather?.moon), o.tide?.seasonal != null ? tidePct(o.tide.seasonal) : "", o.tide?.direction || "", o.tide?.valueCM ?? "", o.notes || ""]);
   })].join("\n");
 };
 function dlCSV(content, filename) {
@@ -2159,7 +2281,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.46-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.47-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -2363,6 +2485,31 @@ function TempSelect({
     value: t
   }, t))));
 }
+// One definition for the conditions row — the weather block is rendered in seven
+// places and the duplicated markup there has already drifted (the Air Temp rows
+// differ in escaping and fallback). Returns null when a record has no code, so
+// everything logged before this shipped simply shows nothing.
+function ConditionsRow({ weather, variant }) {
+  const code = weather?.weatherCode;
+  const cloud = weather?.cloudCover;
+  const label = wxLabel(code, cloud);
+  // Gate on the label, not the code: an unrecognised code would otherwise
+  // render a bare icon with no words next to it
+  if (!label) return null;
+  const parts = [label];
+  if (cloud != null) parts.push(cloud + "% cloud");
+  if (weather.precipMm) parts.push(weather.precipMm + " mm");
+  const text = (wxIcon(code, cloud) + " " + parts.filter(Boolean).join(" \xB7 ")).trim();
+  if (variant === "stat") {
+    return /*#__PURE__*/React.createElement("div", { className: "modal-stat" },
+      /*#__PURE__*/React.createElement("div", { className: "modal-stat-label" }, "Conditions"),
+      /*#__PURE__*/React.createElement("div", { className: "modal-stat-value" }, text));
+  }
+  return /*#__PURE__*/React.createElement("div", { className: "field-row" },
+    /*#__PURE__*/React.createElement("span", { className: "field-icon" }, ""),
+    /*#__PURE__*/React.createElement("span", { className: "field-label" }, "Conditions"),
+    /*#__PURE__*/React.createElement("span", { className: "field-value" }, text));
+}
 function SpeciesSelect({
   value,
   onChange
@@ -2438,7 +2585,7 @@ function ConditionsModal({ onClose }) {
   }, weather.airTemp, " \xB0C") : /*#__PURE__*/React.createElement("span", {
     className: "field-value",
     style: {color: "#bbb"}
-  }, "— get GPS first")), /*#__PURE__*/React.createElement("div", {
+  }, "— get GPS first")), /*#__PURE__*/React.createElement(ConditionsRow, { weather }), /*#__PURE__*/React.createElement("div", {
     className: "field-row top"
   }, /*#__PURE__*/React.createElement("span", {
     className: "field-icon",
@@ -2909,7 +3056,7 @@ function TripsList({
   }, weather.airTemp, " \xB0C") : /*#__PURE__*/React.createElement("span", {
     className: "field-value",
     style: {color: "#bbb"}
-  }, "\u2014 get GPS first")), /*#__PURE__*/React.createElement("div", {
+  }, "\u2014 get GPS first")), /*#__PURE__*/React.createElement(ConditionsRow, { weather }), /*#__PURE__*/React.createElement("div", {
     className: "field-row top"
   }, /*#__PURE__*/React.createElement("span", {
     className: "field-icon",
@@ -3308,7 +3455,7 @@ function AddSpotForm({
   }, weather.airTemp, " \xB0C") : /*#__PURE__*/React.createElement("span", {
     className: "field-value",
     style: {color: "#bbb"}
-  }, "\u2014 get GPS first")), /*#__PURE__*/React.createElement("div", {
+  }, "\u2014 get GPS first")), /*#__PURE__*/React.createElement(ConditionsRow, { weather }), /*#__PURE__*/React.createElement("div", {
     className: "field-row top"
   }, /*#__PURE__*/React.createElement("span", {
     className: "field-icon",
@@ -3581,7 +3728,7 @@ function CatchForm({
   }, weather.airTemp, " \xB0C") : /*#__PURE__*/React.createElement("input", {
     className: "field-input",
     placeholder: "e.g. 12 \xB0C"
-  })), /*#__PURE__*/React.createElement("div", {
+  })), /*#__PURE__*/React.createElement(ConditionsRow, { weather }), /*#__PURE__*/React.createElement("div", {
     className: "field-row"
   }, /*#__PURE__*/React.createElement("span", {
     className: "field-icon"
@@ -3770,6 +3917,7 @@ function ObsForm({
         weather?.airTemp != null
           ? /*#__PURE__*/React.createElement("span", { className: "field-value" }, weather.airTemp, " \xb0C")
           : /*#__PURE__*/React.createElement("span", { className: "field-value", style:{color:"#ccc"} }, "\u2014 get GPS fix")),
+      /*#__PURE__*/React.createElement(ConditionsRow, { weather }),
       /*#__PURE__*/React.createElement("div", { className: "field-row top" },
         /*#__PURE__*/React.createElement("span", { className: "field-icon", style: { marginTop: 2 } }, "\uD83C\uDF0A"),
         /*#__PURE__*/React.createElement("span", { className: "field-label", style: { marginTop: 2 } }, "Tide"),
@@ -5572,7 +5720,7 @@ function CatchDetail({
     className: "modal-stat-label"
   }, "Air Temp"), /*#__PURE__*/React.createElement("div", {
     className: "modal-stat-value"
-  }, c.weather.airTemp, "\xB0C")), (c.waterTemp ?? spot?.waterTemp) != null && /*#__PURE__*/React.createElement("div", {
+  }, c.weather.airTemp, "\xB0C")), /*#__PURE__*/React.createElement(ConditionsRow, { weather: c.weather, variant: "stat" }), (c.waterTemp ?? spot?.waterTemp) != null && /*#__PURE__*/React.createElement("div", {
     className: "modal-stat"
   }, /*#__PURE__*/React.createElement("div", {
     className: "modal-stat-label"
@@ -5777,6 +5925,7 @@ function ObsDetail({
         o.weather?.airTemp != null && /*#__PURE__*/React.createElement("div", { className: "modal-stat" },
           /*#__PURE__*/React.createElement("div", { className: "modal-stat-label" }, "Air Temp"),
           /*#__PURE__*/React.createElement("div", { className: "modal-stat-value" }, o.weather.airTemp, "\xb0C")),
+        /*#__PURE__*/React.createElement(ConditionsRow, { weather: o.weather, variant: "stat" }),
         spot?.waterTemp != null && /*#__PURE__*/React.createElement("div", { className: "modal-stat" },
           /*#__PURE__*/React.createElement("div", { className: "modal-stat-label" }, "Water Temp"),
           /*#__PURE__*/React.createElement("div", { className: "modal-stat-value" }, spot.waterTemp, "\xb0C")),
