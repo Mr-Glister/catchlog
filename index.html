@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.48-exp</title>
+  <title>The Catch Log v2.49-exp</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -56,6 +56,15 @@
     // Durable offline writes: queued pushes survive the app being killed and
     // sync automatically when connectivity returns
     try { fbDb.enablePersistence({ synchronizeTabs: true }).catch(function() {}); } catch (e) {}
+
+    // Redirect sign-in failed silently before this: the .catch on the button only
+    // covers STARTING the redirect, and nothing inspected the return leg. A
+    // failure just landed you back in the app, signed out, with no message.
+    fbAuth.getRedirectResult().catch(function(e) {
+      console.error('Redirect sign-in failed:', e);
+      var msg = e && e.message ? e.message : String(e);
+      try { alert('Sign-in failed: ' + msg); } catch (_) {}
+    });
 
     function cloudDoc(uid) {
       return fbDb.doc('users/' + uid + '/catchlog/data');
@@ -153,11 +162,19 @@
     }
     function cloudSignIn() {
       var provider = new firebase.auth.GoogleAuthProvider();
-      // Installed (home-screen) PWAs can't receive popup results on iOS —
-      // use the redirect flow there; onAuthStateChanged picks up the result
+      // Only iOS home-screen apps genuinely can't receive popup results. The old
+      // check was `display-mode: standalone`, which also matched ANDROID PWAs and
+      // sent them down signInWithRedirect — and that flow is broken by Chrome's
+      // third-party storage partitioning whenever authDomain is the default
+      // *.firebaseapp.com, because the credential can't be handed back to our
+      // origin. It returned with no session and no error. Popup works there.
+      var iOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+        (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
       var standalone = navigator.standalone === true ||
         (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
-      return standalone ? fbAuth.signInWithRedirect(provider) : fbAuth.signInWithPopup(provider);
+      return (iOS && standalone)
+        ? fbAuth.signInWithRedirect(provider)
+        : fbAuth.signInWithPopup(provider);
     }
     function cloudSignOut() {
       return fbAuth.signOut();
@@ -2305,7 +2322,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.48-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.49-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -6220,13 +6237,32 @@ function ExportTab({ trips, spots, catches, observations, onRestore, cloudUser, 
           setInterval(check, 30 * 60 * 1000);
         }).catch(function() {});
         // The new service worker calls skipWaiting()+clients.claim(), so once
-        // an update activates the controller changes — reload once to run it.
-        var reloaded = false;
-        navigator.serviceWorker.addEventListener('controllerchange', function() {
-          if (reloaded) return;
+        // an update activates the controller changes — reload to run it.
+        // But NOT out from under the user: this used to reload the instant the
+        // new worker took over, which killed the Google sign-in popup and threw
+        // you back to the default tab. It would equally have discarded a
+        // half-filled catch form. So reload only while the app is idle: at once
+        // if nothing has been touched yet, otherwise when it's backgrounded or
+        // after a minute of no input.
+        var reloaded = false, updateReady = false, lastInput = 0;
+        var IDLE_MS = 60000;
+        ['pointerdown', 'keydown'].forEach(function(ev) {
+          document.addEventListener(ev, function() { lastInput = Date.now(); }, true);
+        });
+        var maybeReload = function() {
+          if (reloaded || !updateReady) return;
+          if (!document.hidden && lastInput && Date.now() - lastInput < IDLE_MS) return;
           reloaded = true;
           window.location.reload();
+        };
+        navigator.serviceWorker.addEventListener('controllerchange', function() {
+          updateReady = true;
+          maybeReload();
         });
+        document.addEventListener('visibilitychange', function() {
+          if (document.hidden) maybeReload();
+        });
+        setInterval(maybeReload, 5000);
       });
     }
   </script>
