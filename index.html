@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.47-exp</title>
+  <title>The Catch Log v2.48-exp</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -715,38 +715,57 @@ function skyLabel(cloud) {
 // the sky wording from that number keeps label and number consistent instead of
 // reading "Overcast · 84% cloud". Precipitation, fog and thunder still come from
 // the code, which cloud cover alone cannot tell you about.
-function wxLabel(code, cloud) {
-  if (code != null && code >= 45) return WMO_LABELS[code] || null;
+// Below this the model is claiming precipitation nobody can feel. Its drizzle
+// codes fire on a 0.1 mm/h trace where met.no reports the same hour as 0.0 mm
+// and draws a partly-sunny icon — reporting that as "Light drizzle" is wrong on
+// a day with no rain in it. Fog and thunder are never gated: neither is measured
+// in millimetres.
+const PRECIP_MIN_MM = 0.2;
+function isWetCode(code, precip) {
+  if (code == null || code < 45) return false;
+  if (code === 45 || code === 48 || code >= 95) return true;
+  return precip != null && precip >= PRECIP_MIN_MM;
+}
+function wxLabel(code, cloud, precip) {
+  if (isWetCode(code, precip)) return WMO_LABELS[code] || null;
   const sky = skyLabel(cloud);
   if (sky) return sky;
   if (code == null) return null;
+  // No cloud figure to fall back on: a sub-threshold precipitation code is all
+  // we know, so report it rather than showing nothing.
   return WMO_LABELS[code] || null;
 }
 // Coarse buckets for Insights — 28 individual codes would scatter catches too
 // thinly across a chart to show anything.
-function wxGroup(code, cloud) {
-  // Precipitation, fog and thunder are code-only facts. Only classify codes we
-  // actually know — without this an unrecognised code (a WMO table addition, or
-  // corrupt data) falls through the >= 95 test and gets reported as thunder.
-  if (code != null && code >= 45) {
-    if (!(code in WMO_LABELS)) return null;
-    if (code === 45 || code === 48) return "Fog";
-    if (code >= 95) return "Thunder";
-    if ((code >= 71 && code <= 77) || code === 85 || code === 86) return "Snow";
-    return "Rain";
-  }
+// Only classify codes we actually know — without this an unrecognised code (a
+// WMO table addition, or corrupt data) falls through the >= 95 test and gets
+// reported as thunder.
+function wetGroup(code) {
+  if (!(code in WMO_LABELS)) return null;
+  if (code === 45 || code === 48) return "Fog";
+  if (code >= 95) return "Thunder";
+  if ((code >= 71 && code <= 77) || code === 85 || code === 86) return "Snow";
+  return "Rain";
+}
+function wxGroup(code, cloud, precip) {
+  // Precipitation, fog and thunder are code-only facts.
+  if (isWetCode(code, precip)) return wetGroup(code);
   // Sky: bucket from the same cloud figure the label uses, so a chart can never
   // disagree with the text on the record it came from.
   const sky = skyLabel(cloud);
   if (sky) return sky === "Clear" || sky === "Fair" ? "Clear" : "Cloudy";
   if (code == null || !(code in WMO_LABELS)) return null;
+  // No cloud figure to fall back on — mirror wxLabel, which reports even a
+  // sub-threshold precipitation code here rather than showing nothing, so the
+  // icon can't contradict the words.
+  if (code >= 45) return wetGroup(code);
   return code <= 1 ? "Clear" : "Cloudy";
 }
 // The light end of each precipitation range. One icon for the whole Rain group
 // made 0.1 mm of drizzle look like a downpour.
 const WMO_LIGHT = [51, 56, 61, 66, 80, 71, 77, 85];
-function wxIcon(code, cloud) {
-  const g = wxGroup(code, cloud);
+function wxIcon(code, cloud, precip) {
+  const g = wxGroup(code, cloud, precip);
   if (!g) return "";
   const light = WMO_LIGHT.indexOf(code) >= 0;
   if (g === "Fog")     return "🌫️";
@@ -1047,26 +1066,31 @@ function useEnv() {
           const codes   = omData.hourly?.weather_code || [];
           const clouds  = omData.hourly?.cloud_cover || [];
           const precips = omData.hourly?.precipitation || [];
-          // Code and precipitation describe the whole hour the record falls in.
-          // Precipitation especially is an hourly ACCUMULATION, not a reading at
-          // an instant, so interpolating it would be meaningless.
-          if (codes[wxIdx] != null)   weatherCode = codes[wxIdx];
-          if (precips[wxIdx] != null) precipMm    = Math.round(precips[wxIdx] * 10) / 10;
-          // Cloud cover IS an instantaneous value, so interpolate it to the
-          // record's actual minute. Taking the hour's opening value left it up to
-          // 59 minutes stale, which on a fast-changing sky reads as plainly
-          // wrong: at 15:50 local in Bergen it reported the 99% from the top of
-          // the hour while the sky was already down to 84% and yr.no said so.
+          // Open-Meteo's stated valid times differ per variable and getting them
+          // wrong is not subtle: cloud_cover and weather_code are INSTANT values
+          // at the stamped hour, while precipitation is the sum of the PRECEDING
+          // hour. So the precipitation stamped 14:00 covers 13:00-14:00 — for a
+          // record at 14:35 that is the hour before you were fishing, which is
+          // how a trace of drizzle that fell earlier got reported as current.
           const hi = wxIdx + 1 < times.length ? wxIdx + 1 : wxIdx;
           const loMs = new Date(times[wxIdx] + 'Z').getTime();
           const hiMs = new Date(times[hi] + 'Z').getTime();
           const span = hiMs - loMs;
           const frac = span > 0 ? Math.max(0, Math.min(1, (atMs - loMs) / span)) : 0;
+          // Instant values: interpolate cloud to the record's minute, and take
+          // the code from whichever hour boundary is nearer. Flooring left both
+          // up to 59 minutes stale — in Bergen that reported 99% cloud from the
+          // top of the hour while the sky was already at 84% and yr.no said so.
           if (clouds[wxIdx] != null) {
             const a = clouds[wxIdx];
             const b = clouds[hi] != null ? clouds[hi] : a;
             cloudCover = Math.round(a + (b - a) * frac);
           }
+          const nearer = frac < 0.5 ? wxIdx : hi;
+          if (codes[nearer] != null) weatherCode = codes[nearer];
+          // Preceding-hour sum: the accumulation for the hour CONTAINING the
+          // record is the one stamped at the next boundary.
+          if (precips[hi] != null) precipMm = Math.round(precips[hi] * 10) / 10;
         }
       } catch (fe) {
         console.warn('Open-Meteo pressure history unavailable, sparkline hidden:', fe.message);
@@ -1255,7 +1279,7 @@ const spotsCSV = (spots, trips) => {
   const h = row(["spot_id", "trip_id", "trip_name", "name", "timestamp", "gps_lat", "gps_lon", "line_type", "water_temp", "has_spot_photo", "air_temp_c", "conditions", "cloud_pct", "precip_mm", "pressure_hpa", "pressure_level", "pressure_trend", "wind_ms", "wind_dir_deg", "moon_phase", "tide_seasonal_pct", "tide_direction", "tide_cm", "notes"]);
   return [h, ...spots.map(s => {
     const t = trips.find(x => x.id === s.tripId);
-    return row([s.id, s.tripId, t?.name || "", s.name || "", s.timestamp, s.gps?.lat ?? "", s.gps?.lon ?? "", s.lineType || "", s.waterTemp || "", s.photo ? "1" : "0", s.weather?.airTemp ?? "", wxLabel(s.weather?.weatherCode, s.weather?.cloudCover) || "", s.weather?.cloudCover ?? "", s.weather?.precipMm ?? "", s.weather?.pressure ?? "", s.weather?.pressureLevel || "", s.weather?.pressureTrend || "", s.weather?.windSpeed ?? "", s.weather?.windDir ?? "", moonCSV(s.weather?.moon), s.tide?.seasonal != null ? tidePct(s.tide.seasonal) : "", s.tide?.direction || "", s.tide?.valueCM ?? "", s.notes || ""]);
+    return row([s.id, s.tripId, t?.name || "", s.name || "", s.timestamp, s.gps?.lat ?? "", s.gps?.lon ?? "", s.lineType || "", s.waterTemp || "", s.photo ? "1" : "0", s.weather?.airTemp ?? "", wxLabel(s.weather?.weatherCode, s.weather?.cloudCover, s.weather?.precipMm) || "", s.weather?.cloudCover ?? "", s.weather?.precipMm ?? "", s.weather?.pressure ?? "", s.weather?.pressureLevel || "", s.weather?.pressureTrend || "", s.weather?.windSpeed ?? "", s.weather?.windDir ?? "", moonCSV(s.weather?.moon), s.tide?.seasonal != null ? tidePct(s.tide.seasonal) : "", s.tide?.direction || "", s.tide?.valueCM ?? "", s.notes || ""]);
   })].join("\n");
 };
 const catchesCSV = (catches, spots, trips) => {
@@ -1263,7 +1287,7 @@ const catchesCSV = (catches, spots, trips) => {
   return [h, ...[...catches].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp)).map(c => {
     const t = trips.find(x => x.id === c.tripId),
       s = spots.find(x => x.id === c.spotId);
-    return row([c.id, c.tripId || "", t?.name || "", c.spotId || "", s?.name || "", c.timestamp, c.species, c.flyPattern || "", c.trollDepth || "", c.size || "", c.gps?.lat ?? "", c.gps?.lon ?? "", c.waterTemp ?? "", c.weather?.airTemp ?? "", wxLabel(c.weather?.weatherCode, c.weather?.cloudCover) || "", c.weather?.cloudCover ?? "", c.weather?.precipMm ?? "", c.weather?.pressure ?? "", c.weather?.pressureLevel || "", c.weather?.pressureTrend || "", c.weather?.windSpeed ?? "", c.weather?.windDir ?? "", moonCSV(c.weather?.moon), c.tide?.seasonal != null ? tidePct(c.tide.seasonal) : "", c.tide?.direction || "", c.tide?.valueCM ?? "", c.tide?.mlwsCM ?? "", c.tide?.mhwsCM ?? "", c.fishPhoto ? "1" : "0", c.flyPhoto ? "1" : "0", c.notes || ""]);
+    return row([c.id, c.tripId || "", t?.name || "", c.spotId || "", s?.name || "", c.timestamp, c.species, c.flyPattern || "", c.trollDepth || "", c.size || "", c.gps?.lat ?? "", c.gps?.lon ?? "", c.waterTemp ?? "", c.weather?.airTemp ?? "", wxLabel(c.weather?.weatherCode, c.weather?.cloudCover, c.weather?.precipMm) || "", c.weather?.cloudCover ?? "", c.weather?.precipMm ?? "", c.weather?.pressure ?? "", c.weather?.pressureLevel || "", c.weather?.pressureTrend || "", c.weather?.windSpeed ?? "", c.weather?.windDir ?? "", moonCSV(c.weather?.moon), c.tide?.seasonal != null ? tidePct(c.tide.seasonal) : "", c.tide?.direction || "", c.tide?.valueCM ?? "", c.tide?.mlwsCM ?? "", c.tide?.mhwsCM ?? "", c.fishPhoto ? "1" : "0", c.flyPhoto ? "1" : "0", c.notes || ""]);
   })].join("\n");
 };
 const obsCSV = (observations, spots, trips) => {
@@ -1271,7 +1295,7 @@ const obsCSV = (observations, spots, trips) => {
   return [h, ...[...observations].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp)).map(o => {
     const t = trips.find(x => x.id === o.tripId),
       s = spots.find(x => x.id === o.spotId);
-    return row([o.id, o.tripId || "", t?.name || "", o.spotId || "", s?.name || "", o.timestamp, o.species, o.count || "", o.estimatedSize || "", o.gps?.lat ?? "", o.gps?.lon ?? "", o.weather?.airTemp ?? "", wxLabel(o.weather?.weatherCode, o.weather?.cloudCover) || "", o.weather?.cloudCover ?? "", o.weather?.precipMm ?? "", o.weather?.pressure ?? "", o.weather?.pressureLevel || "", o.weather?.pressureTrend || "", o.weather?.windSpeed ?? "", o.weather?.windDir ?? "", moonCSV(o.weather?.moon), o.tide?.seasonal != null ? tidePct(o.tide.seasonal) : "", o.tide?.direction || "", o.tide?.valueCM ?? "", o.notes || ""]);
+    return row([o.id, o.tripId || "", t?.name || "", o.spotId || "", s?.name || "", o.timestamp, o.species, o.count || "", o.estimatedSize || "", o.gps?.lat ?? "", o.gps?.lon ?? "", o.weather?.airTemp ?? "", wxLabel(o.weather?.weatherCode, o.weather?.cloudCover, o.weather?.precipMm) || "", o.weather?.cloudCover ?? "", o.weather?.precipMm ?? "", o.weather?.pressure ?? "", o.weather?.pressureLevel || "", o.weather?.pressureTrend || "", o.weather?.windSpeed ?? "", o.weather?.windDir ?? "", moonCSV(o.weather?.moon), o.tide?.seasonal != null ? tidePct(o.tide.seasonal) : "", o.tide?.direction || "", o.tide?.valueCM ?? "", o.notes || ""]);
   })].join("\n");
 };
 function dlCSV(content, filename) {
@@ -2281,7 +2305,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.47-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.48-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -2492,14 +2516,16 @@ function TempSelect({
 function ConditionsRow({ weather, variant }) {
   const code = weather?.weatherCode;
   const cloud = weather?.cloudCover;
-  const label = wxLabel(code, cloud);
+  const precip = weather?.precipMm;
+  const label = wxLabel(code, cloud, precip);
   // Gate on the label, not the code: an unrecognised code would otherwise
   // render a bare icon with no words next to it
   if (!label) return null;
   const parts = [label];
   if (cloud != null) parts.push(cloud + "% cloud");
-  if (weather.precipMm) parts.push(weather.precipMm + " mm");
-  const text = (wxIcon(code, cloud) + " " + parts.filter(Boolean).join(" \xB7 ")).trim();
+  // Don't quote a millimetre figure we've just decided is too small to call rain
+  if (precip != null && precip >= PRECIP_MIN_MM) parts.push(precip + " mm");
+  const text = (wxIcon(code, cloud, precip) + " " + parts.filter(Boolean).join(" \xB7 ")).trim();
   if (variant === "stat") {
     return /*#__PURE__*/React.createElement("div", { className: "modal-stat" },
       /*#__PURE__*/React.createElement("div", { className: "modal-stat-label" }, "Conditions"),
