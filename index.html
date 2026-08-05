@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.49-exp</title>
+  <title>The Catch Log v2.55-exp</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -730,33 +730,35 @@ function skyLabel(cloud) {
 // The cloud-free codes (0-3) describe the sky at the top of the hour, but the
 // cloud figure we show is interpolated to the record's actual minute — deriving
 // the sky wording from that number keeps label and number consistent instead of
-// reading "Overcast · 84% cloud". Precipitation, fog and thunder still come from
-// the code, which cloud cover alone cannot tell you about.
-// Below this the model is claiming precipitation nobody can feel. Its drizzle
-// codes fire on a 0.1 mm/h trace where met.no reports the same hour as 0.0 mm
-// and draws a partly-sunny icon — reporting that as "Light drizzle" is wrong on
-// a day with no rain in it. Fog and thunder are never gated: neither is measured
-// in millimetres.
-const PRECIP_MIN_MM = 0.2;
-function isWetCode(code, precip) {
-  if (code == null || code < 45) return false;
-  if (code === 45 || code === 48 || code >= 95) return true;
-  return precip != null && precip >= PRECIP_MIN_MM;
+// reading "Overcast · 84% cloud".
+//
+// Codes 45 and up describe precipitation, fog or thunder, which cloud cover alone
+// cannot tell you about, so the code wins there. The membership test is load-
+// bearing: an unrecognised code (a WMO table addition, or corrupt data) must fall
+// through to the sky wording rather than return a null label — that is how such
+// codes once got reported as thunderstorms.
+//
+// A 0.1 mm/h trace is reported as the drizzle it is. There used to be a 0.2 mm
+// gate here on the theory that the model was claiming rain nobody could feel;
+// it hid four consecutive hours of real Bergen drizzle on 2026-08-05, and the
+// millimetre figure rendered beside the label already tells you a trace is a
+// trace.
+function isWetCode(code) {
+  return code != null && (code in WMO_LABELS) && code >= 45;
 }
-function wxLabel(code, cloud, precip) {
-  if (isWetCode(code, precip)) return WMO_LABELS[code] || null;
+function wxLabel(code, cloud) {
+  if (isWetCode(code)) return WMO_LABELS[code];
   const sky = skyLabel(cloud);
   if (sky) return sky;
   if (code == null) return null;
-  // No cloud figure to fall back on: a sub-threshold precipitation code is all
-  // we know, so report it rather than showing nothing.
+  // No cloud figure to fall back on, so the code is all we know — report it, and
+  // nothing at all if we don't recognise it.
   return WMO_LABELS[code] || null;
 }
 // Coarse buckets for Insights — 28 individual codes would scatter catches too
-// thinly across a chart to show anything.
-// Only classify codes we actually know — without this an unrecognised code (a
-// WMO table addition, or corrupt data) falls through the >= 95 test and gets
-// reported as thunder.
+// thinly across a chart to show anything. isWetCode has already established the
+// code is one we know; the guard here is belt-and-braces, because letting an
+// unknown code reach the >= 95 test is what produced phantom thunderstorms.
 function wetGroup(code) {
   if (!(code in WMO_LABELS)) return null;
   if (code === 45 || code === 48) return "Fog";
@@ -764,25 +766,23 @@ function wetGroup(code) {
   if ((code >= 71 && code <= 77) || code === 85 || code === 86) return "Snow";
   return "Rain";
 }
-function wxGroup(code, cloud, precip) {
+function wxGroup(code, cloud) {
   // Precipitation, fog and thunder are code-only facts.
-  if (isWetCode(code, precip)) return wetGroup(code);
+  if (isWetCode(code)) return wetGroup(code);
   // Sky: bucket from the same cloud figure the label uses, so a chart can never
   // disagree with the text on the record it came from.
   const sky = skyLabel(cloud);
   if (sky) return sky === "Clear" || sky === "Fair" ? "Clear" : "Cloudy";
+  // No cloud figure, and isWetCode has already claimed every code >= 45 we
+  // recognise, so all that can reach here is a plain sky code or an unknown one.
   if (code == null || !(code in WMO_LABELS)) return null;
-  // No cloud figure to fall back on — mirror wxLabel, which reports even a
-  // sub-threshold precipitation code here rather than showing nothing, so the
-  // icon can't contradict the words.
-  if (code >= 45) return wetGroup(code);
   return code <= 1 ? "Clear" : "Cloudy";
 }
 // The light end of each precipitation range. One icon for the whole Rain group
 // made 0.1 mm of drizzle look like a downpour.
 const WMO_LIGHT = [51, 56, 61, 66, 80, 71, 77, 85];
-function wxIcon(code, cloud, precip) {
-  const g = wxGroup(code, cloud, precip);
+function wxIcon(code, cloud) {
+  const g = wxGroup(code, cloud);
   if (!g) return "";
   const light = WMO_LIGHT.indexOf(code) >= 0;
   if (g === "Fog")     return "🌫️";
@@ -958,6 +958,139 @@ async function fetchTideData(lat, lon, isoTs) {
   };
 }
 
+// ── Self-healing weather repair ─────────────────────────────────────────────
+// Recovers records that saved with missing weather because of the met.no
+// all-or-nothing bug (fixed above — a met.no failure used to take the
+// independent Open-Meteo fetch down with it), plus any future double-outage.
+// Two weather fields are deliberately NOT in the list below.
+// `pressureHistory`: a live-capture-only sparkline field, already stripped out
+// before a record is ever saved (see the `(({pressureHistory, ...w}) => w)`
+// destructure at every save site), so there is nothing to repair.
+// `moon`: every render site already falls back to `getMoonPhase(new Date())`
+// when it's missing and the Insights chart derives it from the timestamp
+// outright, so patching it would be a write with no visible effect.
+// Everything else met.no or Open-Meteo can supply IS repaired, including
+// `airTemp` — which is display/CSV-only (no Insights chart reads it) but was
+// still left blank on 26 spots by the met.no bug.
+const WX_FIELDS = ["airTemp", "pressure", "cloudCover", "weatherCode", "precipMm", "windSpeed", "windDir"];
+function needsWxRepair(r) {
+  if (!r || !r.gps || r.gps.lat == null || r.gps.lon == null) return false;
+  const ts = r.timestamp || r.startTime;
+  if (!ts || new Date(ts).getTime() > Date.now()) return false; // hindcasts only, never forecasts
+  if (!r.weather) return true;
+  return WX_FIELDS.some(f => r.weather[f] == null);
+}
+async function fetchHistoricalWx(lat, lon, dateStr) {
+  const ac = new AbortController();
+  const tid = setTimeout(() => ac.abort(), 10000);
+  try {
+    const resp = await fetch(
+      `https://historical-forecast-api.open-meteo.com/v1/forecast?latitude=${(+lat).toFixed(4)}&longitude=${(+lon).toFixed(4)}&start_date=${dateStr}&end_date=${dateStr}&hourly=temperature_2m,pressure_msl,weather_code,cloud_cover,precipitation,wind_speed_10m,wind_direction_10m&timezone=GMT`,
+      { signal: ac.signal }
+    );
+    if (!resp.ok) throw new Error("historical-forecast-api HTTP " + resp.status);
+    return await resp.json();
+  } finally {
+    clearTimeout(tid);
+  }
+}
+// Same hour-selection rules as live capture (see fetchEnv above): pressure and
+// wind speed are continuous instants, interpolated to the minute; weather code
+// and wind direction take the nearer hour instead (categorical / circular —
+// direction wraps at 360, so interpolating 350° and 10° would wrongly give
+// 180°); precipitation is the sum of the PRECEDING hour, so it comes from the
+// next boundary, not the one the record's own hour is stamped with.
+function deriveHourlyWx(omData, atMs) {
+  const times = omData.hourly?.time || [];
+  let idx = -1;
+  for (let i = 0; i < times.length; i++) {
+    if (new Date(times[i] + "Z").getTime() <= atMs) idx = i;
+    else break;
+  }
+  if (idx < 0) return null;
+  const temps   = omData.hourly?.temperature_2m || [];
+  const vals    = omData.hourly?.pressure_msl || [];
+  const codes   = omData.hourly?.weather_code || [];
+  const clouds  = omData.hourly?.cloud_cover || [];
+  const precips = omData.hourly?.precipitation || [];
+  const speeds  = omData.hourly?.wind_speed_10m || [];
+  const dirs    = omData.hourly?.wind_direction_10m || [];
+  const hi = idx + 1 < times.length ? idx + 1 : idx;
+  const loMs = new Date(times[idx] + "Z").getTime();
+  const hiMs = new Date(times[hi] + "Z").getTime();
+  const span = hiMs - loMs;
+  const frac = span > 0 ? Math.max(0, Math.min(1, (atMs - loMs) / span)) : 0;
+  const lerp1 = arr => arr[idx] != null
+    ? Math.round((arr[idx] + ((arr[hi] != null ? arr[hi] : arr[idx]) - arr[idx]) * frac) * 10) / 10
+    : null;
+  const nearer = frac < 0.5 ? idx : hi;
+  // Every field returns null when its series is absent (lerp1 and the explicit
+  // != null guards all short-circuit on undefined), and the patch loop in
+  // repairMissingWeather skips nulls — so requesting a variable this endpoint
+  // doesn't serve degrades to "that field stays unrepaired", never to a crash
+  // or a bogus value.
+  return {
+    airTemp:     lerp1(temps),
+    pressure:    lerp1(vals),
+    cloudCover:  clouds[idx] != null ? Math.round(clouds[idx] + ((clouds[hi] != null ? clouds[hi] : clouds[idx]) - clouds[idx]) * frac) : null,
+    weatherCode: codes[nearer] != null ? codes[nearer] : null,
+    precipMm:    precips[hi] != null ? Math.round(precips[hi] * 10) / 10 : null,
+    windSpeed:   lerp1(speeds),
+    windDir:     dirs[nearer] != null ? Math.round(dirs[nearer]) : null
+  };
+}
+// Orchestrates the repair: finds candidates, fetches once per unique exact
+// location+day, patches ONLY the fields actually missing (never overwrites a
+// value already there), and writes through the normal mut* mutators so
+// Firestore sync and the reference-diff `updatedAt` stamping both apply
+// exactly as they would for any other edit. Never inserts or re-adds a
+// record — every mutator call is a `.map` over records already present in
+// the caller's current state, so anything deleted locally (or by another
+// device, once that tombstone has synced) simply isn't in the array to begin
+// with and can never be resurrected by this pass.
+async function repairMissingWeather({ trips, spots, catches, observations, mutTrips, mutSpots, mutCatches, mutObs, showToast }) {
+  if (!navigator.onLine) return;
+  const targets = [
+    ...spots.filter(needsWxRepair).map(r => ({ kind: "spot", r })),
+    ...catches.filter(needsWxRepair).map(r => ({ kind: "catch", r })),
+    ...observations.filter(needsWxRepair).map(r => ({ kind: "obs", r })),
+    ...trips.filter(t => t.mode === "trolling" && needsWxRepair(t)).map(r => ({ kind: "trip", r }))
+  ];
+  if (!targets.length) return;
+
+  // One fetch per unique (exact coordinates, date) — deliberately NOT a coarse
+  // grid: an earlier location-cell analysis snapped a real coastal spot onto a
+  // 0.1°-cell whose centre resolves 659m up a mountain. Each record's own
+  // 4-decimal coordinates (the same precision live capture already sends
+  // met.no) cost a few more requests but can never pick the wrong microclimate.
+  const cache = new Map();
+  const keyOf = (lat, lon, ts) => `${(+lat).toFixed(4)},${(+lon).toFixed(4)}|${new Date(ts).toISOString().slice(0, 10)}`;
+  const mutOf = { spot: mutSpots, catch: mutCatches, obs: mutObs, trip: mutTrips };
+  let repaired = 0, failed = 0;
+  for (const { kind, r } of targets) {
+    const ts = r.timestamp || r.startTime;
+    const k = keyOf(r.gps.lat, r.gps.lon, ts);
+    if (!cache.has(k)) {
+      try {
+        cache.set(k, await fetchHistoricalWx(r.gps.lat, r.gps.lon, new Date(ts).toISOString().slice(0, 10)));
+      } catch (e) {
+        console.warn("weather repair fetch failed for", k, e.message);
+        cache.set(k, null);
+      }
+    }
+    const omData = cache.get(k);
+    const derived = omData ? deriveHourlyWx(omData, Math.min(new Date(ts).getTime(), Date.now())) : null;
+    if (!derived) { failed++; continue; }
+    const patch = {};
+    WX_FIELDS.forEach(f => { if (r.weather?.[f] == null && derived[f] != null) patch[f] = derived[f]; });
+    if (!Object.keys(patch).length) continue;
+    const newWeather = { ...(r.weather || {}), ...patch };
+    mutOf[kind](list => list.map(x => x.id === r.id ? { ...x, weather: newWeather } : x));
+    repaired++;
+  }
+  if (repaired) showToast(`Backfilled weather for ${repaired} record${repaired === 1 ? "" : "s"}${failed ? ` (${failed} unavailable)` : ""}`);
+}
+
 // ── GPS / env hook ────────────────────────────────────────────────────────────
 
 function useEnv() {
@@ -972,8 +1105,17 @@ function useEnv() {
     // weather/pressure-history chain (up to ~30s on flaky proxies) before even starting
     const weatherTask = (async () => {
     setWeatherStatus("loading");
+
+    // --- Current conditions from met.no Locationforecast (Norwegian model, sea-level pressure) ---
+    // Isolated in its own try/catch. Until this fix, met.no's fetch shared an
+    // outer try with the entire Open-Meteo block below it — a met.no HTTP
+    // error or timeout threw straight past Open-Meteo, losing pressure
+    // history and sky/rain conditions to a completely unrelated provider's
+    // outage (and even the moon phase, though that's now computed fresh at
+    // display time regardless — see the Moon Phase chart). Measured impact:
+    // 26 of 112 historic spots (23%) have no weather at all because of this.
+    let airTemp = null, metPressure = null, metWindSpeed = null, metWindDir = null;
     try {
-      // --- Current conditions from met.no Locationforecast (Norwegian model, sea-level pressure) ---
       // 4-decimal coords (met.no ToS; ~11m precision is plenty) and a real
       // timeout so a stalled connection can't pin the panel on "loading"
       const metAc = new AbortController();
@@ -1000,141 +1142,174 @@ function useEnv() {
         else break; // entries are chronological, once gap grows we've passed "now"
       }
       const instant = best?.data?.instant?.details;
-      const pressure = instant?.air_pressure_at_sea_level != null
+      metPressure = instant?.air_pressure_at_sea_level != null
         ? Math.round(instant.air_pressure_at_sea_level * 10) / 10
         : null;
-      const airTemp = instant?.air_temperature != null
+      airTemp = instant?.air_temperature != null
         ? Math.round(instant.air_temperature * 10) / 10
         : null;
-      const windSpeed = instant?.wind_speed != null
+      metWindSpeed = instant?.wind_speed != null
         ? Math.round(instant.wind_speed * 10) / 10
         : null;
-      const windDir = instant?.wind_from_direction != null
+      metWindDir = instant?.wind_from_direction != null
         ? Math.round(instant.wind_from_direction)
         : null;
+    } catch (me) {
+      console.warn('met.no unavailable, falling back to Open-Meteo for pressure/wind:', me.message);
+    }
 
-      // --- 24h pressure history from Open-Meteo ---
-      // Replaces the Frost API, which is a Norwegian station network: its
-      // nearest(POINT(..)) lookup has no distance limit, so abroad it silently
-      // returned a station thousands of km away (Miami and Seattle both
-      // resolved to Iqaluit, Canada) and the sparkline showed Arctic weather
-      // as the local trend. Open-Meteo is a global grid — always genuinely
-      // local — needs no key, and sends Access-Control-Allow-Origin: *, so the
-      // CORS proxies and the embedded Frost client ID both go away.
-      let pressureHistory = null;
-      let pressureDelta3h = null;
-      let weatherCode = null, cloudCover = null, precipMm = null;
+    // --- 24h pressure history from Open-Meteo, plus a same-hour pressure/wind
+    // fallback for whenever met.no above failed ---
+    // Replaces the Frost API, which is a Norwegian station network: its
+    // nearest(POINT(..)) lookup has no distance limit, so abroad it silently
+    // returned a station thousands of km away (Miami and Seattle both
+    // resolved to Iqaluit, Canada) and the sparkline showed Arctic weather
+    // as the local trend. Open-Meteo is a global grid — always genuinely
+    // local — needs no key, and sends Access-Control-Allow-Origin: *, so the
+    // CORS proxies and the embedded Frost client ID both go away.
+    let pressureHistory = null;
+    let pressureDelta3h = null;
+    let weatherCode = null, cloudCover = null, precipMm = null;
+    let omPressureNow = null, omWindSpeedNow = null, omWindDirNow = null;
+    try {
+      const ac = new AbortController();
+      const tid = setTimeout(() => ac.abort(), 10000);
+      let omResp;
       try {
-        const ac = new AbortController();
-        const tid = setTimeout(() => ac.abort(), 10000);
-        let omResp;
-        try {
-          omResp = await fetch(
-            `https://api.open-meteo.com/v1/forecast?latitude=${(+la).toFixed(4)}&longitude=${(+lo).toFixed(4)}&hourly=pressure_msl,weather_code,cloud_cover,precipitation&past_days=1&forecast_days=1&timezone=GMT`,
-            { signal: ac.signal }
-          );
-        } finally {
-          clearTimeout(tid);
-        }
-        if (!omResp.ok) throw new Error('Open-Meteo HTTP ' + omResp.status);
-        const omData = await omResp.json();
-        const times = omData.hourly?.time || [];
-        const vals  = omData.hourly?.pressure_msl || [];
-        // The response runs to the end of today, so the tail is FORECAST, not
-        // history. Drop anything after now — otherwise the trend below would
-        // compare "now" against a future value and read backwards.
-        const nowMs2 = Date.now();
-        const past = [];
-        for (let i = 0; i < times.length; i++) {
-          if (vals[i] == null) continue;
-          // times are GMT without a zone suffix — mark them UTC explicitly
-          if (new Date(times[i] + 'Z').getTime() > nowMs2) break;
-          past.push(Math.round(vals[i] * 10) / 10);
-        }
-        const omPts = past.slice(-24);
-        if (omPts.length >= 2) {
-          // Append current met.no value so sparkline extends to "now"
-          pressureHistory = pressure != null ? [...omPts, pressure] : omPts;
-          // Measure the trend within Open-Meteo alone. Comparing met.no's
-          // current reading against another provider's history injects the
-          // offset between the two models into the trend: measured at 0 hPa in
-          // Norway (Open-Meteo serves met.no's own model there) but up to
-          // -1.3 hPa in the US, which alone is enough to cross the 1.5 hPa/3h
-          // "rapidly" threshold and report a collapsing front on a calm day.
-          pressureDelta3h = omPts[omPts.length - 1] - omPts[Math.max(0, omPts.length - 4)];
-        }
-        // --- Sky/precipitation conditions for the hour the record falls in ---
-        // Keyed on the RECORD's timestamp, not Date.now(): a form left open on a
-        // locked phone would otherwise attribute the catch to the wrong hour.
-        // Open-Meteo carries ~38 past hours, so this is a hindcast of an hour
-        // that has happened, not a forecast of one that hasn't — the conditions
-        // that produced the fish rather than the ones that follow it.
-        const tsMs = new Date(ts).getTime();
-        // Clamp to now: a device clock running ahead would otherwise select a
-        // future hour and store a forecast, defeating the whole point of
-        // reading a hindcast.
-        const atMs = Math.min(isNaN(tsMs) ? Date.now() : tsMs, Date.now());
-        let wxIdx = -1;
-        for (let i = 0; i < times.length; i++) {
-          if (new Date(times[i] + 'Z').getTime() <= atMs) wxIdx = i;
-          else break;
-        }
-        if (wxIdx >= 0) {
-          const codes   = omData.hourly?.weather_code || [];
-          const clouds  = omData.hourly?.cloud_cover || [];
-          const precips = omData.hourly?.precipitation || [];
-          // Open-Meteo's stated valid times differ per variable and getting them
-          // wrong is not subtle: cloud_cover and weather_code are INSTANT values
-          // at the stamped hour, while precipitation is the sum of the PRECEDING
-          // hour. So the precipitation stamped 14:00 covers 13:00-14:00 — for a
-          // record at 14:35 that is the hour before you were fishing, which is
-          // how a trace of drizzle that fell earlier got reported as current.
-          const hi = wxIdx + 1 < times.length ? wxIdx + 1 : wxIdx;
-          const loMs = new Date(times[wxIdx] + 'Z').getTime();
-          const hiMs = new Date(times[hi] + 'Z').getTime();
-          const span = hiMs - loMs;
-          const frac = span > 0 ? Math.max(0, Math.min(1, (atMs - loMs) / span)) : 0;
-          // Instant values: interpolate cloud to the record's minute, and take
-          // the code from whichever hour boundary is nearer. Flooring left both
-          // up to 59 minutes stale — in Bergen that reported 99% cloud from the
-          // top of the hour while the sky was already at 84% and yr.no said so.
-          if (clouds[wxIdx] != null) {
-            const a = clouds[wxIdx];
-            const b = clouds[hi] != null ? clouds[hi] : a;
-            cloudCover = Math.round(a + (b - a) * frac);
-          }
-          const nearer = frac < 0.5 ? wxIdx : hi;
-          if (codes[nearer] != null) weatherCode = codes[nearer];
-          // Preceding-hour sum: the accumulation for the hour CONTAINING the
-          // record is the one stamped at the next boundary.
-          if (precips[hi] != null) precipMm = Math.round(precips[hi] * 10) / 10;
-        }
-      } catch (fe) {
-        console.warn('Open-Meteo pressure history unavailable, sparkline hidden:', fe.message);
+        omResp = await fetch(
+          `https://api.open-meteo.com/v1/forecast?latitude=${(+la).toFixed(4)}&longitude=${(+lo).toFixed(4)}&hourly=pressure_msl,weather_code,cloud_cover,precipitation,wind_speed_10m,wind_direction_10m&past_days=1&forecast_days=1&timezone=GMT`,
+          { signal: ac.signal }
+        );
+      } finally {
+        clearTimeout(tid);
       }
+      if (!omResp.ok) throw new Error('Open-Meteo HTTP ' + omResp.status);
+      const omData = await omResp.json();
+      const times = omData.hourly?.time || [];
+      const vals  = omData.hourly?.pressure_msl || [];
+      // The response runs to the end of today, so the tail is FORECAST, not
+      // history. Drop anything after now — otherwise the trend below would
+      // compare "now" against a future value and read backwards.
+      const nowMs2 = Date.now();
+      const past = [];
+      for (let i = 0; i < times.length; i++) {
+        if (vals[i] == null) continue;
+        // times are GMT without a zone suffix — mark them UTC explicitly
+        if (new Date(times[i] + 'Z').getTime() > nowMs2) break;
+        past.push(Math.round(vals[i] * 10) / 10);
+      }
+      const omPts = past.slice(-24);
+      if (omPts.length >= 2) {
+        // Append current met.no value so sparkline extends to "now"; if
+        // met.no failed, the sparkline's own last point already IS "now"
+        pressureHistory = metPressure != null ? [...omPts, metPressure] : omPts;
+        // Measure the trend within Open-Meteo alone. Comparing met.no's
+        // current reading against another provider's history injects the
+        // offset between the two models into the trend: measured at 0 hPa in
+        // Norway (Open-Meteo serves met.no's own model there) but up to
+        // -1.3 hPa in the US, which alone is enough to cross the 1.5 hPa/3h
+        // "rapidly" threshold and report a collapsing front on a calm day.
+        pressureDelta3h = omPts[omPts.length - 1] - omPts[Math.max(0, omPts.length - 4)];
+      }
+      // --- Sky/precipitation conditions for the hour the record falls in ---
+      // Keyed on the RECORD's timestamp, not Date.now(): a form left open on a
+      // locked phone would otherwise attribute the catch to the wrong hour.
+      // Open-Meteo carries ~38 past hours, so this is a hindcast of an hour
+      // that has happened, not a forecast of one that hasn't — the conditions
+      // that produced the fish rather than the ones that follow it.
+      const tsMs = new Date(ts).getTime();
+      // Clamp to now: a device clock running ahead would otherwise select a
+      // future hour and store a forecast, defeating the whole point of
+      // reading a hindcast.
+      const atMs = Math.min(isNaN(tsMs) ? Date.now() : tsMs, Date.now());
+      let wxIdx = -1;
+      for (let i = 0; i < times.length; i++) {
+        if (new Date(times[i] + 'Z').getTime() <= atMs) wxIdx = i;
+        else break;
+      }
+      if (wxIdx >= 0) {
+        const codes    = omData.hourly?.weather_code || [];
+        const clouds   = omData.hourly?.cloud_cover || [];
+        const precips  = omData.hourly?.precipitation || [];
+        const windSpds = omData.hourly?.wind_speed_10m || [];
+        const windDirs = omData.hourly?.wind_direction_10m || [];
+        // Open-Meteo's stated valid times differ per variable and getting them
+        // wrong is not subtle: cloud_cover and weather_code are INSTANT values
+        // at the stamped hour, while precipitation is the sum of the PRECEDING
+        // hour. So the precipitation stamped 14:00 covers 13:00-14:00 — for a
+        // record at 14:35 that is the hour before you were fishing, which is
+        // how a trace of drizzle that fell earlier got reported as current.
+        const hi = wxIdx + 1 < times.length ? wxIdx + 1 : wxIdx;
+        const loMs = new Date(times[wxIdx] + 'Z').getTime();
+        const hiMs = new Date(times[hi] + 'Z').getTime();
+        const span = hiMs - loMs;
+        const frac = span > 0 ? Math.max(0, Math.min(1, (atMs - loMs) / span)) : 0;
+        // Instant values: interpolate cloud to the record's minute, and take
+        // the code from whichever hour boundary is nearer. Flooring left both
+        // up to 59 minutes stale — in Bergen that reported 99% cloud from the
+        // top of the hour while the sky was already at 84% and yr.no said so.
+        if (clouds[wxIdx] != null) {
+          const a = clouds[wxIdx];
+          const b = clouds[hi] != null ? clouds[hi] : a;
+          cloudCover = Math.round(a + (b - a) * frac);
+        }
+        const nearer = frac < 0.5 ? wxIdx : hi;
+        if (codes[nearer] != null) weatherCode = codes[nearer];
+        // Preceding-hour sum: the accumulation for the hour CONTAINING the
+        // record is the one stamped at the next boundary.
+        if (precips[hi] != null) precipMm = Math.round(precips[hi] * 10) / 10;
+        // Pressure/wind fallback for the CURRENT hour, used only if met.no
+        // above didn't supply its own reading. Pressure and wind speed are
+        // continuous instants, so interpolate them exactly like cloud cover.
+        // Wind DIRECTION takes the nearer hour instead, same as weatherCode:
+        // degrees wrap at 360, so a naive average of e.g. 350 and 10 would
+        // give 180 (due south) instead of 0 (due north).
+        if (vals[wxIdx] != null) {
+          const a = vals[wxIdx], b = vals[hi] != null ? vals[hi] : a;
+          omPressureNow = Math.round((a + (b - a) * frac) * 10) / 10;
+        }
+        if (windSpds[wxIdx] != null) {
+          const a = windSpds[wxIdx], b = windSpds[hi] != null ? windSpds[hi] : a;
+          omWindSpeedNow = Math.round((a + (b - a) * frac) * 10) / 10;
+        }
+        if (windDirs[nearer] != null) omWindDirNow = Math.round(windDirs[nearer]);
+      }
+    } catch (fe) {
+      console.warn('Open-Meteo unavailable:', fe.message);
+    }
 
-      // Trend: compare current vs 3 hours ago (reflects what is happening now,
-      // not a 12h average). Thresholds: rapid ≥1.5 hPa/3h, slow ≥0.5 hPa/3h.
-      let pressureTrend = null;
-      let pressureLabel = null;
-      const diff = pressureDelta3h != null
-        ? pressureDelta3h
-        : (pressure != null && pressureHistory && pressureHistory.length >= 2
-            ? pressure - pressureHistory[Math.max(0, pressureHistory.length - 4)]
-            : null);
-      if (diff != null) {
-        const absDiff = Math.abs(diff);
-        const dir = diff > 0.3 ? "rising" : diff < -0.3 ? "falling" : "steady";
-        const speed = absDiff >= 1.5 ? "rapidly" : absDiff >= 0.5 ? "slowly" : "";
-        pressureTrend = dir;
-        pressureLabel = dir === "steady" ? "Steady" : speed ? `${speed.charAt(0).toUpperCase() + speed.slice(1)} ${dir}` : dir.charAt(0).toUpperCase() + dir.slice(1);
-      }
-      // Pressure absolute label
-      const pressureLevel = pressure == null ? null :
-        pressure >= 1025 ? "Very High" :
-        pressure >= 1015 ? "High" :
-        pressure >= 1005 ? "Normal" :
-        pressure >= 995  ? "Low" : "Very Low";
+    const pressure = metPressure != null ? metPressure : omPressureNow;
+    const windSpeed = metWindSpeed != null ? metWindSpeed : omWindSpeedNow;
+    const windDir = metWindDir != null ? metWindDir : omWindDirNow;
+
+    // Trend: compare current vs 3 hours ago (reflects what is happening now,
+    // not a 12h average). Thresholds: rapid ≥1.5 hPa/3h, slow ≥0.5 hPa/3h.
+    let pressureTrend = null;
+    let pressureLabel = null;
+    const diff = pressureDelta3h != null
+      ? pressureDelta3h
+      : (pressure != null && pressureHistory && pressureHistory.length >= 2
+          ? pressure - pressureHistory[Math.max(0, pressureHistory.length - 4)]
+          : null);
+    if (diff != null) {
+      const absDiff = Math.abs(diff);
+      const dir = diff > 0.3 ? "rising" : diff < -0.3 ? "falling" : "steady";
+      const speed = absDiff >= 1.5 ? "rapidly" : absDiff >= 0.5 ? "slowly" : "";
+      pressureTrend = dir;
+      pressureLabel = dir === "steady" ? "Steady" : speed ? `${speed.charAt(0).toUpperCase() + speed.slice(1)} ${dir}` : dir.charAt(0).toUpperCase() + dir.slice(1);
+    }
+    // Pressure absolute label
+    const pressureLevel = pressure == null ? null :
+      pressure >= 1025 ? "Very High" :
+      pressure >= 1015 ? "High" :
+      pressure >= 1005 ? "Normal" :
+      pressure >= 995  ? "Low" : "Very Low";
+
+    // At least one provider must have produced something — a total outage
+    // still reports "error" rather than writing an all-null weather object
+    const gotAnything = airTemp != null || pressure != null || windSpeed != null || windDir != null ||
+                         weatherCode != null || cloudCover != null || precipMm != null || pressureHistory != null;
+    if (gotAnything) {
       setWeather({
         airTemp,
         pressure,
@@ -1152,8 +1327,7 @@ function useEnv() {
         moon: getMoonPhase(new Date())
       });
       setWeatherStatus("ok");
-    } catch (e) {
-      console.warn('fetchEnv weather error', e);
+    } else {
       setWeatherStatus("error");
     }
     })();
@@ -1296,7 +1470,7 @@ const spotsCSV = (spots, trips) => {
   const h = row(["spot_id", "trip_id", "trip_name", "name", "timestamp", "gps_lat", "gps_lon", "line_type", "water_temp", "has_spot_photo", "air_temp_c", "conditions", "cloud_pct", "precip_mm", "pressure_hpa", "pressure_level", "pressure_trend", "wind_ms", "wind_dir_deg", "moon_phase", "tide_seasonal_pct", "tide_direction", "tide_cm", "notes"]);
   return [h, ...spots.map(s => {
     const t = trips.find(x => x.id === s.tripId);
-    return row([s.id, s.tripId, t?.name || "", s.name || "", s.timestamp, s.gps?.lat ?? "", s.gps?.lon ?? "", s.lineType || "", s.waterTemp || "", s.photo ? "1" : "0", s.weather?.airTemp ?? "", wxLabel(s.weather?.weatherCode, s.weather?.cloudCover, s.weather?.precipMm) || "", s.weather?.cloudCover ?? "", s.weather?.precipMm ?? "", s.weather?.pressure ?? "", s.weather?.pressureLevel || "", s.weather?.pressureTrend || "", s.weather?.windSpeed ?? "", s.weather?.windDir ?? "", moonCSV(s.weather?.moon), s.tide?.seasonal != null ? tidePct(s.tide.seasonal) : "", s.tide?.direction || "", s.tide?.valueCM ?? "", s.notes || ""]);
+    return row([s.id, s.tripId, t?.name || "", s.name || "", s.timestamp, s.gps?.lat ?? "", s.gps?.lon ?? "", s.lineType || "", s.waterTemp || "", s.photo ? "1" : "0", s.weather?.airTemp ?? "", wxLabel(s.weather?.weatherCode, s.weather?.cloudCover) || "", s.weather?.cloudCover ?? "", s.weather?.precipMm ?? "", s.weather?.pressure ?? "", s.weather?.pressureLevel || "", s.weather?.pressureTrend || "", s.weather?.windSpeed ?? "", s.weather?.windDir ?? "", moonCSV(s.weather?.moon), s.tide?.seasonal != null ? tidePct(s.tide.seasonal) : "", s.tide?.direction || "", s.tide?.valueCM ?? "", s.notes || ""]);
   })].join("\n");
 };
 const catchesCSV = (catches, spots, trips) => {
@@ -1304,7 +1478,7 @@ const catchesCSV = (catches, spots, trips) => {
   return [h, ...[...catches].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp)).map(c => {
     const t = trips.find(x => x.id === c.tripId),
       s = spots.find(x => x.id === c.spotId);
-    return row([c.id, c.tripId || "", t?.name || "", c.spotId || "", s?.name || "", c.timestamp, c.species, c.flyPattern || "", c.trollDepth || "", c.size || "", c.gps?.lat ?? "", c.gps?.lon ?? "", c.waterTemp ?? "", c.weather?.airTemp ?? "", wxLabel(c.weather?.weatherCode, c.weather?.cloudCover, c.weather?.precipMm) || "", c.weather?.cloudCover ?? "", c.weather?.precipMm ?? "", c.weather?.pressure ?? "", c.weather?.pressureLevel || "", c.weather?.pressureTrend || "", c.weather?.windSpeed ?? "", c.weather?.windDir ?? "", moonCSV(c.weather?.moon), c.tide?.seasonal != null ? tidePct(c.tide.seasonal) : "", c.tide?.direction || "", c.tide?.valueCM ?? "", c.tide?.mlwsCM ?? "", c.tide?.mhwsCM ?? "", c.fishPhoto ? "1" : "0", c.flyPhoto ? "1" : "0", c.notes || ""]);
+    return row([c.id, c.tripId || "", t?.name || "", c.spotId || "", s?.name || "", c.timestamp, c.species, c.flyPattern || "", c.trollDepth || "", c.size || "", c.gps?.lat ?? "", c.gps?.lon ?? "", c.waterTemp ?? "", c.weather?.airTemp ?? "", wxLabel(c.weather?.weatherCode, c.weather?.cloudCover) || "", c.weather?.cloudCover ?? "", c.weather?.precipMm ?? "", c.weather?.pressure ?? "", c.weather?.pressureLevel || "", c.weather?.pressureTrend || "", c.weather?.windSpeed ?? "", c.weather?.windDir ?? "", moonCSV(c.weather?.moon), c.tide?.seasonal != null ? tidePct(c.tide.seasonal) : "", c.tide?.direction || "", c.tide?.valueCM ?? "", c.tide?.mlwsCM ?? "", c.tide?.mhwsCM ?? "", c.fishPhoto ? "1" : "0", c.flyPhoto ? "1" : "0", c.notes || ""]);
   })].join("\n");
 };
 const obsCSV = (observations, spots, trips) => {
@@ -1312,7 +1486,7 @@ const obsCSV = (observations, spots, trips) => {
   return [h, ...[...observations].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp)).map(o => {
     const t = trips.find(x => x.id === o.tripId),
       s = spots.find(x => x.id === o.spotId);
-    return row([o.id, o.tripId || "", t?.name || "", o.spotId || "", s?.name || "", o.timestamp, o.species, o.count || "", o.estimatedSize || "", o.gps?.lat ?? "", o.gps?.lon ?? "", o.weather?.airTemp ?? "", wxLabel(o.weather?.weatherCode, o.weather?.cloudCover, o.weather?.precipMm) || "", o.weather?.cloudCover ?? "", o.weather?.precipMm ?? "", o.weather?.pressure ?? "", o.weather?.pressureLevel || "", o.weather?.pressureTrend || "", o.weather?.windSpeed ?? "", o.weather?.windDir ?? "", moonCSV(o.weather?.moon), o.tide?.seasonal != null ? tidePct(o.tide.seasonal) : "", o.tide?.direction || "", o.tide?.valueCM ?? "", o.notes || ""]);
+    return row([o.id, o.tripId || "", t?.name || "", o.spotId || "", s?.name || "", o.timestamp, o.species, o.count || "", o.estimatedSize || "", o.gps?.lat ?? "", o.gps?.lon ?? "", o.weather?.airTemp ?? "", wxLabel(o.weather?.weatherCode, o.weather?.cloudCover) || "", o.weather?.cloudCover ?? "", o.weather?.precipMm ?? "", o.weather?.pressure ?? "", o.weather?.pressureLevel || "", o.weather?.pressureTrend || "", o.weather?.windSpeed ?? "", o.weather?.windDir ?? "", moonCSV(o.weather?.moon), o.tide?.seasonal != null ? tidePct(o.tide.seasonal) : "", o.tide?.direction || "", o.tide?.valueCM ?? "", o.notes || ""]);
   })].join("\n");
 };
 function dlCSV(content, filename) {
@@ -2093,6 +2267,33 @@ function FishLog() {
     mutTrips(p => p.map(t => nested(t) ? { ...t, track: t.track.flat() } : t));
   }, []);
 
+  // Self-healing weather repair — runs once at boot (if already online) and
+  // again the moment connectivity returns, so a phone that opened the app
+  // offline on the water still gets repaired once it's back on signal. A ref
+  // guard stops a rapid double-fire of the 'online' event from launching two
+  // overlapping passes; it does NOT stop this running again on a later
+  // reconnect, which is the point — every launch/reconnect is a fresh chance
+  // to fill in whatever's still missing.
+  const wxRepairRunning = useRef(false);
+  // Registered once ([] deps below), so `run` must read state through a ref
+  // kept current on every render — closing over trips/spots/etc directly
+  // would freeze the listener on boot-time data and repair the same stale
+  // snapshot on every later reconnect instead of whatever's missing by then.
+  const wxStateRef = useRef();
+  wxStateRef.current = { trips, spots, catches, observations, mutTrips, mutSpots, mutCatches, mutObs, showToast };
+  useEffect(() => {
+    const run = () => {
+      if (wxRepairRunning.current || !navigator.onLine) return;
+      wxRepairRunning.current = true;
+      repairMissingWeather(wxStateRef.current)
+        .catch(e => console.warn("weather repair pass failed", e))
+        .finally(() => { wxRepairRunning.current = false; });
+    };
+    run();
+    window.addEventListener("online", run);
+    return () => window.removeEventListener("online", run);
+  }, []);
+
   // Trolling route recorder — while a trolling session is active, follow the
   // boat with watchPosition, thin points to ≥25m spacing, and hold a screen
   // wake lock (a hidden PWA gets no GPS callbacks, so the screen must stay on
@@ -2322,7 +2523,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.49-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.55-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -2534,15 +2735,16 @@ function ConditionsRow({ weather, variant }) {
   const code = weather?.weatherCode;
   const cloud = weather?.cloudCover;
   const precip = weather?.precipMm;
-  const label = wxLabel(code, cloud, precip);
+  const label = wxLabel(code, cloud);
   // Gate on the label, not the code: an unrecognised code would otherwise
   // render a bare icon with no words next to it
   if (!label) return null;
   const parts = [label];
   if (cloud != null) parts.push(cloud + "% cloud");
-  // Don't quote a millimetre figure we've just decided is too small to call rain
-  if (precip != null && precip >= PRECIP_MIN_MM) parts.push(precip + " mm");
-  const text = (wxIcon(code, cloud, precip) + " " + parts.filter(Boolean).join(" \xB7 ")).trim();
+  // Any measurable amount, down to the 0.1 mm trace — the figure is what stops
+  // "Light drizzle" from reading as a downpour
+  if (precip != null && precip > 0) parts.push(precip + " mm");
+  const text = (wxIcon(code, cloud) + " " + parts.filter(Boolean).join(" \xB7 ")).trim();
   if (variant === "stat") {
     return /*#__PURE__*/React.createElement("div", { className: "modal-stat" },
       /*#__PURE__*/React.createElement("div", { className: "modal-stat-label" }, "Conditions"),
@@ -4280,13 +4482,6 @@ function Analytics({ catches, spots, trips, observations }) {
     var spot = spots.find(function(s) { return s.id === c.spotId; });
     return spot && spot.weather ? spot.weather.pressure : null;
   };
-  var getMoon = function(c) {
-    var m = c.weather ? c.weather.moon : null;
-    if (m) return m;
-    var spot = spots.find(function(s) { return s.id === c.spotId; });
-    return spot && spot.weather ? spot.weather.moon : null;
-  };
-
   // ── Water temp buckets (from all year-filtered data) ──
   var allTemps = fEvents.map(getWT).concat(
     spots.filter(function(s) { return spotInLoc(s) && kpiTrips.some(function(t) { return t.id === s.tripId; }); })
@@ -4372,34 +4567,24 @@ function Analytics({ catches, spots, trips, observations }) {
   };
 
   // ── Moon Phase — hours per catch ──
-  // Use spot-level weather when available (more accurate for long sessions),
-  // fall back to trip-level weather for older data where spots lack weather
+  // getMoonPhase is a pure function of the timestamp — no capture dependency,
+  // no network, never missing. Walking every session's minutes (same 15-min
+  // chunk pattern as Time of Day, below) is strictly more accurate than any
+  // stored per-spot snapshot: it also correctly splits a session that spans a
+  // phase boundary, which a snapshot never could.
   var moonHours = {};
   moonBuckets.forEach(function(b) { moonHours[b] = 0; });
   kpiTrips.filter(function(t) { return t.endTime; }).forEach(function(t) {
-    var tripSpots = spots.filter(function(s) { return s.tripId === t.id; })
-      .sort(function(a, b) { return new Date(a.timestamp) - new Date(b.timestamp); });
-    var tripEnd = new Date(t.endTime).getTime();
-    var spotsHaveWeather = tripSpots.some(function(s) { return s.weather && s.weather.moon; });
-    if (spotsHaveWeather) {
-      // Spot-level: attribute each spot's duration to its moon phase
-      tripSpots.forEach(function(s, idx) {
-        if (!spotInLoc(s)) return;
-        var start = new Date(s.timestamp).getTime();
-        var end = idx < tripSpots.length - 1 ? new Date(tripSpots[idx + 1].timestamp).getTime() : tripEnd;
-        var hours = netHours(t, start, end);
-        var b = moonBucket(s.weather ? s.weather.moon : null);
-        if (b && b in moonHours) moonHours[b] += hours;
-      });
-    } else {
-      // Trip-level fallback: use weather from catches
-      var dur = segHours(t);
-      var w = getTripWeather(t);
-      var b = moonBucket(w ? w.moon : null);
-      if (b && b in moonHours) moonHours[b] += dur;
-    }
+    tripSegs(t).forEach(function(sg) {
+      var step = 900000;
+      for (var ms = sg[0]; ms < sg[1]; ms += step) {
+        var chunk = Math.min(step, sg[1] - ms) / 3600000;
+        var b = moonBucket(getMoonPhase(new Date(ms)));
+        if (b && b in moonHours) moonHours[b] += chunk;
+      }
+    });
   });
-  var cMoonCounts = buildCounts(fEventsEnded, function(c) { return moonBucket(getMoon(c)); }, moonBuckets);
+  var cMoonCounts = buildCounts(fEventsEnded, function(c) { return moonBucket(getMoonPhase(new Date(c.timestamp))); }, moonBuckets);
   var moonRates = moonBuckets.map(function(b, i) {
     return moonHours[b] > 0 ? cMoonCounts[i] / moonHours[b] : 0;
   });
@@ -4478,6 +4663,90 @@ function Analytics({ catches, spots, trips, observations }) {
   var cWindCounts = buildCounts(fEventsEnded, function(c) { return windBucket(getWindDir(c)); }, windBuckets);
   var windRates = windBuckets.map(function(b, i) {
     return windHours[b] > 0 ? cWindCounts[i] / windHours[b] : 0;
+  });
+
+  // ── Sky & Rain — hours per catch ──
+  // Same hybrid approach as pressure and wind. Two charts, not one wxGroup axis:
+  // cloud and rain act on fish through different mechanisms, and a single
+  // categorical would collapse a 0.1 mm trace and a 20 mm downpour into one bar.
+  //
+  // Spot-level attribution is what makes these charts trustworthy without
+  // per-hour weather lookups: spot count scales with session length (>4h sessions
+  // average 3.8 spots), so 42% of all fished hours are charged by a second-or-
+  // later spot, and each spot carries its own fetch rather than a copy.
+  //
+  // Sky buckets ARE skyLabel's output, so a bar can never disagree with the
+  // wording on the record it came from — and there is no second set of
+  // thresholds to keep in sync.
+  var skyBuckets  = ["Clear", "Fair", "Partly cloudy", "Cloudy"];
+  // Standard light/moderate/heavy thresholds, with a drizzle band beneath them:
+  // 0.1 mm/h traces are most of Bergen's precipitation hours and would otherwise
+  // read as Dry. Moderate and Heavy stay defined while empty on purpose — sizing
+  // buckets to the data already collected is self-fulfilling, and StatChart skips
+  // zero-hour buckets, so they cost nothing until they are actually fished.
+  var rainBuckets = ["Dry", "Drizzle", "Light", "Moderate", "Heavy"];
+  var rainBucket = function(mm) {
+    if (mm == null) return null;
+    if (mm <= 0)   return "Dry";
+    if (mm < 0.5)  return "Drizzle";
+    if (mm < 2.5)  return "Light";
+    if (mm < 10)   return "Moderate";
+    return "Heavy";
+  };
+  // NB cloudCover 0 (clear sky) and precipMm 0 (dry) are both valid — every
+  // check must be != null, never truthiness
+  var getCloud = function(c) {
+    var v = c.weather ? c.weather.cloudCover : null;
+    if (v != null) return v;
+    var spot = spots.find(function(s) { return s.id === c.spotId; });
+    var sv = spot && spot.weather ? spot.weather.cloudCover : null;
+    return sv != null ? sv : null;
+  };
+  var getPrecip = function(c) {
+    var v = c.weather ? c.weather.precipMm : null;
+    if (v != null) return v;
+    var spot = spots.find(function(s) { return s.id === c.spotId; });
+    var sv = spot && spot.weather ? spot.weather.precipMm : null;
+    return sv != null ? sv : null;
+  };
+  var skyHours = {}, rainHours = {};
+  skyBuckets.forEach(function(b) { skyHours[b] = 0; });
+  rainBuckets.forEach(function(b) { rainHours[b] = 0; });
+  kpiTrips.filter(function(t) { return t.endTime; }).forEach(function(t) {
+    var tripSpots = spots.filter(function(s) { return s.tripId === t.id; })
+      .sort(function(a, b) { return new Date(a.timestamp) - new Date(b.timestamp); });
+    var tripEnd = new Date(t.endTime).getTime();
+    // One presence test covers both charts: the capture block writes cloudCover
+    // and precipMm together, so a record has conditions or it has neither
+    var spotsHaveWx = tripSpots.some(function(s) { return s.weather && s.weather.cloudCover != null; });
+    if (spotsHaveWx) {
+      tripSpots.forEach(function(s, idx) {
+        if (!spotInLoc(s)) return;
+        var start = new Date(s.timestamp).getTime();
+        var end = idx < tripSpots.length - 1 ? new Date(tripSpots[idx + 1].timestamp).getTime() : tripEnd;
+        var hours = netHours(t, start, end);
+        var w = s.weather || {};
+        var sb = skyLabel(w.cloudCover);
+        if (sb && sb in skyHours) skyHours[sb] += hours;
+        var rb = rainBucket(w.precipMm);
+        if (rb && rb in rainHours) rainHours[rb] += hours;
+      });
+    } else {
+      var dur = segHours(t);
+      var tw = getTripWeather(t);
+      var sb2 = skyLabel(tw ? tw.cloudCover : null);
+      if (sb2 && sb2 in skyHours) skyHours[sb2] += dur;
+      var rb2 = rainBucket(tw ? tw.precipMm : null);
+      if (rb2 && rb2 in rainHours) rainHours[rb2] += dur;
+    }
+  });
+  var cSkyCounts = buildCounts(fEventsEnded, function(c) { return skyLabel(getCloud(c)); }, skyBuckets);
+  var skyRates = skyBuckets.map(function(b, i) {
+    return skyHours[b] > 0 ? cSkyCounts[i] / skyHours[b] : 0;
+  });
+  var cRainCounts = buildCounts(fEventsEnded, function(c) { return rainBucket(getPrecip(c)); }, rainBuckets);
+  var rainRates = rainBuckets.map(function(b, i) {
+    return rainHours[b] > 0 ? cRainCounts[i] / rainHours[b] : 0;
   });
 
   // ── Trolling Speed — hours per catch ──
@@ -4674,7 +4943,8 @@ function Analytics({ catches, spots, trips, observations }) {
     ),
     // ── Fish size ──
     sizeBuckets.length > 0 && React.createElement(SizeHistogram, { title: "Fish Size" + (sizeUnit ? " (" + sizeUnit + ")" : ""), buckets: sizeBuckets, values: sizeCounts }),
-    // ── Charts (ordered: Method, Temp, Tide, Time, Pressure, Moon) ──
+    // ── Charts (ordered: Method, Temp, Tide, Time, Pressure, Wind, Sky, Rain,
+    //    Trolling Speed, Moon) — the three weather-model charts sit together ──
     methodBuckets.length > 0 && React.createElement(StatChart, { title: "Method (" + rateUnit + ")", buckets: methodBuckets, values: methodValues, fmt: fmtRate, hours: methodBuckets.map(function(b) { return methodHours[b] || 0; }) }),
     tempBucketsAll.length > 0 && React.createElement(StatChart, { title: "Water Temp (" + rateUnit + ")", buckets: tempBucketsAll, values: tempRates, fmt: fmtRate, hours: tempBucketsAll.map(function(b) { return tempHours[b] || 0; }) }),
     tideHierarchy.some(function(g) { return g.total > 0; }) && (function() {
@@ -4705,6 +4975,8 @@ function Analytics({ catches, spots, trips, observations }) {
     React.createElement(StatChart, { title: "Time of Day (" + rateUnit + ")", buckets: timeBuckets,  values: timeRates, fmt: fmtRate, hours: timeBuckets.map(function(b) { return timeHours[b] || 0; }) }),
     React.createElement(StatChart, { title: "Air Pressure (" + rateUnit + ")", buckets: pressBuckets, values: pressRates, fmt: fmtRate, hours: pressBuckets.map(function(b) { return pressHours[b] || 0; }) }),
     React.createElement(StatChart, { title: "Wind Direction (" + rateUnit + ")", buckets: windBuckets, values: windRates, fmt: fmtRate, hours: windBuckets.map(function(b) { return windHours[b] || 0; }) }),
+    React.createElement(StatChart, { title: "Sky (" + rateUnit + ")", buckets: skyBuckets, values: skyRates, fmt: fmtRate, hours: skyBuckets.map(function(b) { return skyHours[b] || 0; }) }),
+    React.createElement(StatChart, { title: "Rain (" + rateUnit + ")", buckets: rainBuckets, values: rainRates, fmt: fmtRate, hours: rainBuckets.map(function(b) { return rainHours[b] || 0; }) }),
     React.createElement(StatChart, { title: "Trolling Speed (" + rateUnit + ")", buckets: speedBuckets, values: speedRates, fmt: fmtRate, hours: speedBuckets.map(function(b) { return speedHours[b] || 0; }) }),
     React.createElement(StatChart, { title: "Moon Phase (" + rateUnit + ")",  buckets: moonBuckets,  values: moonRates, fmt: fmtRate, hours: moonBuckets.map(function(b) { return moonHours[b] || 0; }) }),
     // ── Catch map — clustered catches + observations (badge = fish count) ──
