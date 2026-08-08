@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.55-exp</title>
+  <title>The Catch Log v2.56-exp</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -595,16 +595,22 @@ function getMoonPhase(d) {
   return phases[Math.floor(frac * 8 + 0.5) % 8];
 }
 const formatCoords = (lat, lon, acc) => lat == null ? null : `${Math.abs(lat).toFixed(5)}°${lat >= 0 ? "N" : "S"}  ${Math.abs(lon).toFixed(5)}°${lon >= 0 ? "E" : "W"}${acc != null ? `  ±${acc}m` : ""}`;
+// Every clock time in the app is 24-hour. Use `hourCycle: "h23"` rather than
+// `hour12: false` — the latter renders midnight as "24:05" in some engines.
+// The locale stays hard-coded on both helpers so the format never shifts with
+// the phone's language: an explicit locale is what makes these deterministic.
 const fmtDT = iso => new Date(iso).toLocaleString("en-US", {
   month: "short",
   day: "numeric",
   year: "numeric",
   hour: "2-digit",
-  minute: "2-digit"
+  minute: "2-digit",
+  hourCycle: "h23"
 });
 const fmtTime = iso => new Date(iso).toLocaleTimeString("en-GB", {
   hour: "2-digit",
-  minute: "2-digit"
+  minute: "2-digit",
+  hourCycle: "h23"
 });
 const fmtDateLong = d => d.toLocaleDateString("en-GB", {
   day: "numeric",
@@ -2523,7 +2529,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.55-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.56-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -2901,7 +2907,7 @@ function ConditionsModal({ onClose }) {
     var ticks = [0, 6, 12, 18, 24].map(function(h) {
       var frac = 1 - h / 24;
       var t = new Date(nowDate.getTime() - h * 3600000);
-      var label = h === 0 ? "now" : t.getHours() + ":00";
+      var label = h === 0 ? "now" : String(t.getHours()).padStart(2, "0") + ":00";
       return { x: Math.round(LM + frac * CW), label: label };
     });
     var toY = function(v) { return Math.round(H - PB - (v - minV) / range * (H - PT - PB) - 2); };
@@ -5574,6 +5580,17 @@ function TripDetail({
     return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
   };
   const [editEnd, setEditEnd] = useState(toLocalDT(t.endTime));
+  // The end time shows as formatted text and swaps to the native picker on tap,
+  // so the browser's own locale can't put a US date in the middle of the modal.
+  const [editingEnd, setEditingEnd] = useState(false);
+  const endRef = useRef(null);
+  useEffect(() => {
+    if (!editingEnd || !endRef.current) return;
+    // Saves the second tap: showPicker needs transient user activation, which the
+    // tap that set editingEnd still provides. Not in older browsers — there the
+    // focused input is editable anyway, so failing quietly is the right outcome.
+    try { endRef.current.showPicker && endRef.current.showPicker(); } catch (e) {}
+  }, [editingEnd]);
   const derivedMethod = deriveMethod(spots, t);
   const currentEndISO = editEnd ? new Date(editEnd).toISOString() : null;
   const dirty = (editTarget || "") !== (t.targetSpecies || "")
@@ -5622,10 +5639,13 @@ function TripDetail({
     className: "modal-stat"
   }, /*#__PURE__*/React.createElement("div", {
     className: "modal-stat-label"
-  }, "Ended \xB7 tap to edit"), /*#__PURE__*/React.createElement("input", {
+  }, "Ended \xB7 tap to edit"), editingEnd ? /*#__PURE__*/React.createElement("input", {
+    ref: endRef,
     type: "datetime-local",
     value: editEnd,
+    autoFocus: true,
     onChange: e => setEditEnd(e.target.value),
+    onBlur: () => setEditingEnd(false),
     style: {
       fontFamily: "'Source Code Pro',monospace",
       fontSize: 12,
@@ -5635,7 +5655,19 @@ function TripDetail({
       width: "100%",
       outline: "none"
     }
-  }), editEnd && /*#__PURE__*/React.createElement("div", {
+    // A datetime-local input is drawn by the browser in ITS locale, which is why
+    // this field read "07/19/2026, 01:33 PM" while everything around it did not.
+    // It is now only mounted while actually editing; the rest of the time the
+    // value is rendered with fmtDT like every other timestamp in the app.
+  }) : /*#__PURE__*/React.createElement("div", {
+    className: "modal-stat-value",
+    onClick: () => setEditingEnd(true),
+    style: {
+      fontSize: 11,
+      cursor: "pointer",
+      padding: "2px 0"
+    }
+  }, fmtDT(currentEndISO || t.endTime)), editEnd && /*#__PURE__*/React.createElement("div", {
     style: { fontSize: 10, color: "var(--moss)", marginTop: 2 }
   }, "", durStr(t.startTime, currentEndISO, t))) : /*#__PURE__*/React.createElement("div", {
     className: "modal-stat"
