@@ -842,8 +842,7 @@ function saveDatumCache() {
 }
 async function fetchTideData(lat, lon, isoTs) {
   const BASE = "https://vannstand.kartverket.no/tideapi.php";
-  // Try two CORS proxies in sequence
-  const proxies = ["https://corsproxy.io/?", "https://api.allorigins.win/raw?url="];
+  const proxies = ["https://catchlog-tide-proxy.reinhard-fellner.workers.dev/?url="];
   const proxyFetch = async url => {
     for (const proxy of proxies) {
       try {
