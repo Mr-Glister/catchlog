@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.62-exp</title>
+  <title>The Catch Log v2.63-exp</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -1038,10 +1038,9 @@ function saveNOAADatumCache() {
 // without a way to hit it directly from here.
 async function fetchNOAADatums(stationId) {
   if (NOAA_DATUM_CACHE[stationId]) return NOAA_DATUM_CACHE[stationId];
-  // time_zone is apparently validated even for this date-agnostic product —
-  // every station returned HTTP 400 until this was added, matching the
-  // predictions call below which already sends it
-  const r = await fetch(`https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?product=datums&station=${stationId}&units=metric&time_zone=gmt&format=json`);
+  // NOAA retired product=datums from the Data API (datagetter) — a live 400
+  // response now points here instead: the Metadata API's per-station resource
+  const r = await fetch(`https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/${stationId}/datums.json?units=metric`);
   const txt = await r.text();
   if (!r.ok) throw new Error(`HTTP ${r.status}: ${txt.slice(0, 200)}`);
   let d; try { d = JSON.parse(txt); } catch { throw new Error(`bad JSON: ${txt.slice(0, 200)}`); }
@@ -2745,7 +2744,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.62-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.63-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
