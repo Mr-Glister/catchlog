@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.58-exp</title>
+  <title>The Catch Log v2.59-exp</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -996,6 +996,13 @@ function nearestNOAAStation(stations, lat, lon) {
   }
   return best && bestM <= NOAA_MAX_STATION_M ? best : null;
 }
+function nearestNOAAStations(stations, lat, lon, maxM, limit) {
+  return stations
+    .map(s => ({ ...s, distM: geoDistM(lat, lon, s.lat, s.lng) }))
+    .filter(s => s.distM <= maxM)
+    .sort((a, b) => a.distM - b.distM)
+    .slice(0, limit);
+}
 const NOAA_DATUM_CACHE = (() => {
   try { return JSON.parse(localStorage.getItem("cl_tide_datums_noaa") || "{}"); } catch { return {}; }
 })();
@@ -1018,6 +1025,24 @@ async function fetchNOAADatums(stationId) {
   saveNOAADatumCache();
   return result;
 }
+// The nearest prediction station is very often a small "subordinate" station
+// (tide times/heights derived from a nearby reference station by offset) that
+// has no published datums of its own — datums only exist for full reference
+// stations. Walk outward through nearby candidates until one has them.
+async function fetchNOAADatumsNearby(stations, lat, lon, primaryStationId) {
+  if (NOAA_DATUM_CACHE[primaryStationId]) return NOAA_DATUM_CACHE[primaryStationId];
+  for (const c of nearestNOAAStations(stations, lat, lon, 200000, 10)) {
+    try {
+      const d = await fetchNOAADatums(c.id);
+      if (d) {
+        NOAA_DATUM_CACHE[primaryStationId] = d; // alias so this area skips straight to it next time
+        saveNOAADatumCache();
+        return d;
+      }
+    } catch {}
+  }
+  return null;
+}
 function toNOAATime(d) {
   const p = n => String(n).padStart(2, "0");
   return `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
@@ -1030,7 +1055,8 @@ function parseNOAAPredictions(d) {
     .filter(x => !isNaN(x.v) && !isNaN(x.t.getTime())).sort((a, b) => a.t - b.t);
 }
 async function fetchNOAATide(lat, lon, isoTs) {
-  const station = nearestNOAAStation(await loadNOAAStations(), lat, lon);
+  const stations = await loadNOAAStations();
+  const station = nearestNOAAStation(stations, lat, lon);
   if (!station) return null;
   const cd = new Date(isoTs);
   const from = new Date(cd.getTime() - 3600000), to = new Date(cd.getTime() + 3600000);
@@ -1039,7 +1065,7 @@ async function fetchNOAATide(lat, lon, isoTs) {
   const dg = "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter";
   const common = `station=${station.id}&datum=MLLW&units=metric&time_zone=gmt&format=json&product=predictions`;
   const [datums, sixMin, hilo] = await Promise.all([
-    fetchNOAADatums(station.id).catch(() => null),
+    fetchNOAADatumsNearby(stations, lat, lon, station.id).catch(() => null),
     fetch(`${dg}?${common}&interval=6&begin_date=${encodeURIComponent(toNOAATime(from))}&end_date=${encodeURIComponent(toNOAATime(to))}`)
       .then(r => r.ok ? r.json() : null).then(parseNOAAPredictions).catch(() => []),
     // Subordinate stations (most of the coastline) only publish hi/lo predictions,
@@ -2671,7 +2697,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.58-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.59-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
