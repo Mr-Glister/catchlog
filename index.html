@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.56-exp</title>
+  <title>The Catch Log v2.58-exp</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -840,7 +840,7 @@ const DATUM_CACHE = (() => {
 function saveDatumCache() {
   try { localStorage.setItem("cl_tide_datums", JSON.stringify(DATUM_CACHE)); } catch {}
 }
-async function fetchTideData(lat, lon, isoTs) {
+async function fetchKartverketTide(lat, lon, isoTs) {
   const BASE = "https://vannstand.kartverket.no/tideapi.php";
   const proxies = ["https://catchlog-tide-proxy.reinhard-fellner.workers.dev/?url="];
   const proxyFetch = async url => {
@@ -959,8 +959,151 @@ async function fetchTideData(lat, lon, isoTs) {
     mhwsCM,
     mlwsCM,
     nextHigh,
-    nextLow
+    nextLow,
+    source: "kartverket"
   };
+}
+
+// ── NOAA tide fallback (outside Norwegian waters — e.g. testing/fishing in
+// the US) — Kartverket has no stations outside Norway, so it comes back
+// empty rather than erroring; this is the same live-conditions data (current
+// level + typical high/low + next HW/LW) sourced from NOAA CO-OPS instead.
+const NOAA_STATIONS_KEY = "cl_noaa_stations";
+const NOAA_STATIONS_TTL = 30 * 24 * 3600000; // station list barely ever changes
+const NOAA_MAX_STATION_M = 100000; // beyond this a "nearest" station is meaningless (e.g. anywhere outside the US)
+let noaaStationsPromise = null;
+function loadNOAAStations() {
+  if (noaaStationsPromise) return noaaStationsPromise;
+  noaaStationsPromise = (async () => {
+    try {
+      const cached = JSON.parse(localStorage.getItem(NOAA_STATIONS_KEY) || "null");
+      if (cached && Array.isArray(cached.stations) && Date.now() - cached.ts < NOAA_STATIONS_TTL) return cached.stations;
+    } catch {}
+    const r = await fetch("https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations.json?type=tidepredictions&units=metric");
+    if (!r.ok) throw new Error("noaa stations");
+    const d = await r.json();
+    const stations = (d.stations || []).filter(s => s.lat != null && s.lng != null).map(s => ({ id: s.id, lat: s.lat, lng: s.lng }));
+    try { localStorage.setItem(NOAA_STATIONS_KEY, JSON.stringify({ ts: Date.now(), stations })); } catch {}
+    return stations;
+  })();
+  return noaaStationsPromise;
+}
+function nearestNOAAStation(stations, lat, lon) {
+  let best = null, bestM = Infinity;
+  for (const s of stations) {
+    const m = geoDistM(lat, lon, s.lat, s.lng);
+    if (m < bestM) { bestM = m; best = s; }
+  }
+  return best && bestM <= NOAA_MAX_STATION_M ? best : null;
+}
+const NOAA_DATUM_CACHE = (() => {
+  try { return JSON.parse(localStorage.getItem("cl_tide_datums_noaa") || "{}"); } catch { return {}; }
+})();
+function saveNOAADatumCache() {
+  try { localStorage.setItem("cl_tide_datums_noaa", JSON.stringify(NOAA_DATUM_CACHE)); } catch {}
+}
+async function fetchNOAADatums(stationId) {
+  if (NOAA_DATUM_CACHE[stationId]) return NOAA_DATUM_CACHE[stationId];
+  const r = await fetch(`https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?product=datums&station=${stationId}&units=metric&format=json`);
+  if (!r.ok) throw new Error("noaa datums");
+  const d = await r.json();
+  const map = {};
+  (d.datums || []).forEach(x => { map[x.name] = parseFloat(x.value); });
+  if (map.MLLW == null || map.MHHW == null) return null;
+  // Rebase to MLLW=0 to match the predictions series below (datum=MLLW) —
+  // MHHW/MLLW (mean higher-high / lower-low water) stand in for Kartverket's
+  // MHWS/MLWS since NOAA doesn't publish astronomical-extreme datums
+  const result = { mhwsCM: Math.round((map.MHHW - map.MLLW) * 100), mlwsCM: 0 };
+  NOAA_DATUM_CACHE[stationId] = result;
+  saveNOAADatumCache();
+  return result;
+}
+function toNOAATime(d) {
+  const p = n => String(n).padStart(2, "0");
+  return `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
+}
+function parseNOAAPredictions(d) {
+  if (!d || !d.predictions) return [];
+  // time_zone=gmt below means "t" is already UTC — the "Z" is required or
+  // browsers parse the space-separated NOAA format as local time instead
+  return d.predictions.map(p => ({ t: new Date(p.t.replace(" ", "T") + "Z"), v: parseFloat(p.v), type: p.type || null }))
+    .filter(x => !isNaN(x.v) && !isNaN(x.t.getTime())).sort((a, b) => a.t - b.t);
+}
+async function fetchNOAATide(lat, lon, isoTs) {
+  const station = nearestNOAAStation(await loadNOAAStations(), lat, lon);
+  if (!station) return null;
+  const cd = new Date(isoTs);
+  const from = new Date(cd.getTime() - 3600000), to = new Date(cd.getTime() + 3600000);
+  // Wide enough to always bracket the previous+next high/low even at neap tides
+  const hiloFrom = new Date(cd.getTime() - 18 * 3600000), hiloTo = new Date(cd.getTime() + 18 * 3600000);
+  const dg = "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter";
+  const common = `station=${station.id}&datum=MLLW&units=metric&time_zone=gmt&format=json&product=predictions`;
+  const [datums, sixMin, hilo] = await Promise.all([
+    fetchNOAADatums(station.id).catch(() => null),
+    fetch(`${dg}?${common}&interval=6&begin_date=${encodeURIComponent(toNOAATime(from))}&end_date=${encodeURIComponent(toNOAATime(to))}`)
+      .then(r => r.ok ? r.json() : null).then(parseNOAAPredictions).catch(() => []),
+    // Subordinate stations (most of the coastline) only publish hi/lo predictions,
+    // not a 6-minute curve — this also feeds the interpolation fallback below
+    fetch(`${dg}?${common}&interval=hilo&begin_date=${encodeURIComponent(toNOAATime(hiloFrom))}&end_date=${encodeURIComponent(toNOAATime(hiloTo))}`)
+      .then(r => r.ok ? r.json() : null).then(parseNOAAPredictions).catch(() => [])
+  ]);
+  let valueCM = null, direction = null;
+  if (sixMin.length) {
+    const closest = sixMin.reduce((a, b) => Math.abs(a.t - cd) < Math.abs(b.t - cd) ? a : b);
+    valueCM = Math.round(closest.v * 100);
+    if (sixMin.length >= 3) {
+      const third = Math.floor(sixMin.length / 3);
+      const early = sixMin.slice(0, third).reduce((s, x) => s + x.v, 0) / third;
+      const late = sixMin.slice(-third).reduce((s, x) => s + x.v, 0) / third;
+      direction = late > early ? "rising" : "falling";
+    }
+  }
+  let prevEvent = null, nextEvent = null, nextHigh = null, nextLow = null;
+  for (const e of hilo) {
+    if (e.t <= cd) prevEvent = e; else if (!nextEvent) nextEvent = e;
+    if (e.t > cd) {
+      if (e.type === "H" && !nextHigh) nextHigh = e;
+      if (e.type === "L" && !nextLow) nextLow = e;
+    }
+  }
+  if (valueCM == null && prevEvent && nextEvent) {
+    // Cosine interpolation between the flanking hi/lo — the standard
+    // approximation for a tide curve when only the extremes are known
+    const frac = (cd - prevEvent.t) / (nextEvent.t - prevEvent.t);
+    valueCM = Math.round((prevEvent.v + (nextEvent.v - prevEvent.v) * (1 - Math.cos(frac * Math.PI)) / 2) * 100);
+    direction = nextEvent.v > prevEvent.v ? "rising" : "falling";
+  }
+  if (valueCM == null) return null;
+  const seasonal = datums ? normalizeTide(valueCM, datums.mlwsCM, datums.mhwsCM) : null;
+  return {
+    valueCM,
+    seasonal,
+    direction,
+    mhwsCM: datums ? datums.mhwsCM : null,
+    mlwsCM: datums ? datums.mlwsCM : null,
+    nextHigh: nextHigh ? { t: nextHigh.t, v: nextHigh.v * 100 } : null,
+    nextLow: nextLow ? { t: nextLow.t, v: nextLow.v * 100 } : null,
+    source: "noaa"
+  };
+}
+async function fetchTideData(lat, lon, isoTs) {
+  try {
+    const res = await fetchKartverketTide(lat, lon, isoTs);
+    if (res) return res;
+  } catch (e) {
+    console.warn("kartverket tide failed, trying NOAA", e);
+  }
+  try {
+    return await fetchNOAATide(lat, lon, isoTs);
+  } catch (e) {
+    console.warn("noaa tide failed", e);
+    return null;
+  }
+}
+function tideAttribution(source) {
+  return source === "noaa"
+    ? { full: "Tide \xA9 NOAA/NOS CO-OPS", short: "\xA9 NOAA/NOS CO-OPS" }
+    : { full: "Tide \xA9 Kartverket/NMA (CC BY 4.0)", short: "\xA9 Kartverket/NMA \xB7 CC BY 4.0" };
 }
 
 // ── Self-healing weather repair ─────────────────────────────────────────────
@@ -2528,7 +2671,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.56-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.58-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -2955,7 +3098,7 @@ function ConditionsModal({ onClose }) {
     /*#__PURE__*/React.createElement("span", { className: "field-value" }, weather?.moon ?? getMoonPhase(new Date()))),
   // Info notes
   !gps && /*#__PURE__*/React.createElement("div", { className: "info-note" }, "Get GPS fix to auto-load air temp, pressure, wind & tide"),
-  tideStatus === "ok" && /*#__PURE__*/React.createElement("div", { className: "info-note" }, "Tide \xA9 Kartverket/NMA (CC BY 4.0)"))));
+  tideStatus === "ok" && tide && /*#__PURE__*/React.createElement("div", { className: "info-note" }, tideAttribution(tide.source).full))));
 }
 
 function TripsList({
@@ -3375,7 +3518,7 @@ function TripsList({
     className: "info-note"
   }, "Get GPS fix to auto-load air temp, pressure, wind & tide"), tideStatus === "ok" && /*#__PURE__*/React.createElement("div", {
     className: "info-note"
-  }, "Tide \xA9 Kartverket/NMA (CC BY 4.0)")), sorted.length === 0 && !showForm && /*#__PURE__*/React.createElement("div", {
+  }, tide && tideAttribution(tide.source).full)), sorted.length === 0 && !showForm && /*#__PURE__*/React.createElement("div", {
     className: "empty-state"
   }, /*#__PURE__*/React.createElement("div", {
     className: "empty-icon"
@@ -3774,7 +3917,7 @@ function AddSpotForm({
     className: "info-note"
   }, "Get GPS fix to auto-load air temp, pressure, wind & tide"), tideStatus === "ok" && /*#__PURE__*/React.createElement("div", {
     className: "info-note"
-  }, "Tide \xA9 Kartverket/NMA (CC BY 4.0)")), /*#__PURE__*/React.createElement("button", {
+  }, tide && tideAttribution(tide.source).full)), /*#__PURE__*/React.createElement("button", {
     className: "save-btn",
     onClick: handleSave
   }, "Add Spot"));
@@ -4070,7 +4213,7 @@ function CatchForm({
     className: "info-note"
   }, "Get GPS fix to auto-load air temp, pressure, wind & tide"), tideStatus === "ok" && /*#__PURE__*/React.createElement("div", {
     className: "info-note"
-  }, "Tide \xA9 Kartverket/NMA (CC BY 4.0)")), /*#__PURE__*/React.createElement("div", {
+  }, tide && tideAttribution(tide.source).full)), /*#__PURE__*/React.createElement("div", {
     className: "field-group"
   }, /*#__PURE__*/React.createElement("div", {
     className: "field-group-title"
@@ -4207,7 +4350,7 @@ function ObsForm({
         /*#__PURE__*/React.createElement("span", { className: "field-label" }, "Moon"),
         /*#__PURE__*/React.createElement("span", { className: "field-value" }, weather?.moon ?? getMoonPhase(new Date()))),
       !gps && /*#__PURE__*/React.createElement("div", { className: "info-note" }, "Get GPS fix to auto-load air temp, pressure & tide"),
-      tideStatus === "ok" && /*#__PURE__*/React.createElement("div", { className: "info-note" }, "Tide \xa9 Kartverket/NMA (CC BY 4.0)")),
+      tideStatus === "ok" && tide && /*#__PURE__*/React.createElement("div", { className: "info-note" }, tideAttribution(tide.source).full)),
     /*#__PURE__*/React.createElement("div", { className: "field-group" },
       /*#__PURE__*/React.createElement("div", { className: "field-group-title" }, "Notes"),
       /*#__PURE__*/React.createElement("div", { className: "field-row top" },
@@ -6151,7 +6294,7 @@ function CatchDetail({
       color: "#ccc",
       marginTop: 4
     }
-  }, "\xA9 Kartverket/NMA \xB7 CC BY 4.0"))), /*#__PURE__*/React.createElement("div", {
+  }, tideAttribution(c.tide.source).short))), /*#__PURE__*/React.createElement("div", {
     className: "modal-section"
   }, /*#__PURE__*/React.createElement("div", {
     className: "modal-section-title"
@@ -6300,7 +6443,7 @@ function ObsDetail({
           /*#__PURE__*/React.createElement("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 9, color: "#aaa", marginTop: 3 } },
             /*#__PURE__*/React.createElement("span", null, "Typical Low", o.tide.mlwsCM != null ? ` (${o.tide.mlwsCM}cm)` : ""),
             /*#__PURE__*/React.createElement("span", null, "Typical High", o.tide.mhwsCM != null ? ` (${o.tide.mhwsCM}cm)` : ""))),
-        /*#__PURE__*/React.createElement("div", { style: { fontSize: 9, color: "#ccc", marginTop: 4 } }, "\xa9 Kartverket/NMA \xb7 CC BY 4.0"))),
+        /*#__PURE__*/React.createElement("div", { style: { fontSize: 9, color: "#ccc", marginTop: 4 } }, tideAttribution(o.tide.source).short))),
     o.notes && /*#__PURE__*/React.createElement("div", { className: "modal-section" },
       /*#__PURE__*/React.createElement("div", { className: "modal-section-title" }, "Notes"),
       /*#__PURE__*/React.createElement("div", { className: "modal-notes" }, o.notes)),
