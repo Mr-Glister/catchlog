@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.63-exp</title>
+  <title>The Catch Log v2.64-exp</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -1032,10 +1032,6 @@ const NOAA_DATUM_CACHE = (() => {
 function saveNOAADatumCache() {
   try { localStorage.setItem("cl_tide_datums_noaa", JSON.stringify(NOAA_DATUM_CACHE)); } catch {}
 }
-// Throws a descriptive reason on failure (instead of returning null) purely
-// so fetchNOAADatumsNearby's debug trail below can say why a station had no
-// datums — that trail is the only way to diagnose this against the live API
-// without a way to hit it directly from here.
 async function fetchNOAADatums(stationId) {
   if (NOAA_DATUM_CACHE[stationId]) return NOAA_DATUM_CACHE[stationId];
   // NOAA retired product=datums from the Data API (datagetter) — a live 400
@@ -1060,24 +1056,18 @@ async function fetchNOAADatums(stationId) {
 // (tide times/heights derived from a nearby reference station by offset) that
 // has no published datums of its own — datums only exist for full reference
 // stations, so this searches that separate list, not the prediction one.
-async function fetchNOAADatumsNearby(lat, lon, primaryStationId, debug) {
-  if (NOAA_DATUM_CACHE[primaryStationId]) { debug?.push(`datum cache hit (${primaryStationId})`); return NOAA_DATUM_CACHE[primaryStationId]; }
-  let wlStations;
-  try { wlStations = await loadNOAAWaterlevelStations(); }
-  catch (e) { debug?.push(`wl station list failed: ${e.message}`); return null; }
-  debug?.push(`wl stations loaded: ${wlStations.length}`);
-  const candidates = nearestNOAAStations(wlStations, lat, lon, 250000, 8);
-  debug?.push(`wl candidates: ${candidates.map(c => `${c.id}@${Math.round(c.distM / 1000)}km`).join(", ") || "none within 250km"}`);
-  for (const c of candidates) {
+async function fetchNOAADatumsNearby(lat, lon, primaryStationId) {
+  if (NOAA_DATUM_CACHE[primaryStationId]) return NOAA_DATUM_CACHE[primaryStationId];
+  const wlStations = await loadNOAAWaterlevelStations();
+  for (const c of nearestNOAAStations(wlStations, lat, lon, 250000, 8)) {
     try {
       const d = await fetchNOAADatums(c.id);
       if (d) {
-        debug?.push(`${c.id} datums OK`);
         NOAA_DATUM_CACHE[primaryStationId] = d; // alias so this area skips straight to it next time
         saveNOAADatumCache();
         return d;
       }
-    } catch (e) { debug?.push(`${c.id} datums failed: ${e.message}`); }
+    } catch {}
   }
   return null;
 }
@@ -1093,16 +1083,8 @@ function parseNOAAPredictions(d) {
     .filter(x => !isNaN(x.v) && !isNaN(x.t.getTime())).sort((a, b) => a.t - b.t);
 }
 async function fetchNOAATide(lat, lon, isoTs) {
-  // Temporary diagnostic trail (surfaced in the Live Conditions modal) — the
-  // sandbox this was built in can't reach NOAA's API to verify field names
-  // and station coverage against the real service, so this is standing in
-  // for that until confirmed working against a real US location.
-  const debug = [];
-  const stations = await loadNOAAStations().catch(e => { debug.push(`pred stations failed: ${e.message}`); return []; });
-  debug.push(`pred stations: ${stations.length}`);
-  const station = nearestNOAAStation(stations, lat, lon);
-  if (!station) { debug.push("no pred station within 100km"); return { source: "noaa", debug: debug.join(" | ") }; }
-  debug.push(`pred station: ${station.id}@${Math.round(geoDistM(lat, lon, station.lat, station.lng) / 1000)}km`);
+  const station = nearestNOAAStation(await loadNOAAStations(), lat, lon);
+  if (!station) return null;
   const cd = new Date(isoTs);
   const from = new Date(cd.getTime() - 3600000), to = new Date(cd.getTime() + 3600000);
   // Wide enough to always bracket the previous+next high/low even at neap tides
@@ -1110,7 +1092,7 @@ async function fetchNOAATide(lat, lon, isoTs) {
   const dg = "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter";
   const common = `station=${station.id}&datum=MLLW&units=metric&time_zone=gmt&format=json&product=predictions`;
   const [datums, sixMin, hilo] = await Promise.all([
-    fetchNOAADatumsNearby(lat, lon, station.id, debug).catch(e => { debug.push(`datum search threw: ${e.message}`); return null; }),
+    fetchNOAADatumsNearby(lat, lon, station.id).catch(() => null),
     fetch(`${dg}?${common}&interval=6&begin_date=${encodeURIComponent(toNOAATime(from))}&end_date=${encodeURIComponent(toNOAATime(to))}`)
       .then(r => r.ok ? r.json() : null).then(parseNOAAPredictions).catch(() => []),
     // Subordinate stations (most of the coastline) only publish hi/lo predictions,
@@ -1144,8 +1126,7 @@ async function fetchNOAATide(lat, lon, isoTs) {
     valueCM = Math.round((prevEvent.v + (nextEvent.v - prevEvent.v) * (1 - Math.cos(frac * Math.PI)) / 2) * 100);
     direction = nextEvent.v > prevEvent.v ? "rising" : "falling";
   }
-  debug.push(`datums: ${datums ? `mhws=${datums.mhwsCM}cm` : "none"}`);
-  if (valueCM == null) { debug.push("no predictions/hilo value"); return { source: "noaa", debug: debug.join(" | ") }; }
+  if (valueCM == null) return null;
   const seasonal = datums ? normalizeTide(valueCM, datums.mlwsCM, datums.mhwsCM) : null;
   return {
     valueCM,
@@ -1155,8 +1136,7 @@ async function fetchNOAATide(lat, lon, isoTs) {
     mlwsCM: datums ? datums.mlwsCM : null,
     nextHigh: nextHigh ? { t: nextHigh.t, v: nextHigh.v * 100 } : null,
     nextLow: nextLow ? { t: nextLow.t, v: nextLow.v * 100 } : null,
-    source: "noaa",
-    debug: debug.join(" | ")
+    source: "noaa"
   };
 }
 async function fetchTideData(lat, lon, isoTs) {
@@ -2744,7 +2724,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.63-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.64-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -3171,8 +3151,7 @@ function ConditionsModal({ onClose }) {
     /*#__PURE__*/React.createElement("span", { className: "field-value" }, weather?.moon ?? getMoonPhase(new Date()))),
   // Info notes
   !gps && /*#__PURE__*/React.createElement("div", { className: "info-note" }, "Get GPS fix to auto-load air temp, pressure, wind & tide"),
-  tideStatus === "ok" && tide && /*#__PURE__*/React.createElement("div", { className: "info-note" }, tideAttribution(tide.source).full),
-  tideStatus === "ok" && tide?.debug && /*#__PURE__*/React.createElement("div", { style: { fontSize: 9, color: "#c66", padding: "4px 16px", wordBreak: "break-word" } }, "debug: ", tide.debug))));
+  tideStatus === "ok" && tide && /*#__PURE__*/React.createElement("div", { className: "info-note" }, tideAttribution(tide.source).full))));
 }
 
 function TripsList({
