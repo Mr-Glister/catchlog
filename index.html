@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.64-exp</title>
+  <title>The Catch Log v2.66-exp</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -2724,7 +2724,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.64-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.66-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -5794,7 +5794,7 @@ function TripDetail({
   const save = () => {
     if (currentEndISO && new Date(currentEndISO) <= new Date(t.startTime)) {
       alert("End time must be after the session start (" + fmtDT(t.startTime) + ").");
-      return;
+      return false;
     }
     onUpdate({
       ...t,
@@ -5802,10 +5802,17 @@ function TripDetail({
       notes: editNotes,
       endTime: currentEndISO || t.endTime
     });
+    return true;
   };
+  // Closing (× / overlay / navigating to a catch or obs) used to discard an
+  // edit made but never explicitly "Saved" — the datetime picker's own "Set"
+  // button looks like confirmation since the modal's display updates, but
+  // only the Save button actually persisted. Flush on the way out instead.
+  const flushIfDirty = () => dirty ? save() : true;
+  const closeAndFlush = () => { if (flushIfDirty()) onClose(); };
   return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     className: "modal-overlay",
-    onClick: e => e.target === e.currentTarget && onClose()
+    onClick: e => e.target === e.currentTarget && closeAndFlush()
   }, /*#__PURE__*/React.createElement("div", {
     className: "modal"
   }, /*#__PURE__*/React.createElement("div", {
@@ -5814,7 +5821,7 @@ function TripDetail({
     className: "modal-title"
   }, t.name), /*#__PURE__*/React.createElement("button", {
     className: "modal-close",
-    onClick: onClose
+    onClick: closeAndFlush
   }, "\xD7")), /*#__PURE__*/React.createElement("div", {
     className: "modal-section"
   }, /*#__PURE__*/React.createElement("div", {
@@ -5964,7 +5971,7 @@ function TripDetail({
   }, catches.map(c => /*#__PURE__*/React.createElement("div", {
     key: c.id,
     className: "mini-catch",
-    onClick: () => onSelCatch(c)
+    onClick: () => { if (flushIfDirty()) onSelCatch(c); }
   }, c.fishPhoto ? /*#__PURE__*/React.createElement(PhotoImg, {
     src: c.fishPhoto,
     alt: "",
@@ -5985,7 +5992,7 @@ function TripDetail({
   }, "›"))), observations.map(o => /*#__PURE__*/React.createElement("div", {
     key: o.id,
     className: "mini-obs",
-    onClick: () => onSelObs(o)
+    onClick: () => { if (flushIfDirty()) onSelObs(o); }
   }, /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 14
@@ -6079,7 +6086,7 @@ function TripDetail({
     }, sc.map(c => /*#__PURE__*/React.createElement("div", {
       key: c.id,
       className: "mini-catch",
-      onClick: () => onSelCatch(c)
+      onClick: () => { if (flushIfDirty()) onSelCatch(c); }
     }, c.fishPhoto ? /*#__PURE__*/React.createElement(PhotoImg, {
       src: c.fishPhoto,
       alt: "",
@@ -6100,7 +6107,7 @@ function TripDetail({
     }, "\u203A"))), so.map(o => /*#__PURE__*/React.createElement("div", {
       key: o.id,
       className: "mini-obs",
-      onClick: () => onSelObs(o)
+      onClick: () => { if (flushIfDirty()) onSelObs(o); }
     }, /*#__PURE__*/React.createElement("span", {
       style: {
         fontSize: 14
@@ -6171,7 +6178,7 @@ function CatchDetail({
     || editFly.trim() !== (c.flyPattern || "") || editDepth !== (c.trollDepth || "")
     || editNotes.trim() !== (c.notes || "");
   const saveEdits = () => {
-    if (!editSpecies.trim()) { alert("Species can't be empty."); return; }
+    if (!editSpecies.trim()) { alert("Species can't be empty."); return false; }
     onUpdate(c.id, {
       species: editSpecies.trim(),
       size: editSize.trim(),
@@ -6179,10 +6186,14 @@ function CatchDetail({
       notes: editNotes.trim(),
       ...(trolling ? { trollDepth: editDepth } : {})
     });
+    return true;
   };
+  // Same fix as TripDetail: don't let closing (× / overlay) discard an edit
+  // that was never explicitly "Saved".
+  const closeAndFlush = () => { if (!editDirty || saveEdits()) onClose(); };
   return /*#__PURE__*/React.createElement("div", {
     className: "modal-overlay",
-    onClick: e => e.target === e.currentTarget && onClose()
+    onClick: e => e.target === e.currentTarget && closeAndFlush()
   }, /*#__PURE__*/React.createElement("div", {
     className: "modal"
   }, /*#__PURE__*/React.createElement("div", {
@@ -6191,7 +6202,7 @@ function CatchDetail({
     className: "modal-title"
   }, c.species), /*#__PURE__*/React.createElement("button", {
     className: "modal-close",
-    onClick: onClose
+    onClick: closeAndFlush
   }, "\xD7")), /*#__PURE__*/React.createElement("div", {
     className: "photo-grid photo-grid-2",
     style: {margin: "0 0 8px"}
@@ -6750,7 +6761,11 @@ function ExportTab({ trips, spots, catches, observations, onRestore, cloudUser, 
         });
         var maybeReload = function() {
           if (reloaded || !updateReady) return;
-          if (!document.hidden && lastInput && Date.now() - lastInput < IDLE_MS) return;
+          // Idleness matters whether or not the app is currently visible — a tab
+          // backgrounded a second after an edit (screen lock, app switch) must not
+          // reload out from under it. The periodic check below still catches it
+          // once IDLE_MS genuinely passes, even while hidden.
+          if (lastInput && Date.now() - lastInput < IDLE_MS) return;
           reloaded = true;
           window.location.reload();
         };
