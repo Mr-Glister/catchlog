@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.66-exp</title>
+  <title>The Catch Log v2.69-exp</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -35,6 +35,10 @@
   <script>
     const { useState, useRef, useCallback, useEffect, useContext } = React;
   </script>
+
+  <!-- Coordinate -> IANA timezone lookup, so a record's time renders in the
+       zone it actually happened in, not whatever zone the viewer is in now -->
+  <script src="https://unpkg.com/tz-lookup@6.1.25/tz.js" crossorigin="anonymous"></script>
 
   <!-- Firebase cloud sync -->
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js" crossorigin="anonymous"></script>
@@ -599,24 +603,79 @@ const formatCoords = (lat, lon, acc) => lat == null ? null : `${Math.abs(lat).to
 // `hour12: false` — the latter renders midnight as "24:05" in some engines.
 // The locale stays hard-coded on both helpers so the format never shifts with
 // the phone's language: an explicit locale is what makes these deterministic.
-const fmtDT = iso => new Date(iso).toLocaleString("en-US", {
+// tz is optional everywhere below: omit it and these render in the VIEWER's
+// current device timezone, same as always. Pass an IANA zone (from tzFor
+// below) to render in the RECORD's own timezone instead — what you want for
+// any historical timestamp, since the device viewing it may be anywhere.
+const fmtDT = (iso, tz) => new Date(iso).toLocaleString("en-US", {
   month: "short",
   day: "numeric",
   year: "numeric",
   hour: "2-digit",
   minute: "2-digit",
-  hourCycle: "h23"
+  hourCycle: "h23",
+  ...(tz ? { timeZone: tz } : {})
 });
-const fmtTime = iso => new Date(iso).toLocaleTimeString("en-GB", {
+const fmtTime = (iso, tz) => new Date(iso).toLocaleTimeString("en-GB", {
   hour: "2-digit",
   minute: "2-digit",
-  hourCycle: "h23"
+  hourCycle: "h23",
+  ...(tz ? { timeZone: tz } : {})
 });
 const fmtDateLong = d => d.toLocaleDateString("en-GB", {
   day: "numeric",
   month: "long",
   year: "numeric"
 });
+// GPS -> IANA timezone, for rendering a historical record's time in the zone
+// it actually happened in. tzlookup's dataset is static (a timezone doesn't
+// change), so this is resolved synchronously at render time — no fetch, no
+// stored field, no migration needed, unlike weather/tide.
+const TZ_CACHE = new Map(); // "lat,lon" (2dp) -> IANA zone | undefined
+function tzFor(gps) {
+  if (!gps || gps.lat == null || gps.lon == null) return undefined;
+  const key = gps.lat.toFixed(2) + ',' + gps.lon.toFixed(2);
+  if (TZ_CACHE.has(key)) return TZ_CACHE.get(key);
+  let tz;
+  try { tz = tzlookup(gps.lat, gps.lon); } catch (e) { tz = undefined; }
+  TZ_CACHE.set(key, tz);
+  return tz;
+}
+// A trip's own gps (trolling sessions get one at start) or the earliest of
+// its own spots that has one.
+function tripAnchorGPS(trip, tripSpotsArr) {
+  if (trip.gps) return trip.gps;
+  const withGps = (tripSpotsArr || []).filter(s => s.gps);
+  return withGps.length ? withGps[0].gps : null;
+}
+// A catch/obs's own gps, else its spot's — mirrors Analytics' existing
+// weather-area fallback chain (inLoc), same shape, same reasoning.
+function itemAnchorGPS(item, allSpotsOrById) {
+  if (item.gps) return item.gps;
+  const spot = Array.isArray(allSpotsOrById)
+    ? allSpotsOrById.find(s => s.id === item.spotId)
+    : allSpotsOrById[item.spotId];
+  return spot ? spot.gps : null;
+}
+// year/month/hour of a timestamp AS LIVED at the record's own location, for
+// filtering/bucketing historical records by calendar date — plain
+// getFullYear/getMonth/getHours (no tz) would use the VIEWER's current zone,
+// which can misfile a late-night catch into the wrong day/bucket entirely.
+const TZ_FORMATTER_CACHE = new Map(); // IANA zone -> Intl.DateTimeFormat
+function localParts(ms, tz) {
+  const d = new Date(ms);
+  if (!tz) return { year: d.getFullYear(), month: d.getMonth(), hour: d.getHours() };
+  try {
+    let fmt = TZ_FORMATTER_CACHE.get(tz);
+    if (!fmt) {
+      fmt = new Intl.DateTimeFormat("en-US", { timeZone: tz, year: "numeric", month: "numeric", hour: "numeric", hourCycle: "h23" });
+      TZ_FORMATTER_CACHE.set(tz, fmt);
+    }
+    const parts = fmt.formatToParts(d);
+    const get = t => parts.find(p => p.type === t)?.value;
+    return { year: parseInt(get("year"), 10), month: parseInt(get("month"), 10) - 1, hour: parseInt(get("hour"), 10) % 24 };
+  } catch (e) { return { year: d.getFullYear(), month: d.getMonth(), hour: d.getHours() }; }
+}
 // Pauses: trip.pauses = [{start, end}] (end null while the pause is running).
 // Array of plain objects — Firestore rejects nested arrays, not maps.
 const pausedMs = (t, untilISO) => (t && t.pauses || []).reduce((sum, p) => {
@@ -2724,7 +2783,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.66-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.69-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -3613,7 +3672,7 @@ function TripsList({
       }
     }, t.targetSpecies ? t.targetSpecies : "", t.targetSpecies && derivedMethod ? " · " : "", derivedMethod ? derivedMethod : "")), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
       className: "trip-date"
-    }, fmtDT(t.startTime)), t.endTime ? /*#__PURE__*/React.createElement("div", {
+    }, fmtDT(t.startTime, tzFor(tripAnchorGPS(t, ts)))), t.endTime ? /*#__PURE__*/React.createElement("div", {
       className: "trip-duration"
     }, durStr(t.startTime, t.endTime, t)) : /*#__PURE__*/React.createElement("div", {
       className: "trip-duration",
@@ -4485,40 +4544,55 @@ function Analytics({ catches, spots, trips, observations }) {
   var monthFilter = monthState[0], setMonthFilter = monthState[1];
   var areaState = useState(null); // {n,s,w,e} picked on the Insights map, or null
   var area = areaState[0], setArea = areaState[1];
-  var incCatches = dataFilter !== "obs";
-  var incObs = dataFilter !== "catches";
+  var incCatches = dataFilter === "catches" || dataFilter === "both";
+  var incObs = dataFilter === "obs" || dataFilter === "both";
+  var incSpots = dataFilter === "spots";
+
+  // Every item below is bucketed/filtered by CALENDAR date as lived at its
+  // own location (localParts + each item's GPS anchor), not the viewer's
+  // current device timezone — otherwise a trip fished abroad can silently
+  // shift into the wrong year/month bucket depending on where it's reviewed
+  // from. spotById/tripSpotsMap moved up here since the year/month filters
+  // below need them to resolve each item's anchor.
+  var spotById = {};
+  spots.forEach(function(s) { spotById[s.id] = s; });
+  var tripSpotsMap = {};
+  spots.forEach(function(s) { (tripSpotsMap[s.tripId] = tripSpotsMap[s.tripId] || []).push(s); });
 
   // All unique years from completed trips
   var allYears = Array.from(new Set(
     trips.filter(function(t) { return t.endTime; })
-      .map(function(t) { return new Date(t.startTime).getFullYear(); })
+      .map(function(t) { return localParts(new Date(t.startTime).getTime(), tzFor(tripAnchorGPS(t, tripSpotsMap[t.id]))).year; })
   )).sort().reverse();
 
-  // All unique species from the included data (catches and/or observations)
+  // All unique species from the included data (catches and/or observations).
+  // Spots mode has no catches/obs of its own to include, but the species
+  // filter still needs a populated dropdown to narrow kpiTrips by — so it
+  // falls back to the full catch/obs species list, same as "Catches + Obs".
   var allSpecies = Array.from(new Set(
-    (incCatches ? catches.map(function(c) { return c.species; }) : [])
-      .concat(incObs ? (observations || []).map(function(o) { return o.species; }) : [])
+    ((incCatches || incSpots) ? catches.map(function(c) { return c.species; }) : [])
+      .concat((incObs || incSpots) ? (observations || []).map(function(o) { return o.species; }) : [])
       .filter(Boolean)
   )).sort();
 
   // Year + month filtered data
-  var mPass = function(ts) {
+  var mPass = function(ts, tz) {
     if (!monthFilter.length) return true;
-    return monthFilter.indexOf(new Date(ts).getMonth()) >= 0;
+    return monthFilter.indexOf(localParts(new Date(ts).getTime(), tz).month) >= 0;
   };
   var yTrips = trips.filter(function(t) {
-    if (yearFilter !== "all" && new Date(t.startTime).getFullYear() !== parseInt(yearFilter)) return false;
-    return mPass(t.startTime);
+    var tz = tzFor(tripAnchorGPS(t, tripSpotsMap[t.id]));
+    if (yearFilter !== "all" && localParts(new Date(t.startTime).getTime(), tz).year !== parseInt(yearFilter)) return false;
+    return mPass(t.startTime, tz);
   });
   var yCatches = catches.filter(function(c) {
-    if (yearFilter !== "all" && new Date(c.timestamp).getFullYear() !== parseInt(yearFilter)) return false;
-    return mPass(c.timestamp);
+    var tz = tzFor(itemAnchorGPS(c, spotById));
+    if (yearFilter !== "all" && localParts(new Date(c.timestamp).getTime(), tz).year !== parseInt(yearFilter)) return false;
+    return mPass(c.timestamp, tz);
   });
 
   // Area filter: a lat/lon box picked on the Insights map ("Filter this view")
   // narrows everything — catches, observations, hours, KPIs — to that area
-  var spotById = {};
-  spots.forEach(function(s) { spotById[s.id] = s; });
   var gpsInArea = function(g) {
     return !!(area && g && g.lat != null && g.lat <= area.n && g.lat >= area.s && g.lon >= area.w && g.lon <= area.e);
   };
@@ -4544,8 +4618,9 @@ function Analytics({ catches, spots, trips, observations }) {
 
   // Observations filtered the same way (for the map)
   var yObs = (observations || []).filter(function(o) {
-    if (yearFilter !== "all" && new Date(o.timestamp).getFullYear() !== parseInt(yearFilter)) return false;
-    return mPass(o.timestamp);
+    var tz = tzFor(itemAnchorGPS(o, spotById));
+    if (yearFilter !== "all" && localParts(new Date(o.timestamp).getTime(), tz).year !== parseInt(yearFilter)) return false;
+    return mPass(o.timestamp, tz);
   });
   var lObs = yObs.filter(inLoc);
   var fObs = speciesFilter === "all" ? lObs : lObs.filter(function(o) { return o.species === speciesFilter; });
@@ -4555,10 +4630,18 @@ function Analytics({ catches, spots, trips, observations }) {
   var obsWeight = function(o) { var n = parseInt(o.count, 10); return n > 0 ? n : 1; };
   var fEvents = (incCatches ? fc.map(function(c) { return Object.assign({}, c, { _w: 1 }); }) : [])
     .concat(incObs ? fObs.map(function(o) { return Object.assign({}, o, { _w: obsWeight(o) }); }) : []);
+  // Unfiltered-by-mode twin of fEvents, used only so Spots mode's species
+  // narrowing below can still match a trip via an actual catch/obs even
+  // though incCatches/incObs are both false in that mode.
+  var fAllEvents = fc.map(function(c) { return Object.assign({}, c, { _w: 1 }); })
+    .concat(fObs.map(function(o) { return Object.assign({}, o, { _w: obsWeight(o) }); }));
 
   // When a species filter is active, narrow sessions to those targeting that species
   var kpiTrips = speciesFilter === "all" ? lTrips
-    : lTrips.filter(function(t) { return t.targetSpecies === speciesFilter || fEvents.some(function(e) { return e.tripId === t.id; }); });
+    : lTrips.filter(function(t) {
+        if (t.targetSpecies === speciesFilter) return true;
+        return (incSpots ? fAllEvents : fEvents).some(function(e) { return e.tripId === t.id; });
+      });
 
   // Catches/hr math must pair catches with the same trips that supply the
   // hours: only ENDED trips contribute hours, so catches from a live (or
@@ -4626,7 +4709,7 @@ function Analytics({ catches, spots, trips, observations }) {
     if (h >= 17 && h < 20) return "17–20";
     return "20–04";
   };
-  var timeBucket = function(ts) { return hourBucket(new Date(ts).getHours()); };
+  var timeBucket = function(ts, tz) { return hourBucket(localParts(new Date(ts).getTime(), tz).hour); };
   var tideBucket = function(val) {
     if (val == null) return null;
     var p = tidePct(val);
@@ -4724,15 +4807,16 @@ function Analytics({ catches, spots, trips, observations }) {
   var timeHours = {};
   timeBuckets.forEach(function(b) { timeHours[b] = 0; });
   kpiTrips.filter(function(t) { return t.endTime; }).forEach(function(t) {
+    var tTz = tzFor(tripAnchorGPS(t, tripSpotsMap[t.id])); // resolved once per trip, not per 15-min step
     tripSegs(t).forEach(function(sg) {
       var step = 900000;
       for (var ms = sg[0]; ms < sg[1]; ms += step) {
         var chunk = Math.min(step, sg[1] - ms) / 3600000;
-        timeHours[hourBucket(new Date(ms).getHours())] += chunk;
+        timeHours[hourBucket(localParts(ms, tTz).hour)] += chunk;
       }
     });
   });
-  var cTimeCounts = buildCounts(fEventsEnded, function(c) { return timeBucket(c.timestamp); }, timeBuckets);
+  var cTimeCounts = buildCounts(fEventsEnded, function(c) { return timeBucket(c.timestamp, tzFor(itemAnchorGPS(c, spotById))); }, timeBuckets);
   var timeRates = timeBuckets.map(function(b, i) {
     return timeHours[b] > 0 ? cTimeCounts[i] / timeHours[b] : 0;
   });
@@ -5010,6 +5094,40 @@ function Analytics({ catches, spots, trips, observations }) {
   var methodBuckets = methodIdx.map(function(i) { return allMethods[i]; });
   var methodValues  = methodIdx.map(function(i) { return methodRates[i]; });
 
+  // fmtH duplicated from StatChart (index.html:4481) — that one is scoped to
+  // StatChart's own closure, not reachable from here.
+  var fmtH = function(h) { return h < 1 ? (h * 60).toFixed(0) + "m" : h.toFixed(1) + "h"; };
+
+  // ── Spots mode: hours per spot ──
+  // Mirrors the Pressure/Wind/Sky per-visit walk above (kpiTrips -> each
+  // trip's spots in timestamp order -> netHours per visit) but keyed by
+  // spot NAME identity instead of a weather bucket — same convention as
+  // Journal's locationGroups. Trolling trips have no `spots` records so
+  // they're excluded for free. An unnamed spot has no name to group
+  // revisits by, so each one is kept as its own entry (keyed by spot id)
+  // rather than merged with other unnamed spots that may be unrelated.
+  var spotHoursByName = {}, spotRepByName = {};
+  kpiTrips.filter(function(t) { return t.endTime; }).forEach(function(t) {
+    var tripSpots = (tripSpotsMap[t.id] || []).slice()
+      .sort(function(a, b) { return new Date(a.timestamp) - new Date(b.timestamp); });
+    var tripEnd = new Date(t.endTime).getTime();
+    tripSpots.forEach(function(s, idx) {
+      if (!spotInLoc(s)) return;
+      var start = new Date(s.timestamp).getTime();
+      var end = idx < tripSpots.length - 1 ? new Date(tripSpots[idx + 1].timestamp).getTime() : tripEnd;
+      var hours = netHours(t, start, end);
+      var key = (s.name && s.name.trim()) ? s.name.trim().toLowerCase() : "id:" + s.id;
+      spotHoursByName[key] = (spotHoursByName[key] || 0) + hours;
+      if (!spotRepByName[key] || new Date(s.timestamp) > new Date(spotRepByName[key].timestamp)) spotRepByName[key] = s;
+    });
+  });
+  var spotGroups = Object.keys(spotHoursByName)
+    .map(function(key) { return { name: spotRepByName[key].name || "Unnamed spot", hours: spotHoursByName[key], rep: spotRepByName[key] }; })
+    .filter(function(g) { return g.hours > 0; });
+  var totalSpotsFished = spotGroups.length;
+  var totalSpotHours = spotGroups.reduce(function(s, g) { return s + g.hours; }, 0);
+  var avgHoursPerSpot = totalSpotsFished > 0 ? totalSpotHours / totalSpotsFished : 0;
+
   // ── KPIs ──
   var totalCatches  = fEvents.reduce(function(s, e) { return s + (e._w || 1); }, 0);
   var totalSessions = kpiTrips.filter(function(t) { return t.endTime; }).length;
@@ -5086,7 +5204,8 @@ function Analytics({ catches, spots, trips, observations }) {
       },
         React.createElement("option", { value: "catches" }, "Catches"),
         React.createElement("option", { value: "both" }, "Catches + Obs"),
-        React.createElement("option", { value: "obs" }, "Observations")
+        React.createElement("option", { value: "obs" }, "Observations"),
+        React.createElement("option", { value: "spots" }, "Spots")
       ),
       area && React.createElement("button", {
         onClick: function() { setArea(null); },
@@ -5123,7 +5242,9 @@ function Analytics({ catches, spots, trips, observations }) {
         style: { padding: "3px 6px", fontSize: 10, fontFamily: "inherit", border: "1px solid var(--rule)", borderRadius: 6, cursor: "pointer", background: "none", color: "var(--text-3)" }
       }, "Clear")
     ),
-    // ── KPI cards ──
+    // ── KPI cards + charts (hidden in Spots mode — none are meaningful
+    //    without catch data, see the Spots tiles + map below instead) ──
+    dataFilter !== "spots" && React.createElement(React.Fragment, null,
     React.createElement("div", { className: "stat-summary" },
       React.createElement("div", { className: "stat-kpi" },
         React.createElement("div", { className: "stat-kpi-val" }, totalCatches),
@@ -5179,12 +5300,30 @@ function Analytics({ catches, spots, trips, observations }) {
     React.createElement(StatChart, { title: "Sky (" + rateUnit + ")", buckets: skyBuckets, values: skyRates, fmt: fmtRate, hours: skyBuckets.map(function(b) { return skyHours[b] || 0; }) }),
     React.createElement(StatChart, { title: "Rain (" + rateUnit + ")", buckets: rainBuckets, values: rainRates, fmt: fmtRate, hours: rainBuckets.map(function(b) { return rainHours[b] || 0; }) }),
     React.createElement(StatChart, { title: "Trolling Speed (" + rateUnit + ")", buckets: speedBuckets, values: speedRates, fmt: fmtRate, hours: speedBuckets.map(function(b) { return speedHours[b] || 0; }) }),
-    React.createElement(StatChart, { title: "Moon Phase (" + rateUnit + ")",  buckets: moonBuckets,  values: moonRates, fmt: fmtRate, hours: moonBuckets.map(function(b) { return moonHours[b] || 0; }) }),
+    React.createElement(StatChart, { title: "Moon Phase (" + rateUnit + ")",  buckets: moonBuckets,  values: moonRates, fmt: fmtRate, hours: moonBuckets.map(function(b) { return moonHours[b] || 0; }) })
+    ),
+    // ── Spots-mode KPI tiles (shown instead of the catch/obs ones above) ──
+    dataFilter === "spots" && React.createElement("div", { className: "stat-summary" },
+      React.createElement("div", { className: "stat-kpi" },
+        React.createElement("div", { className: "stat-kpi-val" }, totalSpotsFished),
+        React.createElement("div", { className: "stat-kpi-lbl" }, "Spots Fished")
+      ),
+      React.createElement("div", { className: "stat-kpi" },
+        React.createElement("div", { className: "stat-kpi-val" }, fmtH(totalSpotHours)),
+        React.createElement("div", { className: "stat-kpi-lbl" }, "Total Hours")
+      ),
+      React.createElement("div", { className: "stat-kpi" },
+        React.createElement("div", { className: "stat-kpi-val" }, fmtH(avgHoursPerSpot)),
+        React.createElement("div", { className: "stat-kpi-lbl" }, "Avg Hrs / Spot")
+      )
+    ),
     // ── Catch map — clustered catches + observations (badge = fish count) ──
     (function() {
       var mapCatches = (incCatches ? fc : []).filter(function(c) { return c.gps; });
       var mapObs = (incObs ? fObs : []).filter(function(o) { return o.gps; });
-      if (!mapCatches.length && !mapObs.length) {
+      var mapSpotPts = incSpots ? spotGroups.filter(function(g) { return g.rep && g.rep.gps; })
+        .map(function(g) { return { lat: g.rep.gps.lat, lon: g.rep.gps.lon, w: g.hours, label: g.name + " — " + fmtH(g.hours) }; }) : [];
+      if (!mapCatches.length && !mapObs.length && !mapSpotPts.length) {
         if (!area) return null;
         // area filter emptied the map — keep the card so it can be cleared
         return React.createElement("div", { className: "stat-card" },
@@ -5211,6 +5350,7 @@ function Analytics({ catches, spots, trips, observations }) {
       var titleParts = [];
       if (incCatches) titleParts.push(mapCatches.length + " catches");
       if (incObs) titleParts.push(obsFish + " fish observed");
+      if (incSpots) titleParts.push(mapSpotPts.length + " spots · " + fmtH(totalSpotHours));
       return React.createElement("div", { className: "stat-card" },
         React.createElement("div", { className: "stat-card-title" }, "Map (" + titleParts.join(" · ") + ")"),
         incCatches && incObs && React.createElement("div", { style: { display: "flex", gap: 6, margin: "0 0 8px" } },
@@ -5219,9 +5359,10 @@ function Analytics({ catches, spots, trips, observations }) {
         // key remounts the map when filters/toggles change — markers are drawn once at mount
         // Chip toggles only apply when both types are on the map (chips hidden otherwise)
         React.createElement(ClusterMap, {
-          key: dataFilter + "|" + (area ? area.n + "," + area.w : "all") + "|" + speciesFilter + "|" + yearFilter + "|" + showMapCatches + "|" + showMapObs + "|" + mapCatches.length + "|" + mapObs.length,
+          key: dataFilter + "|" + (area ? area.n + "," + area.w : "all") + "|" + speciesFilter + "|" + yearFilter + "|" + showMapCatches + "|" + showMapObs + "|" + mapCatches.length + "|" + mapObs.length + "|" + mapSpotPts.length,
           catches: (!incObs || showMapCatches) ? mapCatches : [],
           obs: (!incCatches || showMapObs) ? mapObs : [],
+          spotPts: mapSpotPts,
           area: area,
           onAreaSelect: setArea
         }));
@@ -5272,14 +5413,14 @@ function Journal({
   }).sort((a, b) => new Date(b.lastVisit) - new Date(a.lastVisit));
   // Catches-tab filters: spot (by name, matching the Spots-tab grouping),
   // trolling sessions as a pseudo-spot, year and month
-  const itemYears = Array.from(new Set(items.map(i => new Date(i.timestamp).getFullYear()))).sort((a, b) => b - a);
+  const itemYears = Array.from(new Set(items.map(i => localParts(new Date(i.timestamp).getTime(), tzFor(itemAnchorGPS(i, spots))).year))).sort((a, b) => b - a);
   const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
   const hasTrolling = trips.some(t => t.mode === "trolling");
   const fItems = items.filter(it => {
     if (typeFilter !== "all" && it._type !== typeFilter) return false;
-    const d = new Date(it.timestamp);
-    if (yearFilter !== "all" && d.getFullYear() !== parseInt(yearFilter)) return false;
-    if (monthFilter !== "all" && d.getMonth() !== parseInt(monthFilter)) return false;
+    const dp = localParts(new Date(it.timestamp).getTime(), tzFor(itemAnchorGPS(it, spots)));
+    if (yearFilter !== "all" && dp.year !== parseInt(yearFilter)) return false;
+    if (monthFilter !== "all" && dp.month !== parseInt(monthFilter)) return false;
     if (spotFilter === "all") return true;
     if (spotFilter === "__trolling") {
       const t = trips.find(t => t.id === it.tripId);
@@ -5374,7 +5515,7 @@ function Journal({
     }
   }, "", item.flyPattern)), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     className: "catch-date"
-  }, fmtDT(item.timestamp))))), /*#__PURE__*/React.createElement("div", {
+  }, fmtDT(item.timestamp, tzFor(itemAnchorGPS(item, spots))))))), /*#__PURE__*/React.createElement("div", {
     className: "catch-chips"
   }, item.size && /*#__PURE__*/React.createElement("span", {
     className: "chip"
@@ -5402,7 +5543,7 @@ function Journal({
     className: "obs-count"
   }, "\xD7 ", item.count)), /*#__PURE__*/React.createElement("div", {
     className: "obs-meta"
-  }, /*#__PURE__*/React.createElement("span", null, fmtDT(item.timestamp)), item.estimatedSize && /*#__PURE__*/React.createElement("span", null, "", item.estimatedSize), item.spotId && spotName(item.spotId) && /*#__PURE__*/React.createElement("span", null, "", spotName(item.spotId))))))) : (locs.length === 0 ? /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("span", null, fmtDT(item.timestamp, tzFor(itemAnchorGPS(item, spots)))), item.estimatedSize && /*#__PURE__*/React.createElement("span", null, "", item.estimatedSize), item.spotId && spotName(item.spotId) && /*#__PURE__*/React.createElement("span", null, "", spotName(item.spotId))))))) : (locs.length === 0 ? /*#__PURE__*/React.createElement("div", {
     className: "empty-state"
   }, /*#__PURE__*/React.createElement("div", {
     className: "empty-icon"
@@ -5424,7 +5565,7 @@ function Journal({
     style: { fontFamily: "'Inter',sans-serif", fontWeight: 600, fontSize: 14, color: "var(--ink)" }
   }, loc.name), /*#__PURE__*/React.createElement("div", {
     style: { fontSize: 11, color: "var(--text-3)", marginTop: 3, fontFamily: "'Source Code Pro',monospace" }
-  }, loc.sessionCount, " session", loc.sessionCount !== 1 ? "s" : "", " \xB7 ", loc.catchCount, " catch", loc.catchCount !== 1 ? "es" : "", " \xB7 last ", fmtDT(loc.lastVisit))))))), selHistorySpot && /*#__PURE__*/React.createElement(SpotHistory, {
+  }, loc.sessionCount, " session", loc.sessionCount !== 1 ? "s" : "", " \xB7 ", loc.catchCount, " catch", loc.catchCount !== 1 ? "es" : "", " \xB7 last ", fmtDT(loc.lastVisit, tzFor(loc.rep.gps)))))))), selHistorySpot && /*#__PURE__*/React.createElement(SpotHistory, {
     spot: selHistorySpot,
     allSpots: spots,
     allCatches: catches,
@@ -5492,14 +5633,14 @@ function SpotHistory({ spot, allSpots, allCatches, allObs, allTrips, onClose }) 
           className: "mini-catch-info"
         }, /*#__PURE__*/React.createElement("div", { className: "mini-catch-species" }, c.species), /*#__PURE__*/React.createElement("div", {
           className: "mini-catch-time"
-        }, fmtDT(c.timestamp), c.size ? ` \xB7 ${c.size}` : "", c.flyPattern ? ` \xB7 ${c.flyPattern}` : "")))), to.map(o => /*#__PURE__*/React.createElement("div", {
+        }, fmtDT(c.timestamp, tzFor(itemAnchorGPS(c, allSpots))), c.size ? ` \xB7 ${c.size}` : "", c.flyPattern ? ` \xB7 ${c.flyPattern}` : "")))), to.map(o => /*#__PURE__*/React.createElement("div", {
           key: o.id,
           className: "mini-obs"
         }, /*#__PURE__*/React.createElement("span", { style: { fontSize: 14 } }, "👁"), /*#__PURE__*/React.createElement("div", {
           style: { flex: 1 }
         }, /*#__PURE__*/React.createElement("div", { style: { fontSize: 13 } }, o.species || "Observation"), /*#__PURE__*/React.createElement("div", {
           style: { fontSize: 11, color: "var(--text-3)" }
-        }, fmtDT(o.timestamp), o.count ? ` \xB7 \xD7${o.count}` : "", o.estimatedSize ? ` \xB7 ${o.estimatedSize}` : ""))))));
+        }, fmtDT(o.timestamp, tzFor(itemAnchorGPS(o, allSpots))), o.count ? ` \xB7 \xD7${o.count}` : "", o.estimatedSize ? ` \xB7 ${o.estimatedSize}` : ""))))));
       })));
 }
 
@@ -5652,7 +5793,7 @@ function TrollMap({ track, catches, highlightId, fill }) {
 // Nearby markers merge into a badge showing the FISH count (observations are
 // weighted by their entered count, so 1 obs of 20 fish reads as 20, not 1).
 // Zooming in splits clusters apart; at max zoom overlapping markers spiderfy.
-function ClusterMap({ catches, obs, area, onAreaSelect }) {
+function ClusterMap({ catches, obs, spotPts, area, onAreaSelect }) {
   const boxRef = useRef(null);
   const mapRef = useRef(null);
   const [mapErr, setMapErr] = useState(false);
@@ -5663,7 +5804,8 @@ function ClusterMap({ catches, obs, area, onAreaSelect }) {
     const w = n > 0 ? n : 1;
     return { lat: o.gps.lat, lon: o.gps.lon, w, label: (o.species || "Fish") + " × " + w + " observed" };
   });
-  const hasData = cPts.length > 0 || oPts.length > 0;
+  const sPts = spotPts || [];
+  const hasData = cPts.length > 0 || oPts.length > 0 || sPts.length > 0;
   useEffect(() => {
     if (!hasData) return;
     let dead = false;
@@ -5675,20 +5817,25 @@ function ClusterMap({ catches, obs, area, onAreaSelect }) {
         maxZoom: 19,
         attribution: "&copy; OpenStreetMap"
       }).addTo(map);
-      const badge = (n, col, single) => {
-        const plain = single && n === 1; // lone catch / 1-fish obs: small plain dot
-        const d = plain ? 14 : n < 10 ? 26 : n < 100 ? 32 : 38;
+      // hoursMode: spot pins show hours (fmtH-style "4.2h"/"45m") sized by
+      // duration instead of a fish count — everything else about the badge
+      // (border, shadow, font) stays the same visual language.
+      const badge = (n, col, single, hoursMode) => {
+        const plain = single && !hoursMode && n === 1; // lone catch / 1-fish obs: small plain dot
+        const d = hoursMode ? (n < 1 ? 14 : n < 4 ? 22 : n < 10 ? 30 : 38)
+                             : (plain ? 14 : n < 10 ? 26 : n < 100 ? 32 : 38);
+        const txt = hoursMode ? (n < 1 ? Math.round(n * 60) + "m" : n.toFixed(1) + "h") : (plain ? "" : n);
         return L.divIcon({
           className: "",
           html: '<div style="width:' + d + 'px;height:' + d + 'px;border-radius:50%;background:' + col +
             ';border:2px solid rgba(255,255,255,.85);box-shadow:0 1px 4px rgba(0,0,0,.4);' +
             'display:flex;align-items:center;justify-content:center;color:#fff;' +
-            'font:600 ' + (n < 100 ? 12 : 11) + 'px Inter,sans-serif;">' + (plain ? "" : n) + '</div>',
+            'font:600 ' + (hoursMode || n < 100 ? 12 : 11) + 'px Inter,sans-serif;">' + txt + '</div>',
           iconSize: [d, d]
         });
       };
       const bounds = L.latLngBounds([]);
-      const addLayer = (pts, col) => {
+      const addLayer = (pts, col, hoursMode) => {
         if (!pts.length) return;
         const grp = L.markerClusterGroup({
           maxClusterRadius: 50,
@@ -5696,11 +5843,11 @@ function ClusterMap({ catches, obs, area, onAreaSelect }) {
           iconCreateFunction: cl => {
             let w = 0;
             cl.getAllChildMarkers().forEach(m => { w += m.options.clWeight || 1; });
-            return badge(w, col, false);
+            return badge(w, col, false, hoursMode);
           }
         });
         pts.forEach(p => {
-          const m = L.marker([p.lat, p.lon], { icon: badge(p.w, col, true), clWeight: p.w });
+          const m = L.marker([p.lat, p.lon], { icon: badge(p.w, col, true, hoursMode), clWeight: p.w });
           if (p.label) m.bindTooltip(p.label);
           grp.addLayer(m);
           bounds.extend([p.lat, p.lon]);
@@ -5709,6 +5856,7 @@ function ClusterMap({ catches, obs, area, onAreaSelect }) {
       };
       addLayer(cPts, "#3d5a4a"); // catches: moss green
       addLayer(oPts, "#b8863b"); // observations: amber
+      addLayer(sPts, "#2b5d75", true); // spots (Spots mode): slate blue, sized by hours
       // With an area filter active, open on that area so the view matches it
       if (area) map.fitBounds([[area.s, area.w], [area.n, area.e]]);
       else map.fitBounds(bounds.pad(0.2), { maxZoom: 15 });
@@ -5787,7 +5935,14 @@ function TripDetail({
     try { endRef.current.showPicker && endRef.current.showPicker(); } catch (e) {}
   }, [editingEnd]);
   const derivedMethod = deriveMethod(spots, t);
+  // Resolved once for the whole modal: Started/Ended show in the TRIP's own
+  // timezone (where it actually happened), since the phone reading this may
+  // be anywhere. The edit picker itself can't target a foreign zone (browser
+  // limitation), so it — and the live preview of an unsaved edit — stay in
+  // the device's own clock; only the SAVED end time uses tripTz.
+  const tripTz = tzFor(tripAnchorGPS(t, spots));
   const currentEndISO = editEnd ? new Date(editEnd).toISOString() : null;
+  const endIsPending = currentEndISO != null && toLocalDT(currentEndISO) !== toLocalDT(t.endTime);
   const dirty = (editTarget || "") !== (t.targetSpecies || "")
     || (editNotes || "") !== (t.notes || "")
     || toLocalDT(currentEndISO) !== toLocalDT(t.endTime);
@@ -5837,11 +5992,11 @@ function TripDetail({
     style: {
       fontSize: 11
     }
-  }, fmtDT(t.startTime))), t.endTime ? /*#__PURE__*/React.createElement("div", {
+  }, fmtDT(t.startTime, tripTz))), t.endTime ? /*#__PURE__*/React.createElement("div", {
     className: "modal-stat"
   }, /*#__PURE__*/React.createElement("div", {
     className: "modal-stat-label"
-  }, "Ended \xB7 tap to edit"), editingEnd ? /*#__PURE__*/React.createElement("input", {
+  }, "Ended \xB7 tap to edit"), editingEnd ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("input", {
     ref: endRef,
     type: "datetime-local",
     value: editEnd,
@@ -5861,7 +6016,9 @@ function TripDetail({
     // this field read "07/19/2026, 01:33 PM" while everything around it did not.
     // It is now only mounted while actually editing; the rest of the time the
     // value is rendered with fmtDT like every other timestamp in the app.
-  }) : /*#__PURE__*/React.createElement("div", {
+  }), tripTz && /*#__PURE__*/React.createElement("div", {
+    style: { fontSize: 9, color: "var(--text-3)", marginTop: 2 }
+  }, "Shown above in the trip's local time \xB7 edited in your device's clock")) : /*#__PURE__*/React.createElement("div", {
     className: "modal-stat-value",
     onClick: () => setEditingEnd(true),
     style: {
@@ -5869,7 +6026,7 @@ function TripDetail({
       cursor: "pointer",
       padding: "2px 0"
     }
-  }, fmtDT(currentEndISO || t.endTime)), editEnd && /*#__PURE__*/React.createElement("div", {
+  }, fmtDT(currentEndISO || t.endTime, endIsPending ? undefined : tripTz)), editEnd && /*#__PURE__*/React.createElement("div", {
     style: { fontSize: 10, color: "var(--moss)", marginTop: 2 }
   }, "", durStr(t.startTime, currentEndISO, t))) : /*#__PURE__*/React.createElement("div", {
     className: "modal-stat"
@@ -5984,7 +6141,7 @@ function TripDetail({
     className: "mini-catch-species"
   }, c.species), /*#__PURE__*/React.createElement("div", {
     className: "mini-catch-time"
-  }, fmtTime(c.timestamp), c.size ? ` · ${c.size}` : "", c.trollDepth ? ` · ${c.trollDepth}` : "", c.speedMS != null ? ` · ${fmtKnots(c.speedMS)}` : "", c.tide?.seasonal != null ? ` · ${tidePct(c.tide.seasonal)}%${tideArrow(c.tide.direction)}` : "")), /*#__PURE__*/React.createElement("span", {
+  }, fmtTime(c.timestamp, tzFor(c.gps || t.gps)), c.size ? ` · ${c.size}` : "", c.trollDepth ? ` · ${c.trollDepth}` : "", c.speedMS != null ? ` · ${fmtKnots(c.speedMS)}` : "", c.tide?.seasonal != null ? ` · ${tidePct(c.tide.seasonal)}%${tideArrow(c.tide.direction)}` : "")), /*#__PURE__*/React.createElement("span", {
     style: {
       color: "#ccc",
       fontSize: 16
@@ -6012,7 +6169,7 @@ function TripDetail({
       fontSize: 10,
       color: "#999"
     }
-  }, fmtTime(o.timestamp), o.estimatedSize ? ` · ${o.estimatedSize}` : "")), /*#__PURE__*/React.createElement("span", {
+  }, fmtTime(o.timestamp, tzFor(o.gps || t.gps)), o.estimatedSize ? ` · ${o.estimatedSize}` : "")), /*#__PURE__*/React.createElement("span", {
     style: {
       color: "#ccc",
       fontSize: 16
@@ -6053,7 +6210,7 @@ function TripDetail({
       onClick: () => { setEditingSpotId(s.id); setEditingSpotName(s.name || ""); }
     }, "edit")), /*#__PURE__*/React.createElement("span", {
       className: "spot-group-meta"
-    }, fmtTime(s.timestamp)), s.lineType && /*#__PURE__*/React.createElement("span", {
+    }, fmtTime(s.timestamp, tzFor(s.gps))), s.lineType && /*#__PURE__*/React.createElement("span", {
       className: `line-type-badge ${FLY_LINES.includes(s.lineType) ? "line-type-fly" : "line-type-spin"}`,
       style: {
         marginLeft: "auto"
@@ -6099,7 +6256,7 @@ function TripDetail({
       className: "mini-catch-species"
     }, c.species), /*#__PURE__*/React.createElement("div", {
       className: "mini-catch-time"
-    }, fmtTime(c.timestamp), c.size ? ` · ${c.size}` : "", c.tide?.seasonal != null ? ` · ${tidePct(c.tide.seasonal) + "%"}${tideArrow(c.tide.direction)}` : "")), /*#__PURE__*/React.createElement("span", {
+    }, fmtTime(c.timestamp, tzFor(c.gps || s.gps)), c.size ? ` · ${c.size}` : "", c.tide?.seasonal != null ? ` · ${tidePct(c.tide.seasonal) + "%"}${tideArrow(c.tide.direction)}` : "")), /*#__PURE__*/React.createElement("span", {
       style: {
         color: "#ccc",
         fontSize: 16
@@ -6127,7 +6284,7 @@ function TripDetail({
         fontSize: 10,
         color: "#999"
       }
-    }, fmtTime(o.timestamp), o.estimatedSize ? ` · ${o.estimatedSize}` : "")), /*#__PURE__*/React.createElement("span", {
+    }, fmtTime(o.timestamp, tzFor(o.gps || s.gps)), o.estimatedSize ? ` · ${o.estimatedSize}` : "")), /*#__PURE__*/React.createElement("span", {
       style: {
         color: "#ccc",
         fontSize: 16
@@ -6232,7 +6389,7 @@ function CatchDetail({
     style: {
       fontSize: 11
     }
-  }, fmtTime(c.timestamp))), c.gps && /*#__PURE__*/React.createElement("div", {
+  }, fmtTime(c.timestamp, tzFor(c.gps || spot?.gps || trip?.gps)))), c.gps && /*#__PURE__*/React.createElement("div", {
     className: "modal-stat"
   }, /*#__PURE__*/React.createElement("div", {
     className: "modal-stat-label"
@@ -6462,7 +6619,7 @@ function ObsDetail({
           /*#__PURE__*/React.createElement("div", { className: "modal-stat-value" }, o.estimatedSize)),
         /*#__PURE__*/React.createElement("div", { className: "modal-stat" },
           /*#__PURE__*/React.createElement("div", { className: "modal-stat-label" }, "Time"),
-          /*#__PURE__*/React.createElement("div", { className: "modal-stat-value", style: { fontSize: 11 } }, fmtTime(o.timestamp))),
+          /*#__PURE__*/React.createElement("div", { className: "modal-stat-value", style: { fontSize: 11 } }, fmtTime(o.timestamp, tzFor(o.gps || spot?.gps || trip?.gps)))),
         o.gps && /*#__PURE__*/React.createElement("div", { className: "modal-stat" },
           /*#__PURE__*/React.createElement("div", { className: "modal-stat-label" }, "GPS"),
           /*#__PURE__*/React.createElement("div", { className: "modal-stat-value", style: { fontSize: 10 } }, formatCoords(o.gps.lat, o.gps.lon, o.gps.acc))),
