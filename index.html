@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.69-exp</title>
+  <title>The Catch Log v2.70-exp</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -675,6 +675,78 @@ function localParts(ms, tz) {
     const get = t => parts.find(p => p.type === t)?.value;
     return { year: parseInt(get("year"), 10), month: parseInt(get("month"), 10) - 1, hour: parseInt(get("hour"), 10) % 24 };
   } catch (e) { return { year: d.getFullYear(), month: d.getMonth(), hour: d.getHours() }; }
+}
+// iso -> the same instant, formatted with tz's correct local offset (DST-aware)
+// instead of "Z" — self-contained for any external tool (export use), no
+// separate timezone lookup needed to make sense of it on its own. Falls back
+// to the original UTC string when tz can't be resolved, same tolerance as
+// fmtDT/fmtTime's "no GPS -> device value" fallback.
+function isoLocal(iso, tz) {
+  if (!iso || !tz) return iso || null;
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  try {
+    const fmt = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz, hourCycle: "h23",
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit"
+    });
+    const parts = {};
+    fmt.formatToParts(d).forEach(p => { parts[p.type] = p.value; });
+    const asUTC = Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour % 24, +parts.minute, +parts.second, d.getUTCMilliseconds());
+    const offsetMin = Math.round((asUTC - d.getTime()) / 60000);
+    const sign = offsetMin >= 0 ? "+" : "-";
+    const abs = Math.abs(offsetMin);
+    const pad = n => String(n).padStart(2, "0");
+    const ms = String(d.getUTCMilliseconds()).padStart(3, "0");
+    return `${parts.year}-${parts.month}-${parts.day}T${pad(+parts.hour % 24)}:${parts.minute}:${parts.second}.${ms}${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
+  } catch (e) { return iso; }
+}
+// A datetime-local picker only deals in wall-clock strings ("YYYY-MM-DDTHH:MM")
+// with no zone attached — the zone is whatever the code converting to/from it
+// says. These two do that conversion in tz (the record's own zone), so a US
+// session edited from a Norwegian phone shows and saves US clock times.
+// No tz -> device zone, the old behaviour.
+function wallClockIn(iso, tz) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  const p = n => String(n).padStart(2, "0");
+  if (tz) {
+    try {
+      const parts = {};
+      new Intl.DateTimeFormat("en-US", {
+        timeZone: tz, hourCycle: "h23",
+        year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit"
+      }).formatToParts(d).forEach(x => { parts[x.type] = x.value; });
+      return `${parts.year}-${parts.month}-${parts.day}T${p(+parts.hour % 24)}:${parts.minute}`;
+    } catch (e) {}
+  }
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+function wallClockToISO(str, tz) {
+  if (!str) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(str);
+  if (!m) return null;
+  const asUTC = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]);
+  if (!tz) return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]).toISOString();
+  try {
+    // Offset of tz at a given instant, in ms (positive east of UTC)
+    const offsetAt = ms => {
+      const parts = {};
+      new Intl.DateTimeFormat("en-US", {
+        timeZone: tz, hourCycle: "h23",
+        year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit"
+      }).formatToParts(new Date(ms)).forEach(x => { parts[x.type] = x.value; });
+      return Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour % 24, +parts.minute, +parts.second) - ms;
+    };
+    // Two passes so a date on the other side of a DST change gets its own offset
+    let t = asUTC - offsetAt(asUTC);
+    t = asUTC - offsetAt(t);
+    return new Date(t).toISOString();
+  } catch (e) {
+    return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]).toISOString();
+  }
 }
 // Pauses: trip.pauses = [{start, end}] (end null while the pause is running).
 // Array of plain objects — Firestore rejects nested arrays, not maps.
@@ -1716,37 +1788,41 @@ const esc = v => {
 };
 const row = cells => cells.map(esc).join(",");
 const tripsCSV = (trips, spots, catches, obs) => {
-  const h = row(["trip_id", "name", "start_time", "end_time", "duration_min", "target_species", "method", "spot_count", "catch_count", "obs_count", "notes"]);
+  const h = row(["trip_id", "name", "start_time", "end_time", "timezone", "start_time_local", "end_time_local", "duration_min", "target_species", "method", "spot_count", "catch_count", "obs_count", "notes"]);
   return [h, ...trips.map(t => {
     const ts = spots.filter(s => s.tripId === t.id);
     const tc = catches.filter(c => c.tripId === t.id);
     const to = obs.filter(o => o.tripId === t.id);
     const dur = t.endTime ? Math.max(0, Math.round(((new Date(t.endTime) - new Date(t.startTime)) - pausedMs(t, t.endTime)) / 60000)) : "";
     const method = deriveMethod(ts, t) || "";
-    return row([t.id, t.name, t.startTime, t.endTime || "", dur, t.targetSpecies || "", method, ts.length, tc.length, to.length, t.notes || ""]);
+    const tz = tzFor(tripAnchorGPS(t, ts));
+    return row([t.id, t.name, t.startTime, t.endTime || "", tz || "", tz ? isoLocal(t.startTime, tz) : "", t.endTime && tz ? isoLocal(t.endTime, tz) : "", dur, t.targetSpecies || "", method, ts.length, tc.length, to.length, t.notes || ""]);
   })].join("\n");
 };
 const spotsCSV = (spots, trips) => {
-  const h = row(["spot_id", "trip_id", "trip_name", "name", "timestamp", "gps_lat", "gps_lon", "line_type", "water_temp", "has_spot_photo", "air_temp_c", "conditions", "cloud_pct", "precip_mm", "pressure_hpa", "pressure_level", "pressure_trend", "wind_ms", "wind_dir_deg", "moon_phase", "tide_seasonal_pct", "tide_direction", "tide_cm", "notes"]);
+  const h = row(["spot_id", "trip_id", "trip_name", "name", "timestamp", "timezone", "timestamp_local", "gps_lat", "gps_lon", "line_type", "water_temp", "has_spot_photo", "air_temp_c", "conditions", "cloud_pct", "precip_mm", "pressure_hpa", "pressure_level", "pressure_trend", "wind_ms", "wind_dir_deg", "moon_phase", "tide_seasonal_pct", "tide_direction", "tide_cm", "notes"]);
   return [h, ...spots.map(s => {
     const t = trips.find(x => x.id === s.tripId);
-    return row([s.id, s.tripId, t?.name || "", s.name || "", s.timestamp, s.gps?.lat ?? "", s.gps?.lon ?? "", s.lineType || "", s.waterTemp || "", s.photo ? "1" : "0", s.weather?.airTemp ?? "", wxLabel(s.weather?.weatherCode, s.weather?.cloudCover) || "", s.weather?.cloudCover ?? "", s.weather?.precipMm ?? "", s.weather?.pressure ?? "", s.weather?.pressureLevel || "", s.weather?.pressureTrend || "", s.weather?.windSpeed ?? "", s.weather?.windDir ?? "", moonCSV(s.weather?.moon), s.tide?.seasonal != null ? tidePct(s.tide.seasonal) : "", s.tide?.direction || "", s.tide?.valueCM ?? "", s.notes || ""]);
+    const tz = tzFor(s.gps);
+    return row([s.id, s.tripId, t?.name || "", s.name || "", s.timestamp, tz || "", tz ? isoLocal(s.timestamp, tz) : "", s.gps?.lat ?? "", s.gps?.lon ?? "", s.lineType || "", s.waterTemp || "", s.photo ? "1" : "0", s.weather?.airTemp ?? "", wxLabel(s.weather?.weatherCode, s.weather?.cloudCover) || "", s.weather?.cloudCover ?? "", s.weather?.precipMm ?? "", s.weather?.pressure ?? "", s.weather?.pressureLevel || "", s.weather?.pressureTrend || "", s.weather?.windSpeed ?? "", s.weather?.windDir ?? "", moonCSV(s.weather?.moon), s.tide?.seasonal != null ? tidePct(s.tide.seasonal) : "", s.tide?.direction || "", s.tide?.valueCM ?? "", s.notes || ""]);
   })].join("\n");
 };
 const catchesCSV = (catches, spots, trips) => {
-  const h = row(["catch_id", "trip_id", "trip_name", "spot_id", "spot_name", "timestamp", "species", "fly_pattern", "troll_depth", "size", "gps_lat", "gps_lon", "water_temp", "air_temp_c", "conditions", "cloud_pct", "precip_mm", "pressure_hpa", "pressure_level", "pressure_trend", "wind_ms", "wind_dir_deg", "moon_phase", "tide_seasonal_pct", "tide_direction", "tide_cm", "tide_mlws_cm", "tide_mhws_cm", "has_fish_photo", "has_fly_photo", "notes"]);
+  const h = row(["catch_id", "trip_id", "trip_name", "spot_id", "spot_name", "timestamp", "timezone", "timestamp_local", "species", "fly_pattern", "troll_depth", "size", "gps_lat", "gps_lon", "water_temp", "air_temp_c", "conditions", "cloud_pct", "precip_mm", "pressure_hpa", "pressure_level", "pressure_trend", "wind_ms", "wind_dir_deg", "moon_phase", "tide_seasonal_pct", "tide_direction", "tide_cm", "tide_mlws_cm", "tide_mhws_cm", "has_fish_photo", "has_fly_photo", "notes"]);
   return [h, ...[...catches].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp)).map(c => {
     const t = trips.find(x => x.id === c.tripId),
       s = spots.find(x => x.id === c.spotId);
-    return row([c.id, c.tripId || "", t?.name || "", c.spotId || "", s?.name || "", c.timestamp, c.species, c.flyPattern || "", c.trollDepth || "", c.size || "", c.gps?.lat ?? "", c.gps?.lon ?? "", c.waterTemp ?? "", c.weather?.airTemp ?? "", wxLabel(c.weather?.weatherCode, c.weather?.cloudCover) || "", c.weather?.cloudCover ?? "", c.weather?.precipMm ?? "", c.weather?.pressure ?? "", c.weather?.pressureLevel || "", c.weather?.pressureTrend || "", c.weather?.windSpeed ?? "", c.weather?.windDir ?? "", moonCSV(c.weather?.moon), c.tide?.seasonal != null ? tidePct(c.tide.seasonal) : "", c.tide?.direction || "", c.tide?.valueCM ?? "", c.tide?.mlwsCM ?? "", c.tide?.mhwsCM ?? "", c.fishPhoto ? "1" : "0", c.flyPhoto ? "1" : "0", c.notes || ""]);
+    const tz = tzFor(itemAnchorGPS(c, spots));
+    return row([c.id, c.tripId || "", t?.name || "", c.spotId || "", s?.name || "", c.timestamp, tz || "", tz ? isoLocal(c.timestamp, tz) : "", c.species, c.flyPattern || "", c.trollDepth || "", c.size || "", c.gps?.lat ?? "", c.gps?.lon ?? "", c.waterTemp ?? "", c.weather?.airTemp ?? "", wxLabel(c.weather?.weatherCode, c.weather?.cloudCover) || "", c.weather?.cloudCover ?? "", c.weather?.precipMm ?? "", c.weather?.pressure ?? "", c.weather?.pressureLevel || "", c.weather?.pressureTrend || "", c.weather?.windSpeed ?? "", c.weather?.windDir ?? "", moonCSV(c.weather?.moon), c.tide?.seasonal != null ? tidePct(c.tide.seasonal) : "", c.tide?.direction || "", c.tide?.valueCM ?? "", c.tide?.mlwsCM ?? "", c.tide?.mhwsCM ?? "", c.fishPhoto ? "1" : "0", c.flyPhoto ? "1" : "0", c.notes || ""]);
   })].join("\n");
 };
 const obsCSV = (observations, spots, trips) => {
-  const h = row(["obs_id", "trip_id", "trip_name", "spot_id", "spot_name", "timestamp", "species", "count", "estimated_size", "gps_lat", "gps_lon", "air_temp_c", "conditions", "cloud_pct", "precip_mm", "pressure_hpa", "pressure_level", "pressure_trend", "wind_ms", "wind_dir_deg", "moon_phase", "tide_seasonal_pct", "tide_direction", "tide_cm", "notes"]);
+  const h = row(["obs_id", "trip_id", "trip_name", "spot_id", "spot_name", "timestamp", "timezone", "timestamp_local", "species", "count", "estimated_size", "gps_lat", "gps_lon", "air_temp_c", "conditions", "cloud_pct", "precip_mm", "pressure_hpa", "pressure_level", "pressure_trend", "wind_ms", "wind_dir_deg", "moon_phase", "tide_seasonal_pct", "tide_direction", "tide_cm", "notes"]);
   return [h, ...[...observations].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp)).map(o => {
     const t = trips.find(x => x.id === o.tripId),
       s = spots.find(x => x.id === o.spotId);
-    return row([o.id, o.tripId || "", t?.name || "", o.spotId || "", s?.name || "", o.timestamp, o.species, o.count || "", o.estimatedSize || "", o.gps?.lat ?? "", o.gps?.lon ?? "", o.weather?.airTemp ?? "", wxLabel(o.weather?.weatherCode, o.weather?.cloudCover) || "", o.weather?.cloudCover ?? "", o.weather?.precipMm ?? "", o.weather?.pressure ?? "", o.weather?.pressureLevel || "", o.weather?.pressureTrend || "", o.weather?.windSpeed ?? "", o.weather?.windDir ?? "", moonCSV(o.weather?.moon), o.tide?.seasonal != null ? tidePct(o.tide.seasonal) : "", o.tide?.direction || "", o.tide?.valueCM ?? "", o.notes || ""]);
+    const tz = tzFor(itemAnchorGPS(o, spots));
+    return row([o.id, o.tripId || "", t?.name || "", o.spotId || "", s?.name || "", o.timestamp, tz || "", tz ? isoLocal(o.timestamp, tz) : "", o.species, o.count || "", o.estimatedSize || "", o.gps?.lat ?? "", o.gps?.lon ?? "", o.weather?.airTemp ?? "", wxLabel(o.weather?.weatherCode, o.weather?.cloudCover) || "", o.weather?.cloudCover ?? "", o.weather?.precipMm ?? "", o.weather?.pressure ?? "", o.weather?.pressureLevel || "", o.weather?.pressureTrend || "", o.weather?.windSpeed ?? "", o.weather?.windDir ?? "", moonCSV(o.weather?.moon), o.tide?.seasonal != null ? tidePct(o.tide.seasonal) : "", o.tide?.direction || "", o.tide?.valueCM ?? "", o.notes || ""]);
   })].join("\n");
 };
 function dlCSV(content, filename) {
@@ -1782,8 +1858,30 @@ function daysSinceBackup() {
 function backupAll(trips, spots, catches, observations) {
   var tasks = [];
   var missing = 0;
-  var spotsCopy = spots.map(function(s) { return Object.assign({}, s); });
-  var catchesCopy = catches.map(function(c) { return Object.assign({}, c); });
+  // Every timestamp is stamped with the zone it actually happened in (plus a
+  // *Local twin with the correct offset) so the export is analyzable outside
+  // the app without redoing the GPS lookup — existing UTC fields are
+  // untouched, this is purely additive.
+  var tripsCopy = trips.map(function(t) {
+    var tz = tzFor(tripAnchorGPS(t, spots.filter(function(s) { return s.tripId === t.id; })));
+    return tz ? Object.assign({}, t, {
+      timezone: tz,
+      startTimeLocal: isoLocal(t.startTime, tz),
+      endTimeLocal: t.endTime ? isoLocal(t.endTime, tz) : null
+    }) : t;
+  });
+  var spotsCopy = spots.map(function(s) {
+    var tz = tzFor(s.gps);
+    return Object.assign({}, s, tz ? { timezone: tz, timestampLocal: isoLocal(s.timestamp, tz) } : {});
+  });
+  var catchesCopy = catches.map(function(c) {
+    var tz = tzFor(itemAnchorGPS(c, spots));
+    return Object.assign({}, c, tz ? { timezone: tz, timestampLocal: isoLocal(c.timestamp, tz) } : {});
+  });
+  var obsCopy = (observations || []).map(function(o) {
+    var tz = tzFor(itemAnchorGPS(o, spots));
+    return Object.assign({}, o, tz ? { timezone: tz, timestampLocal: isoLocal(o.timestamp, tz) } : {});
+  });
   // Photo failures must be visible, not silent — a backup the user believes
   // is complete is the app's last line of defence
   var attach = function(rec, field) {
@@ -1797,7 +1895,7 @@ function backupAll(trips, spots, catches, observations) {
   catchesCopy.forEach(function(c) { attach(c, 'fishPhoto'); attach(c, 'flyPhoto'); });
   Promise.all(tasks).then(function() {
     var today = new Date().toISOString().slice(0, 10);
-    dlJSON({ exportedAt: new Date().toISOString(), version: 1, trips: trips, spots: spotsCopy, catches: catchesCopy, observations: observations },
+    dlJSON({ exportedAt: new Date().toISOString(), version: 1, trips: tripsCopy, spots: spotsCopy, catches: catchesCopy, observations: obsCopy },
       'catchlog_backup_' + today + '.json');
     _origLocalStorageSet('cl_lastBackup', new Date().toISOString());
     if (missing) alert(missing + " photo(s) could not be read and are not in this backup. All catch/spot data is included.");
@@ -2783,7 +2881,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.69-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.70-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -5915,14 +6013,14 @@ function TripDetail({
   const [editingSpotId, setEditingSpotId] = useState(null);
   const [editingSpotName, setEditingSpotName] = useState("");
   const saveSpotName = s => { onUpdSpot({ ...s, name: editingSpotName.trim() || s.name }); setEditingSpotId(null); };
-  // datetime-local input requires YYYY-MM-DDTHH:MM
-  const toLocalDT = iso => {
-    if (!iso) return "";
-    const d = new Date(iso);
-    const p = n => String(n).padStart(2, "0");
-    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
-  };
-  const [editEnd, setEditEnd] = useState(toLocalDT(t.endTime));
+  // Everything about the end time — display, picker value, validation — is in
+  // the TRIP's own timezone (where it actually happened), since the phone
+  // reading this may be anywhere. The picker is fed trip-local wall-clock
+  // strings and they're converted back with the same zone, so it never mixes
+  // in the device's clock.
+  const tripTz = tzFor(tripAnchorGPS(t, spots));
+  const toLocalDT = iso => wallClockIn(iso, tripTz);
+  const [editEnd, setEditEnd] = useState(() => toLocalDT(t.endTime));
   // The end time shows as formatted text and swaps to the native picker on tap,
   // so the browser's own locale can't put a US date in the middle of the modal.
   const [editingEnd, setEditingEnd] = useState(false);
@@ -5935,20 +6033,13 @@ function TripDetail({
     try { endRef.current.showPicker && endRef.current.showPicker(); } catch (e) {}
   }, [editingEnd]);
   const derivedMethod = deriveMethod(spots, t);
-  // Resolved once for the whole modal: Started/Ended show in the TRIP's own
-  // timezone (where it actually happened), since the phone reading this may
-  // be anywhere. The edit picker itself can't target a foreign zone (browser
-  // limitation), so it — and the live preview of an unsaved edit — stay in
-  // the device's own clock; only the SAVED end time uses tripTz.
-  const tripTz = tzFor(tripAnchorGPS(t, spots));
-  const currentEndISO = editEnd ? new Date(editEnd).toISOString() : null;
-  const endIsPending = currentEndISO != null && toLocalDT(currentEndISO) !== toLocalDT(t.endTime);
+  const currentEndISO = wallClockToISO(editEnd, tripTz);
   const dirty = (editTarget || "") !== (t.targetSpecies || "")
     || (editNotes || "") !== (t.notes || "")
-    || toLocalDT(currentEndISO) !== toLocalDT(t.endTime);
+    || (editEnd || "") !== toLocalDT(t.endTime);
   const save = () => {
     if (currentEndISO && new Date(currentEndISO) <= new Date(t.startTime)) {
-      alert("End time must be after the session start (" + fmtDT(t.startTime) + ").");
+      alert("End time must be after the session start (" + fmtDT(t.startTime, tripTz) + ").");
       return false;
     }
     onUpdate({
@@ -6002,7 +6093,10 @@ function TripDetail({
     value: editEnd,
     autoFocus: true,
     onChange: e => setEditEnd(e.target.value),
-    onBlur: () => setEditingEnd(false),
+    // No onBlur-to-close: on Android the native picker dialog can take focus
+    // away before "Set" is pressed, which unmounted the input and dropped the
+    // change. The field stays open until "Done" or the modal closes (which
+    // saves via closeAndFlush).
     style: {
       fontFamily: "'Source Code Pro',monospace",
       fontSize: 12,
@@ -6016,9 +6110,17 @@ function TripDetail({
     // this field read "07/19/2026, 01:33 PM" while everything around it did not.
     // It is now only mounted while actually editing; the rest of the time the
     // value is rendered with fmtDT like every other timestamp in the app.
-  }), tripTz && /*#__PURE__*/React.createElement("div", {
-    style: { fontSize: 9, color: "var(--text-3)", marginTop: 2 }
-  }, "Shown above in the trip's local time \xB7 edited in your device's clock")) : /*#__PURE__*/React.createElement("div", {
+  }), /*#__PURE__*/React.createElement("div", {
+    style: { display: "flex", alignItems: "center", gap: 8, marginTop: 2 }
+  }, tripTz && /*#__PURE__*/React.createElement("span", {
+    style: { fontSize: 9, color: "var(--text-3)", flex: 1 }
+  }, "Local time at the session \xB7 " + tripTz.split("/").pop().replace(/_/g, " ")), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setEditingEnd(false),
+    style: {
+      fontSize: 10, padding: "2px 8px", border: "1px solid var(--moss)", borderRadius: 3,
+      background: "transparent", color: "var(--moss)", cursor: "pointer", marginLeft: "auto"
+    }
+  }, "Done"))) : /*#__PURE__*/React.createElement("div", {
     className: "modal-stat-value",
     onClick: () => setEditingEnd(true),
     style: {
@@ -6026,7 +6128,7 @@ function TripDetail({
       cursor: "pointer",
       padding: "2px 0"
     }
-  }, fmtDT(currentEndISO || t.endTime, endIsPending ? undefined : tripTz)), editEnd && /*#__PURE__*/React.createElement("div", {
+  }, fmtDT(currentEndISO || t.endTime, tripTz)), editEnd &&/*#__PURE__*/React.createElement("div", {
     style: { fontSize: 10, color: "var(--moss)", marginTop: 2 }
   }, "", durStr(t.startTime, currentEndISO, t))) : /*#__PURE__*/React.createElement("div", {
     className: "modal-stat"
@@ -6690,25 +6792,25 @@ function ExportTab({ trips, spots, catches, observations, onRestore, cloudUser, 
   const sheets = [{
     title: "Sessions",
     sub: "One row per fishing session, with totals.",
-    cols: ["trip_id", "name", "start_time", "end_time", "duration_min", "target_species", "method", "spot_count", "catch_count", "obs_count", "notes"],
+    cols: ["trip_id", "name", "start_time", "end_time", "timezone", "start_time_local", "end_time_local", "duration_min", "target_species", "method", "spot_count", "catch_count", "obs_count", "notes"],
     count: trips.length,
     fn: () => dlCSV(tripsCSV(trips, spots, catches, observations), `catchlog_sessions_${today}.csv`)
   }, {
     title: "Spots",
     sub: "Each named location visited within a session.",
-    cols: ["spot_id", "trip_id", "trip_name", "name", "timestamp", "gps_lat", "gps_lon", "line_type", "water_temp", "has_spot_photo", "notes"],
+    cols: ["spot_id", "trip_id", "trip_name", "name", "timestamp", "timezone", "timestamp_local", "gps_lat", "gps_lon", "line_type", "water_temp", "has_spot_photo", "notes"],
     count: spots.length,
     fn: () => dlCSV(spotsCSV(spots, trips), `catchlog_spots_${today}.csv`)
   }, {
     title: "Catches",
     sub: "One row per fish caught, with all conditions.",
-    cols: ["catch_id", "trip_id", "spot_id", "timestamp", "species", "fly_pattern", "size", "water_temp", "air_temp_c", "pressure_hpa", "wind_ms", "wind_dir_deg", "tide_seasonal_pct", "moon_phase", "has_fish_photo", "has_fly_photo", "notes"],
+    cols: ["catch_id", "trip_id", "spot_id", "timestamp", "timezone", "timestamp_local", "species", "fly_pattern", "size", "water_temp", "air_temp_c", "pressure_hpa", "wind_ms", "wind_dir_deg", "tide_seasonal_pct", "moon_phase", "has_fish_photo", "has_fly_photo", "notes"],
     count: catches.length,
     fn: () => dlCSV(catchesCSV(catches, spots, trips), `catchlog_catches_${today}.csv`)
   }, {
     title: "Observations",
     sub: "Fish seen but not caught, with conditions.",
-    cols: ["obs_id", "trip_id", "spot_id", "timestamp", "species", "count", "estimated_size", "air_temp_c", "pressure_hpa", "wind_ms", "wind_dir_deg", "tide_seasonal_pct", "moon_phase", "notes"],
+    cols: ["obs_id", "trip_id", "spot_id", "timestamp", "timezone", "timestamp_local", "species", "count", "estimated_size", "air_temp_c", "pressure_hpa", "wind_ms", "wind_dir_deg", "tide_seasonal_pct", "moon_phase", "notes"],
     count: observations.length,
     fn: () => dlCSV(obsCSV(observations, spots, trips), `catchlog_observations_${today}.csv`)
   }];
