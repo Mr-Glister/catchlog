@@ -1,4 +1,4 @@
-const CACHE = 'catchlog-v29-71';
+const CACHE = 'catchlog-v29-72';
 const ASSETS = [
   '/catchlog/',
   '/catchlog/index.html',
@@ -7,8 +7,8 @@ const ASSETS = [
   '/catchlog/manifest.json',
   '/catchlog/icon-192.png',
   '/catchlog/icon-512.png',
-  'https://unpkg.com/react@18/umd/react.production.min.js',
-  'https://unpkg.com/react-dom@18/umd/react-dom.production.min.js',
+  'https://unpkg.com/react@18.3.1/umd/react.production.min.js',
+  'https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js',
   'https://unpkg.com/tz-lookup@6.1.25/tz.js',
   'https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js',
   'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js',

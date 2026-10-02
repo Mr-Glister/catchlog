@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.71-exp</title>
+  <title>The Catch Log v2.72-exp</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -30,21 +30,26 @@
       d.textContent='ERROR: '+msg+'\nLine: '+line+'\n\n'+(err?err.stack:'');
     };
   </script>
-  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin="anonymous"></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin="anonymous"></script>
+  <!-- Exact versions + Subresource Integrity: a floating "react@18" could change
+       under the app (and stay stuck in the SW cache), and without a hash any
+       tampered CDN file would run with full access to the data and the
+       Firebase session. Changing a version means recomputing its hash:
+       curl -sL URL | openssl dgst -sha384 -binary | openssl base64 -A -->
+  <script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" integrity="sha384-DGyLxAyjq0f9SPpVevD6IgztCFlnMF6oW/XQGmfe+IsZ8TqEiDrcHkMLKI6fiB/Z" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" integrity="sha384-gTGxhz21lVGYNMcdJOyq01Edg0jhn/c22nsx0kyqP0TxaV5WVdsSH1fSDUf5YJj1" crossorigin="anonymous"></script>
   <script>
-    const { useState, useRef, useCallback, useEffect, useContext } = React;
+    const { useState, useRef, useCallback, useEffect, useContext, useMemo } = React;
   </script>
 
   <!-- Coordinate -> IANA timezone lookup, so a record's time renders in the
        zone it actually happened in, not whatever zone the viewer is in now -->
-  <script src="https://unpkg.com/tz-lookup@6.1.25/tz.js" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/tz-lookup@6.1.25/tz.js" integrity="sha384-hu4xDymJTssX8+i8qDUKexc5lIusgVeLPv72brg57d+WMdeCGtr3A1U8oW8PEtaP" crossorigin="anonymous"></script>
 
   <!-- Firebase cloud sync -->
-  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js" crossorigin="anonymous"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js" crossorigin="anonymous"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js" crossorigin="anonymous"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-storage-compat.js" crossorigin="anonymous"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js" integrity="sha384-sEVIly94UBRLKWdkYoPpSG7GD/e79YHMrxVyZaOk712Ga7+EAw6w1EFi+xBzBdd+" crossorigin="anonymous"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js" integrity="sha384-EkqK+ezBWJuvO3hfrSx2iVqr3YQbhmnzn8kPhOpBZ+0GMVU5oGSgptwIu8D84HjE" crossorigin="anonymous"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js" integrity="sha384-M481iNZJtbpypKgvlvZ+78Giq0BsewFLk5r2k+MOcGXlwKCc27DQRZ+WCV/zpmpC" crossorigin="anonymous"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-storage-compat.js" integrity="sha384-6I0gWsz4FIAr30c0TxIxJnPQuJiZ1FfILdZrgJdjxTH3R8dgPGTvexbyqTvReV6Z" crossorigin="anonymous"></script>
   <script>
     firebase.initializeApp({
       apiKey: "AIzaSyCYedlMhYZTuU4RuVwhHEM4y7OINwMykho",
@@ -783,9 +788,23 @@ function itemAnchorGPS(item, allSpotsOrById) {
 // getFullYear/getMonth/getHours (no tz) would use the VIEWER's current zone,
 // which can misfile a late-night catch into the wrong day/bucket entirely.
 const TZ_FORMATTER_CACHE = new Map(); // IANA zone -> Intl.DateTimeFormat
+// formatToParts is slow and Insights calls this for every 15-minute step of
+// every session. Every UTC offset in use is a multiple of 15 minutes, so the
+// local year/month/hour is constant across each aligned 15-minute block —
+// caching per block gives exactly the same answers.
+const LOCAL_PARTS_CACHE = new Map();
 function localParts(ms, tz) {
+  if (!tz) { const d = new Date(ms); return { year: d.getFullYear(), month: d.getMonth(), hour: d.getHours() }; }
+  const ck = tz + "|" + Math.floor(ms / 900000);
+  const hit = LOCAL_PARTS_CACHE.get(ck);
+  if (hit) return hit;
+  if (LOCAL_PARTS_CACHE.size > 50000) LOCAL_PARTS_CACHE.clear();
+  const r = localPartsUncached(ms, tz);
+  LOCAL_PARTS_CACHE.set(ck, r);
+  return r;
+}
+function localPartsUncached(ms, tz) {
   const d = new Date(ms);
-  if (!tz) return { year: d.getFullYear(), month: d.getMonth(), hour: d.getHours() };
   try {
     let fmt = TZ_FORMATTER_CACHE.get(tz);
     if (!fmt) {
@@ -1961,8 +1980,10 @@ const esc = v => {
   if (v == null) return "";
   let s = String(v);
   // Neutralize spreadsheet formula injection in text fields; real numbers
-  // pass through as non-strings so negatives stay numeric
-  if (typeof v === "string" && /^[=+@\t]/.test(s)) s = "'" + s;
+  // pass through as non-strings so negatives stay numeric. A leading "-" or
+  // CR also starts a formula in Excel/Sheets — but a plain negative number
+  // that happens to arrive as text is left alone.
+  if (typeof v === "string" && /^[=+\-@\t\r]/.test(s) && !/^-\d+(\.\d+)?$/.test(s)) s = "'" + s;
   return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 };
 const row = cells => cells.map(esc).join(",");
@@ -2148,6 +2169,11 @@ function restoreFromFile(file, onDone) {
   };
   reader.readAsText(file);
 }
+// Escape text for insertion into HTML built as a string (photo export, Leaflet
+// tooltips — Leaflet inserts string content as raw HTML)
+function escHtml(v) {
+  return String(v == null ? "" : v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
 function exportPhotos(catches, spots) {
   var catchPhotos = catches.filter(function(c) { return c.fishPhoto || c.flyPhoto; });
   var spotPhotos = (spots || []).filter(function(s) { return s.photo; });
@@ -2162,18 +2188,22 @@ function exportPhotos(catches, spots) {
     if (isPhotoId(c.fishPhoto)) tasks.push(photoIdToBase64(c.fishPhoto).then(function(b64) { c.fishPhoto = b64; }));
     if (isPhotoId(c.flyPhoto)) tasks.push(photoIdToBase64(c.flyPhoto).then(function(b64) { c.flyPhoto = b64; }));
   });
-  var escHtml = function(v) {
-    return String(v == null ? "" : v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  // Only an embedded image may become an <img src>: anything else (a value
+  // from a crafted backup or the cloud) could break out of the attribute
+  var imgTag = function(src) {
+    return typeof src === "string" && /^data:image\//.test(src)
+      ? '<img src="' + escHtml(src) + '" />'
+      : '<p class="label">(photo not available on this device)</p>';
   };
   Promise.all(tasks).then(function() {
     var today = new Date().toISOString().slice(0, 10);
     var spotItems = rSpots.filter(function(s) { return s.photo; }).map(function(s) {
-      return '<div class="item"><p class="label">' + escHtml(s.id) + ' \xB7 spot \xB7 ' + escHtml(s.name || "Unnamed") + ' \xB7 ' + escHtml((s.timestamp || "").slice(0,10)) + '</p><img src="' + s.photo + '" /></div>';
+      return '<div class="item"><p class="label">' + escHtml(s.id) + ' \xB7 spot \xB7 ' + escHtml(s.name || "Unnamed") + ' \xB7 ' + escHtml((s.timestamp || "").slice(0,10)) + '</p>' + imgTag(s.photo) + '</div>';
     }).join("\n");
     var items = rCatches.map(function(c) {
       var parts = [];
-      if (c.fishPhoto) parts.push('<div class="item"><p class="label">' + escHtml(c.id) + ' \xB7 fish \xB7 ' + escHtml(c.species) + ' \xB7 ' + escHtml((c.timestamp || "").slice(0,10)) + '</p><img src="' + c.fishPhoto + '" /></div>');
-      if (c.flyPhoto)  parts.push('<div class="item"><p class="label">' + escHtml(c.id) + ' \xB7 fly \xB7 ' + escHtml(c.species) + ' \xB7 ' + escHtml((c.timestamp || "").slice(0,10)) + '</p><img src="' + c.flyPhoto + '" /></div>');
+      if (c.fishPhoto) parts.push('<div class="item"><p class="label">' + escHtml(c.id) + ' \xB7 fish \xB7 ' + escHtml(c.species) + ' \xB7 ' + escHtml((c.timestamp || "").slice(0,10)) + '</p>' + imgTag(c.fishPhoto) + '</div>');
+      if (c.flyPhoto)  parts.push('<div class="item"><p class="label">' + escHtml(c.id) + ' \xB7 fly \xB7 ' + escHtml(c.species) + ' \xB7 ' + escHtml((c.timestamp || "").slice(0,10)) + '</p>' + imgTag(c.flyPhoto) + '</div>');
       return parts.join("\n");
     }).join("\n");
     var allItems = [spotItems, items].filter(Boolean).join("\n");
@@ -3144,13 +3174,26 @@ function FishLog() {
     setSelObs(null);
     showToast("Observation deleted");
   };
-  const tripSpots = t => [...spots].filter(s => s.tripId === t.id).sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
-  const tripCatches = t => catches.filter(c => c.tripId === t.id);
-  const tripObs = t => observations.filter(o => o.tripId === t.id);
+  // Records grouped by trip, rebuilt only when the data changes. The session
+  // list asked for every trip's spots/catches/obs by scanning the full arrays,
+  // on every render — and FishLog re-renders on each GPS point while trolling.
+  const byTrip = useMemo(() => {
+    const group = arr => { const m = {}; arr.forEach(r => { (m[r.tripId] = m[r.tripId] || []).push(r); }); return m; };
+    const sp = group(spots);
+    Object.keys(sp).forEach(k => sp[k].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp)));
+    return { spots: sp, catches: group(catches), obs: group(observations) };
+  }, [spots, catches, observations]);
+  const tripSpots = t => (byTrip.spots[t.id] || []).slice();
+  const tripCatches = t => (byTrip.catches[t.id] || []).slice();
+  const tripObs = t => (byTrip.obs[t.id] || []).slice();
+  // Stable context value: a fresh object every render made every species
+  // dropdown rebuild its lists on each keystroke anywhere in the app
+  const speciesCtx = useMemo(() => ({ trips, catches, observations }), [trips, catches, observations]);
+  const backupDays = daysSinceBackup();
   // Provider stands in for the Fragment that used to be here — same children,
   // no extra nesting — so the six species dropdowns can read trips/catches
   // without threading props through CatchForm/ObsForm, which receive neither.
-  return /*#__PURE__*/React.createElement(SpeciesCtx.Provider, { value: { trips, catches, observations } }, /*#__PURE__*/React.createElement("style", null, css), /*#__PURE__*/React.createElement("div", {
+  return /*#__PURE__*/React.createElement(SpeciesCtx.Provider, { value: speciesCtx }, /*#__PURE__*/React.createElement("style", null, css), /*#__PURE__*/React.createElement("div", {
     className: "app"
   }, /*#__PURE__*/React.createElement("header", {
     className: "header"
@@ -3189,7 +3232,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.71-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.72-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -3232,11 +3275,11 @@ function FishLog() {
     onStartSession: startSession,
     showConditions: showConditions,
     setShowConditions: setShowConditions
-  }), tab === "trips" && !cloudUser && trips.length > 0 && (daysSinceBackup() == null || daysSinceBackup() > 30) && /*#__PURE__*/React.createElement("div", {
+  }), tab === "trips" && !cloudUser && trips.length > 0 && (backupDays == null || backupDays > 30) && /*#__PURE__*/React.createElement("div", {
     className: "info-note",
     style: { borderTop: "none", cursor: "pointer" },
     onClick: () => setTab("export")
-  }, "No cloud sync active \xB7 last local backup: ", daysSinceBackup() == null ? "never" : `${daysSinceBackup()} days ago`, " \xB7 tap to back up"), tab === "log" && /*#__PURE__*/React.createElement(LogTab, {
+  }, "No cloud sync active \xB7 last local backup: ", backupDays == null ? "never" : `${backupDays} days ago`, " \xB7 tap to back up"), tab === "log" && /*#__PURE__*/React.createElement(LogTab, {
     activeTrip: activeTrip,
     activeSpot: activeSpot,
     onAddSpot: addSpot,
@@ -3427,7 +3470,7 @@ function SpeciesSelect({
   onChange
 }) {
   const data = useContext(SpeciesCtx);
-  const groups = buildSpeciesGroups(data?.trips, data?.catches, data?.observations, value);
+  const groups = useMemo(() => buildSpeciesGroups(data?.trips, data?.catches, data?.observations, value), [data, value]);
   const opt = s => /*#__PURE__*/React.createElement("option", { key: s, value: s }, s);
   return /*#__PURE__*/React.createElement("div", {
     className: "field-select-wrap"
@@ -4920,7 +4963,10 @@ function SizeHistogram({ title, buckets, values }) {
   );
 }
 
-function Analytics({ catches, spots, trips, observations }) {
+// Memoised: FishLog re-renders on every toast, sync-status change and GPS
+// point, and Insights recomputed every chart each time.
+const Analytics = React.memo(AnalyticsView);
+function AnalyticsView({ catches, spots, trips, observations }) {
   var useState = React.useState;
   var speciesState = useState("all");
   var speciesFilter = speciesState[0], setSpeciesFilter = speciesState[1];
@@ -4940,6 +4986,10 @@ function Analytics({ catches, spots, trips, observations }) {
   var incObs = dataFilter === "obs" || dataFilter === "both";
   var incSpots = dataFilter === "spots";
 
+  // All the statistics, recomputed only when the data or a filter changes —
+  // not when a map chip is toggled (those only change what the map draws)
+  var S = React.useMemo(function() {
+
   // Every item below is bucketed/filtered by CALENDAR date as lived at its
   // own location (localParts + each item's GPS anchor), not the viewer's
   // current device timezone — otherwise a trip fished abroad can silently
@@ -4950,6 +5000,13 @@ function Analytics({ catches, spots, trips, observations }) {
   spots.forEach(function(s) { spotById[s.id] = s; });
   var tripSpotsMap = {};
   spots.forEach(function(s) { (tripSpotsMap[s.tripId] = tripSpotsMap[s.tripId] || []).push(s); });
+  // Each trip's spots in visit order, sorted once — the per-chart walks below
+  // each used to filter the whole spots array and re-sort it for every trip
+  var tripSpotsSorted = {};
+  Object.keys(tripSpotsMap).forEach(function(id) {
+    tripSpotsSorted[id] = tripSpotsMap[id].slice().sort(function(a, b) { return new Date(a.timestamp) - new Date(b.timestamp); });
+  });
+  var sortedSpotsOf = function(t) { return tripSpotsSorted[t.id] || []; };
 
   // All unique years from completed trips
   var allYears = Array.from(new Set(
@@ -5001,7 +5058,7 @@ function Analytics({ catches, spots, trips, observations }) {
       for (var i = 0; i < pts.length; i++) if (gpsInArea({ lat: pts[i][0], lon: pts[i][1] })) return true;
       return false;
     }
-    return spots.some(function(s) { return s.tripId === t.id && spotInArea(s); });
+    return (tripSpotsMap[t.id] || []).some(spotInArea);
   });
 
   // Species-filtered catches (on top of year + location filters)
@@ -5074,8 +5131,7 @@ function Analytics({ catches, spots, trips, observations }) {
           segs.push([pts[i - 1][2] * 1000, pts[i][2] * 1000]);
       }
     } else {
-      var ts = spots.filter(function(s) { return s.tripId === t.id; })
-        .sort(function(a, b) { return new Date(a.timestamp) - new Date(b.timestamp); });
+      var ts = sortedSpotsOf(t);
       segs = [];
       ts.forEach(function(s, idx) {
         if (!spotInArea(s)) return;
@@ -5151,16 +5207,18 @@ function Analytics({ catches, spots, trips, observations }) {
   var pressBuckets = ["<1000", "1000–1005", "1005–1010", "1010–1015", "1015–1020", "1020–1025", "1025–1030", ">1030"];
   var moonBuckets  = ["🌑 New", "🌒 Wax.Cres.", "🌓 First Q.", "🌔 Wax.Gib.", "🌕 Full", "🌖 Wan.Gib.", "🌗 Last Q.", "🌘 Wan.Cres."];
 
-  var getWT = function(c) { return c.waterTemp != null ? c.waterTemp : (spots.find(function(s) { return s.id === c.spotId; }) || {}).waterTemp ?? null; };
+  var getWT = function(c) { return c.waterTemp != null ? c.waterTemp : (spotById[c.spotId] || {}).waterTemp ?? null; };
   var getPress = function(c) {
     var p = c.weather ? c.weather.pressure : null;
     if (p != null) return p;
-    var spot = spots.find(function(s) { return s.id === c.spotId; });
+    var spot = spotById[c.spotId];
     return spot && spot.weather ? spot.weather.pressure : null;
   };
   // ── Water temp buckets (from all year-filtered data) ──
+  var kpiTripIds = {};
+  kpiTrips.forEach(function(t) { kpiTripIds[t.id] = 1; });
   var allTemps = fEvents.map(getWT).concat(
-    spots.filter(function(s) { return spotInLoc(s) && kpiTrips.some(function(t) { return t.id === s.tripId; }); })
+    spots.filter(function(s) { return spotInLoc(s) && kpiTripIds[s.tripId]; })
       .map(function(s) { return s.waterTemp; })
   ).filter(function(t) { return t != null; }).map(function(t) { return parseFloat(t); }).filter(function(t) { return !isNaN(t); });
   var tempBucketsAll = (function() {
@@ -5217,8 +5275,7 @@ function Analytics({ catches, spots, trips, observations }) {
   var tempHours = {};
   tempBucketsAll.forEach(function(b) { tempHours[b] = 0; });
   kpiTrips.filter(function(t) { return t.endTime; }).forEach(function(t) {
-    var tripSpots = spots.filter(function(s) { return s.tripId === t.id; })
-      .sort(function(a, b) { return new Date(a.timestamp) - new Date(b.timestamp); });
+    var tripSpots = sortedSpotsOf(t);
     var tripEnd = new Date(t.endTime).getTime();
     tripSpots.forEach(function(s, idx) {
       if (!spotInLoc(s)) return;
@@ -5235,12 +5292,13 @@ function Analytics({ catches, spots, trips, observations }) {
   });
 
   // ── Helper: get representative weather for a trip (from catches or spots) ──
+  // First catch / first spot carrying weather, per trip (array order, same as
+  // the .find()s this replaces) — looked up once instead of per trip per chart
+  var firstCatchWx = {}, firstSpotWx = {};
+  yCatches.forEach(function(c) { if (c.weather && !firstCatchWx[c.tripId]) firstCatchWx[c.tripId] = c.weather; });
+  spots.forEach(function(s) { if (s.weather && !firstSpotWx[s.tripId]) firstSpotWx[s.tripId] = s.weather; });
   var getTripWeather = function(t) {
-    var c = yCatches.find(function(c) { return c.tripId === t.id && c.weather; });
-    if (c) return c.weather;
-    var s = spots.find(function(s) { return s.tripId === t.id && s.weather; });
-    if (s) return s.weather;
-    return t.weather || null; // trolling trips carry start weather themselves
+    return firstCatchWx[t.id] || firstSpotWx[t.id] || t.weather || null; // trolling trips carry start weather themselves
   };
 
   // ── Moon Phase — hours per catch ──
@@ -5271,8 +5329,7 @@ function Analytics({ catches, spots, trips, observations }) {
   var pressHours = {};
   pressBuckets.forEach(function(b) { pressHours[b] = 0; });
   kpiTrips.filter(function(t) { return t.endTime; }).forEach(function(t) {
-    var tripSpots = spots.filter(function(s) { return s.tripId === t.id; })
-      .sort(function(a, b) { return new Date(a.timestamp) - new Date(b.timestamp); });
+    var tripSpots = sortedSpotsOf(t);
     var tripEnd = new Date(t.endTime).getTime();
     var spotsHaveWeather = tripSpots.some(function(s) { return s.weather && s.weather.pressure != null; });
     if (spotsHaveWeather) {
@@ -5310,15 +5367,14 @@ function Analytics({ catches, spots, trips, observations }) {
   var getWindDir = function(c) {
     var d = c.weather ? c.weather.windDir : null;
     if (d != null) return d;
-    var spot = spots.find(function(s) { return s.id === c.spotId; });
+    var spot = spotById[c.spotId];
     var sd = spot && spot.weather ? spot.weather.windDir : null;
     return sd != null ? sd : null;
   };
   var windHours = {};
   windBuckets.forEach(function(b) { windHours[b] = 0; });
   kpiTrips.filter(function(t) { return t.endTime; }).forEach(function(t) {
-    var tripSpots = spots.filter(function(s) { return s.tripId === t.id; })
-      .sort(function(a, b) { return new Date(a.timestamp) - new Date(b.timestamp); });
+    var tripSpots = sortedSpotsOf(t);
     var tripEnd = new Date(t.endTime).getTime();
     var spotsHaveWind = tripSpots.some(function(s) { return s.weather && s.weather.windDir != null; });
     if (spotsHaveWind) {
@@ -5375,14 +5431,14 @@ function Analytics({ catches, spots, trips, observations }) {
   var getCloud = function(c) {
     var v = c.weather ? c.weather.cloudCover : null;
     if (v != null) return v;
-    var spot = spots.find(function(s) { return s.id === c.spotId; });
+    var spot = spotById[c.spotId];
     var sv = spot && spot.weather ? spot.weather.cloudCover : null;
     return sv != null ? sv : null;
   };
   var getPrecip = function(c) {
     var v = c.weather ? c.weather.precipMm : null;
     if (v != null) return v;
-    var spot = spots.find(function(s) { return s.id === c.spotId; });
+    var spot = spotById[c.spotId];
     var sv = spot && spot.weather ? spot.weather.precipMm : null;
     return sv != null ? sv : null;
   };
@@ -5390,8 +5446,7 @@ function Analytics({ catches, spots, trips, observations }) {
   skyBuckets.forEach(function(b) { skyHours[b] = 0; });
   rainBuckets.forEach(function(b) { rainHours[b] = 0; });
   kpiTrips.filter(function(t) { return t.endTime; }).forEach(function(t) {
-    var tripSpots = spots.filter(function(s) { return s.tripId === t.id; })
-      .sort(function(a, b) { return new Date(a.timestamp) - new Date(b.timestamp); });
+    var tripSpots = sortedSpotsOf(t);
     var tripEnd = new Date(t.endTime).getTime();
     // One presence test covers both charts: the capture block writes cloudCover
     // and precipMm together, so a record has conditions or it has neither
@@ -5462,7 +5517,7 @@ function Analytics({ catches, spots, trips, observations }) {
   var methodHours = {};
   kpiTrips.filter(function(t) { return t.endTime; }).forEach(function(t) {
     var dur = segHours(t);
-    var tripSpots = spots.filter(function(s) { return s.tripId === t.id && spotInLoc(s); });
+    var tripSpots = (tripSpotsMap[t.id] || []).filter(spotInLoc);
     var lines = tripSpots.map(function(s) { return s.lineType; }).filter(Boolean);
     if (!lines.length) return;
     var counts = {};
@@ -5475,7 +5530,7 @@ function Analytics({ catches, spots, trips, observations }) {
   });
   var methodCatches = {};
   fEventsEnded.forEach(function(c) {
-    var spot = spots.find(function(s) { return s.id === c.spotId; });
+    var spot = spotById[c.spotId];
     var lt = spot ? spot.lineType : null;
     if (!lt) return;
     methodCatches[lt] = (methodCatches[lt] || 0) + (c._w || 1);
@@ -5500,8 +5555,7 @@ function Analytics({ catches, spots, trips, observations }) {
   // rather than merged with other unnamed spots that may be unrelated.
   var spotHoursByName = {}, spotRepByName = {};
   kpiTrips.filter(function(t) { return t.endTime; }).forEach(function(t) {
-    var tripSpots = (tripSpotsMap[t.id] || []).slice()
-      .sort(function(a, b) { return new Date(a.timestamp) - new Date(b.timestamp); });
+    var tripSpots = sortedSpotsOf(t);
     var tripEnd = new Date(t.endTime).getTime();
     tripSpots.forEach(function(s, idx) {
       if (!spotInLoc(s)) return;
@@ -5523,7 +5577,9 @@ function Analytics({ catches, spots, trips, observations }) {
   // ── KPIs ──
   var totalCatches  = fEvents.reduce(function(s, e) { return s + (e._w || 1); }, 0);
   var totalSessions = kpiTrips.filter(function(t) { return t.endTime; }).length;
-  var hitSessions   = kpiTrips.filter(function(t) { return t.endTime && fEvents.some(function(e) { return e.tripId === t.id; }); }).length;
+  var eventTripIds = {};
+  fEvents.forEach(function(e) { eventTripIds[e.tripId] = 1; });
+  var hitSessions   = kpiTrips.filter(function(t) { return t.endTime && eventTripIds[t.id]; }).length;
   var successRate   = totalSessions > 0 ? Math.round(hitSessions / totalSessions * 100) : 0;
   var totalHours    = kpiTrips.filter(function(t) { return t.endTime; }).reduce(function(sum, t) {
     return sum + segHours(t);
@@ -5581,6 +5637,58 @@ function Analytics({ catches, spots, trips, observations }) {
     });
     sizeCounts = sizeBuckets.map(function(b) { return counts[b]; });
   }
+
+    return { allYears, allSpecies, fc, fObs, totalCatches, fishLbl, successRate, largestFish, largest, hrsPerCatch, sizeBuckets, sizeUnit, sizeCounts, methodBuckets, rateUnit, methodValues, fmtRate, methodHours, tempBucketsAll, tempRates, tempHours, tideHierarchy, timeBuckets, timeRates, timeHours, pressBuckets, pressRates, pressHours, windBuckets, windRates, windHours, skyBuckets, skyRates, skyHours, rainBuckets, rainRates, rainHours, speedBuckets, speedRates, speedHours, moonBuckets, moonRates, moonHours, totalSpotsFished, fmtH, totalSpotHours, avgHoursPerSpot, spotGroups, totalSessions };
+  }, [catches, spots, trips, observations, speciesFilter, yearFilter, monthFilter, dataFilter, area]);
+  var allYears = S.allYears;
+  var allSpecies = S.allSpecies;
+  var fc = S.fc;
+  var fObs = S.fObs;
+  var totalCatches = S.totalCatches;
+  var fishLbl = S.fishLbl;
+  var successRate = S.successRate;
+  var largestFish = S.largestFish;
+  var largest = S.largest;
+  var hrsPerCatch = S.hrsPerCatch;
+  var sizeBuckets = S.sizeBuckets;
+  var sizeUnit = S.sizeUnit;
+  var sizeCounts = S.sizeCounts;
+  var methodBuckets = S.methodBuckets;
+  var rateUnit = S.rateUnit;
+  var methodValues = S.methodValues;
+  var fmtRate = S.fmtRate;
+  var methodHours = S.methodHours;
+  var tempBucketsAll = S.tempBucketsAll;
+  var tempRates = S.tempRates;
+  var tempHours = S.tempHours;
+  var tideHierarchy = S.tideHierarchy;
+  var timeBuckets = S.timeBuckets;
+  var timeRates = S.timeRates;
+  var timeHours = S.timeHours;
+  var pressBuckets = S.pressBuckets;
+  var pressRates = S.pressRates;
+  var pressHours = S.pressHours;
+  var windBuckets = S.windBuckets;
+  var windRates = S.windRates;
+  var windHours = S.windHours;
+  var skyBuckets = S.skyBuckets;
+  var skyRates = S.skyRates;
+  var skyHours = S.skyHours;
+  var rainBuckets = S.rainBuckets;
+  var rainRates = S.rainRates;
+  var rainHours = S.rainHours;
+  var speedBuckets = S.speedBuckets;
+  var speedRates = S.speedRates;
+  var speedHours = S.speedHours;
+  var moonBuckets = S.moonBuckets;
+  var moonRates = S.moonRates;
+  var moonHours = S.moonHours;
+  var totalSpotsFished = S.totalSpotsFished;
+  var fmtH = S.fmtH;
+  var totalSpotHours = S.totalSpotHours;
+  var avgHoursPerSpot = S.avgHoursPerSpot;
+  var spotGroups = S.spotGroups;
+  var totalSessions = S.totalSessions;
 
   if (!catches.length && !(observations || []).length && !totalSessions) {
     return React.createElement("div", { className: "stat-empty-msg" }, "No data yet — log sessions and catches to see insights");
@@ -6095,9 +6203,14 @@ function loadLeaflet() {
     const css = document.createElement("link");
     css.rel = "stylesheet";
     css.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+    css.integrity = "sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H";
+    css.crossOrigin = "anonymous";
     document.head.appendChild(css);
     const s = document.createElement("script");
     s.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+    // Pinned + hashed like the scripts in <head> (see the comment there)
+    s.integrity = "sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH";
+    s.crossOrigin = "anonymous";
     s.onload = () => resolve(window.L);
     s.onerror = () => { _leafletPromise = null; reject(new Error("Leaflet load failed")); };
     document.head.appendChild(s);
@@ -6114,9 +6227,13 @@ function loadLeafletCluster() {
     const css = document.createElement("link");
     css.rel = "stylesheet";
     css.href = "https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css";
+    css.integrity = "sha384-pmjIAcz2bAn0xukfxADbZIb3t8oRT9Sv0rvO+BR5Csr6Dhqq+nZs59P0pPKQJkEV";
+    css.crossOrigin = "anonymous";
     document.head.appendChild(css);
     const s = document.createElement("script");
     s.src = "https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js";
+    s.integrity = "sha384-eXVCORTRlv4FUUgS/xmOyr66XBVraen8ATNLMESp92FKXLAMiKkerixTiBvXriZr";
+    s.crossOrigin = "anonymous";
     s.onload = () => resolve(L);
     s.onerror = () => { _clusterPromise = null; reject(new Error("Cluster plugin load failed")); };
     document.head.appendChild(s);
@@ -6149,7 +6266,7 @@ function TrollMap({ track, catches, highlightId, fill }) {
       const hot = cp.id === highlightId;
       const col = hot ? "#b85a4a" : "#3d5a4a";
       const m = L.circleMarker([cp.lat, cp.lon], { radius: hot ? 9 : 7, color: col, fillColor: col, fillOpacity: .85 }).addTo(layer);
-      if (cp.label) m.bindTooltip(cp.label);
+      if (cp.label) m.bindTooltip(escHtml(cp.label)); // user-typed text; Leaflet treats strings as HTML
     });
   };
   useEffect(() => {
@@ -6266,7 +6383,7 @@ function ClusterMap({ catches, obs, spotPts, area, onAreaSelect }) {
         });
         pts.forEach(p => {
           const m = L.marker([p.lat, p.lon], { icon: badge(p.w, col, true, hoursMode), clWeight: p.w });
-          if (p.label) m.bindTooltip(p.label);
+          if (p.label) m.bindTooltip(escHtml(p.label)); // user-typed text; Leaflet treats strings as HTML
           grp.addLayer(m);
           bounds.extend([p.lat, p.lon]);
         });
