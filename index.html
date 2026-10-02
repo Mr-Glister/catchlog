@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.70-exp</title>
+  <title>The Catch Log v2.71-exp</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -73,33 +73,134 @@
     function cloudDoc(uid) {
       return fbDb.doc('users/' + uid + '/catchlog/data');
     }
+    // Trolling tracks are the one thing that grows without bound inside the
+    // single cloud doc (Firestore caps a doc at 1 MiB). In the CLOUD copy only,
+    // a track is stored as a compact string: "p1:" + polyline-style varints of
+    // the deltas of lat*1e5, lon*1e5 and epoch seconds — ~5 bytes a point
+    // instead of ~25. Locally (state, localStorage, backups) tracks stay flat
+    // number arrays; conversion happens only at the cloud boundary.
+    // Round-trips exactly: points are already rounded to 5 decimals.
+    function trackEncode(track) {
+      if (!Array.isArray(track) || !track.length) return track;
+      var flat = Array.isArray(track[0]) ? [].concat.apply([], track) : track;
+      var out = 'p1:', prev = [0, 0, 0], sc = [1e5, 1e5, 1];
+      for (var i = 0; i + 2 < flat.length; i += 3) {
+        for (var k = 0; k < 3; k++) {
+          var v = Math.round(flat[i + k] * sc[k]);
+          var d = v - prev[k];
+          prev[k] = v;
+          // zigzag + base-32 chunks with arithmetic, not bit ops — epoch
+          // seconds overflow 32-bit shifts
+          var z = d < 0 ? -2 * d - 1 : 2 * d;
+          while (z >= 32) { out += String.fromCharCode((32 + z % 32) + 63); z = Math.floor(z / 32); }
+          out += String.fromCharCode(z + 63);
+        }
+      }
+      return out;
+    }
+    function trackDecode(s) {
+      if (typeof s !== 'string') return s;
+      if (s.slice(0, 3) !== 'p1:') return [];
+      var out = [], prev = [0, 0, 0], sc = [1e5, 1e5, 1], i = 3, k = 0;
+      while (i < s.length) {
+        var z = 0, mul = 1, b;
+        do { b = s.charCodeAt(i++) - 63; z += (b % 32) * mul; mul *= 32; } while (b >= 32 && i < s.length);
+        prev[k] += z % 2 ? -(z + 1) / 2 : z / 2;
+        out.push(sc[k] === 1 ? prev[k] : prev[k] / sc[k]);
+        k = (k + 1) % 3;
+      }
+      return out.slice(0, out.length - out.length % 3);
+    }
+    function cloudTripsIn(trips) {
+      return (trips || []).map(function(t) {
+        return t && typeof t.track === 'string' ? Object.assign({}, t, { track: trackDecode(t.track) }) : t;
+      });
+    }
+    function cloudTripsOut(trips) {
+      return (trips || []).map(function(t) {
+        return t && Array.isArray(t.track) && t.track.length ? Object.assign({}, t, { track: trackEncode(t.track) }) : t;
+      });
+    }
     function cloudPull(uid) {
       return cloudDoc(uid).get().then(function(snap) {
-        return snap.exists ? snap.data() : null;
+        if (!snap.exists) return null;
+        var d = snap.data();
+        d.trips = cloudTripsIn(d.trips);
+        return d;
       });
     }
     function cloudReadJSON(key, fallback) {
       try { return JSON.parse(localStorage.getItem(key) || fallback); } catch (e) { return JSON.parse(fallback); }
     }
+    var CLOUD_DOC_WARN_BYTES = 800000; // warn well before Firestore's 1 MiB doc cap
+    var _cloudSizeWarned = false;
+    // Set by the app: absorbs records another device pushed in the meantime
+    var _onCloudMerged = null;
+    // A push is a read-merge-write TRANSACTION, not a blind set(). A blind set
+    // wrote this device's copy over the whole doc, so with two devices open the
+    // last pusher silently deleted the other's new records from the cloud
+    // (the per-record merge only ran at sign-in).
     function cloudPush(uid) {
-      var spots   = cloudReadJSON('fl_spots_v2', '[]');
-      var catches = cloudReadJSON('fl_catches_v3', '[]');
-      // Only push photo URLs still referenced by a record — stale entries
-      // otherwise accumulate forever and eat into the 1MB Firestore doc limit
-      var photoUrls = cloudReadJSON('cl_photo_urls', '{}');
-      var refd = {};
-      spots.forEach(function(s) { if (s.photo) refd[s.photo] = 1; });
-      catches.forEach(function(c) { if (c.fishPhoto) refd[c.fishPhoto] = 1; if (c.flyPhoto) refd[c.flyPhoto] = 1; });
-      var prunedUrls = {};
-      Object.keys(photoUrls).forEach(function(id) { if (refd[id]) prunedUrls[id] = photoUrls[id]; });
-      return cloudDoc(uid).set({
-        trips:        cloudReadJSON('fl_trips_v3', '[]'),
-        spots:        spots,
-        catches:      catches,
-        observations: cloudReadJSON('fl_obs_v2', '[]'),
-        photoUrls:    prunedUrls,
-        deleted:      cloudReadJSON('fl_deleted_v1', '{}'),
-        lastUpdated:  Date.now()
+      var ref = cloudDoc(uid);
+      return fbDb.runTransaction(function(tx) {
+        // Re-read local on every attempt — Firestore may retry this function
+        return tx.get(ref).then(function(snap) {
+          var remote = snap.exists ? snap.data() : {};
+          var local = {
+            trips:        cloudReadJSON('fl_trips_v3', '[]'),
+            spots:        cloudReadJSON('fl_spots_v2', '[]'),
+            catches:      cloudReadJSON('fl_catches_v3', '[]'),
+            observations: cloudReadJSON('fl_obs_v2', '[]')
+          };
+          var deleted = cloudMergeDeleted(cloudReadJSON('fl_deleted_v1', '{}'), remote.deleted);
+          var merged = {
+            trips:        cloudMergeById(local.trips,        cloudTripsIn(remote.trips), deleted),
+            spots:        cloudMergeById(local.spots,        remote.spots,               deleted),
+            catches:      cloudMergeById(local.catches,      remote.catches,             deleted),
+            observations: cloudMergeById(local.observations, remote.observations,        deleted)
+          };
+          // Did the cloud hold anything this device doesn't? (a record not taken
+          // from the local copy, or a local record the merge dropped)
+          var remoteNews = Object.keys(local).some(function(k) {
+            var mine = new Set(local[k]);
+            return merged[k].length !== local[k].length || merged[k].some(function(r) { return !mine.has(r); });
+          });
+          // Photo URLs: union of both sides, pruned to ids a record still
+          // references — stale entries otherwise eat into the 1MB doc limit
+          var urls = Object.assign({}, remote.photoUrls || {}, cloudReadJSON('cl_photo_urls', '{}'));
+          var refd = {};
+          merged.spots.forEach(function(s) { if (s.photo) refd[s.photo] = 1; });
+          merged.catches.forEach(function(c) { if (c.fishPhoto) refd[c.fishPhoto] = 1; if (c.flyPhoto) refd[c.flyPhoto] = 1; });
+          var prunedUrls = {};
+          Object.keys(urls).forEach(function(id) { if (refd[id]) prunedUrls[id] = urls[id]; });
+          var payload = {
+            trips:        cloudTripsOut(merged.trips),
+            spots:        merged.spots,
+            catches:      merged.catches,
+            observations: merged.observations,
+            photoUrls:    prunedUrls,
+            deleted:      deleted,
+            lastUpdated:  Date.now()
+          };
+          var bytes = JSON.stringify(payload).length;
+          if (bytes > CLOUD_DOC_WARN_BYTES && !_cloudSizeWarned) {
+            _cloudSizeWarned = true;
+            window.dispatchEvent(new CustomEvent('catchlog-storage-error', { detail:
+              'Cloud data is ' + Math.round(bytes / 1024) + ' KB of the 1024 KB limit — export a backup now.' }));
+          }
+          tx.set(ref, payload);
+          return { merged: merged, deleted: deleted, photoUrls: prunedUrls, remoteNews: remoteNews };
+        });
+      }).then(function(res) {
+        if (res.remoteNews && _onCloudMerged) _onCloudMerged(res.merged, res.deleted);
+        // Keep photo URLs another device uploaded, so they can be shown here
+        var cur = cloudReadJSON('cl_photo_urls', '{}');
+        var added = false;
+        Object.keys(res.photoUrls).forEach(function(id) { if (!cur[id]) { cur[id] = res.photoUrls[id]; added = true; } });
+        if (added) {
+          _origLocalStorageSet('cl_photo_urls', JSON.stringify(cur));
+          if (typeof cloudDownloadPhotos === 'function') cloudDownloadPhotos(cur);
+        }
       });
     }
     // Merge two copies of a record array: newest updatedAt wins per id, records
@@ -154,6 +255,10 @@
       if (!user) return;
       clearTimeout(_cloudSyncTimer);
       _cloudSyncTimer = setTimeout(function() {
+        // A sign-in pull may have started since this push was queued
+        if (_cloudLoading || fbAuth.currentUser !== user) return;
+        // Transactions need the server; the 'online' listener retries later
+        if (!navigator.onLine) return;
         if (_onCloudSync) _onCloudSync('loading', null);
         cloudPush(user.uid).then(function() {
           if (_onCloudSync) _onCloudSync('synced', new Date());
@@ -216,10 +321,26 @@
     // back on next launch (the UI warns about this).
     function wipeLocalData() {
       ['fl_trips_v3', 'fl_spots_v2', 'fl_catches_v3', 'fl_obs_v2', 'fl_deleted_v1',
-       'cl_lastUpdated', 'cl_photo_urls', 'cl_photos_migrated', 'cl_lastBackup'
+       'cl_lastUpdated', 'cl_photo_urls', 'cl_photos_migrated', 'cl_lastBackup', 'cl_wx_repair_tried'
       ].forEach(function(k) { localStorage.removeItem(k); });
-      try { indexedDB.deleteDatabase('catchlog-photos'); } catch (e) {}
-      location.reload();
+      clearTimeout(_cloudSyncTimer);
+      _cloudLoading = true; // nothing may push between here and the reload
+      // Our own open connection would block the delete — close it first
+      try { if (typeof photoDB !== 'undefined' && photoDB._db) { photoDB._db.close(); photoDB._db = null; } } catch (e) {}
+      var photosGone = new Promise(function(resolve) {
+        try {
+          var req = indexedDB.deleteDatabase('catchlog-photos');
+          req.onsuccess = req.onerror = req.onblocked = function() { resolve(); };
+        } catch (e) { resolve(); }
+      });
+      // Firestore's offline cache holds a full copy of the data (and queued
+      // writes) — clearing it requires terminating the instance first
+      var cacheGone = fbDb.terminate()
+        .then(function() { return fbDb.clearPersistence(); })
+        .catch(function(e) { console.warn('Could not clear Firestore cache', e); });
+      // Never hang the wipe on a stuck promise
+      var timeout = new Promise(function(resolve) { setTimeout(resolve, 5000); });
+      Promise.race([Promise.all([photosGone, cacheGone]), timeout]).then(function() { location.reload(); });
     }
     // Intercept all localStorage writes to CatchLog keys → schedule auto-push
     // Also stamp cl_lastUpdated so we can compare against cloud on sign-in
@@ -971,6 +1092,21 @@ const DATUM_CACHE = (() => {
 function saveDatumCache() {
   try { localStorage.setItem("cl_tide_datums", JSON.stringify(DATUM_CACHE)); } catch {}
 }
+// Kartverket only covers Norwegian waters (mainland coast + Svalbard). Outside
+// these boxes every call came back empty after ~5 proxy round-trips (8s timeout
+// each) before NOAA was even tried, and sent the position to Kartverket for
+// nothing. Generous on purpose: a false positive just costs the old behaviour.
+function inKartverketArea(lat, lon) {
+  return (lat >= 57.5 && lat <= 72 && lon >= 4 && lon <= 31.5) ||
+         (lat >= 74 && lat <= 81.5 && lon >= 10 && lon <= 35);
+}
+// Plain fetch with a timeout — a stalled NOAA connection otherwise pinned the
+// tide panel on "loading" indefinitely
+async function fetchWithTimeout(url, ms) {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), ms || 10000);
+  try { return await fetch(url, { signal: ac.signal }); } finally { clearTimeout(timer); }
+}
 async function fetchKartverketTide(lat, lon, isoTs) {
   const BASE = "https://vannstand.kartverket.no/tideapi.php";
   const proxies = ["https://catchlog-tide-proxy.reinhard-fellner.workers.dev/?url="];
@@ -999,7 +1135,9 @@ async function fetchKartverketTide(lat, lon, isoTs) {
   };
   const ls = lat.toFixed(6),
     lo = lon.toFixed(6),
-    ck = `${ls},${lo}`;
+    // Datums vary over kilometres, not metres: a 6-decimal key almost never
+    // hit again, so the cache just grew. 3 decimals is ~100m.
+    ck = `${lat.toFixed(3)},${lon.toFixed(3)}`;
   const cd = new Date(isoTs),
     from = new Date(cd.getTime() - 3600000),  // 60 min before — wide enough for forecast/observation series to appear
     to   = new Date(cd.getTime() + 3600000);  // 60 min after (must use getTime(): Date + number string-concatenates, which Safari rejects as Invalid Date)
@@ -1017,8 +1155,10 @@ async function fetchKartverketTide(lat, lon, isoTs) {
           mlwsCM = p.mlws;
           DATUM_CACHE[ck] = { mhwsCM, mlwsCM };
           saveDatumCache();
-          break;
         }
+        // A real Kartverket answer without levels is an answer, not a
+        // transient proxy failure — retrying can't change it
+        break;
       } catch (e) {
         if (attempt === 3) console.warn("datum levels failed after 4 attempts", e);
       }
@@ -1110,13 +1250,15 @@ function loadNOAAStations() {
       const cached = JSON.parse(localStorage.getItem(NOAA_STATIONS_KEY) || "null");
       if (cached && Array.isArray(cached.stations) && Date.now() - cached.ts < NOAA_STATIONS_TTL) return cached.stations;
     } catch {}
-    const r = await fetch("https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations.json?type=tidepredictions&units=metric");
+    const r = await fetchWithTimeout("https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations.json?type=tidepredictions&units=metric", 20000);
     if (!r.ok) throw new Error("noaa stations");
     const d = await r.json();
     const stations = (d.stations || []).filter(s => s.lat != null && s.lng != null).map(s => ({ id: s.id, lat: s.lat, lng: s.lng }));
     try { localStorage.setItem(NOAA_STATIONS_KEY, JSON.stringify({ ts: Date.now(), stations })); } catch {}
     return stations;
   })();
+  // A failed download must not stay cached as a rejection until reload
+  noaaStationsPromise.catch(() => { noaaStationsPromise = null; });
   return noaaStationsPromise;
 }
 function nearestNOAAStation(stations, lat, lon) {
@@ -1148,13 +1290,14 @@ function loadNOAAWaterlevelStations() {
       const cached = JSON.parse(localStorage.getItem(NOAA_WL_STATIONS_KEY) || "null");
       if (cached && Array.isArray(cached.stations) && Date.now() - cached.ts < NOAA_STATIONS_TTL) return cached.stations;
     } catch {}
-    const r = await fetch("https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations.json?type=waterlevels&units=metric");
+    const r = await fetchWithTimeout("https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations.json?type=waterlevels&units=metric", 20000);
     if (!r.ok) throw new Error("noaa wl stations");
     const d = await r.json();
     const stations = (d.stations || []).filter(s => s.lat != null && s.lng != null).map(s => ({ id: s.id, lat: s.lat, lng: s.lng }));
     try { localStorage.setItem(NOAA_WL_STATIONS_KEY, JSON.stringify({ ts: Date.now(), stations })); } catch {}
     return stations;
   })();
+  noaaWLStationsPromise.catch(() => { noaaWLStationsPromise = null; });
   return noaaWLStationsPromise;
 }
 const NOAA_DATUM_CACHE = (() => {
@@ -1167,7 +1310,7 @@ async function fetchNOAADatums(stationId) {
   if (NOAA_DATUM_CACHE[stationId]) return NOAA_DATUM_CACHE[stationId];
   // NOAA retired product=datums from the Data API (datagetter) — a live 400
   // response now points here instead: the Metadata API's per-station resource
-  const r = await fetch(`https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/${stationId}/datums.json?units=metric`);
+  const r = await fetchWithTimeout(`https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/${stationId}/datums.json?units=metric`, 10000);
   const txt = await r.text();
   if (!r.ok) throw new Error(`HTTP ${r.status}: ${txt.slice(0, 200)}`);
   let d; try { d = JSON.parse(txt); } catch { throw new Error(`bad JSON: ${txt.slice(0, 200)}`); }
@@ -1224,11 +1367,11 @@ async function fetchNOAATide(lat, lon, isoTs) {
   const common = `station=${station.id}&datum=MLLW&units=metric&time_zone=gmt&format=json&product=predictions`;
   const [datums, sixMin, hilo] = await Promise.all([
     fetchNOAADatumsNearby(lat, lon, station.id).catch(() => null),
-    fetch(`${dg}?${common}&interval=6&begin_date=${encodeURIComponent(toNOAATime(from))}&end_date=${encodeURIComponent(toNOAATime(to))}`)
+    fetchWithTimeout(`${dg}?${common}&interval=6&begin_date=${encodeURIComponent(toNOAATime(from))}&end_date=${encodeURIComponent(toNOAATime(to))}`)
       .then(r => r.ok ? r.json() : null).then(parseNOAAPredictions).catch(() => []),
     // Subordinate stations (most of the coastline) only publish hi/lo predictions,
     // not a 6-minute curve — this also feeds the interpolation fallback below
-    fetch(`${dg}?${common}&interval=hilo&begin_date=${encodeURIComponent(toNOAATime(hiloFrom))}&end_date=${encodeURIComponent(toNOAATime(hiloTo))}`)
+    fetchWithTimeout(`${dg}?${common}&interval=hilo&begin_date=${encodeURIComponent(toNOAATime(hiloFrom))}&end_date=${encodeURIComponent(toNOAATime(hiloTo))}`)
       .then(r => r.ok ? r.json() : null).then(parseNOAAPredictions).catch(() => [])
   ]);
   let valueCM = null, direction = null;
@@ -1271,11 +1414,13 @@ async function fetchNOAATide(lat, lon, isoTs) {
   };
 }
 async function fetchTideData(lat, lon, isoTs) {
-  try {
-    const res = await fetchKartverketTide(lat, lon, isoTs);
-    if (res) return res;
-  } catch (e) {
-    console.warn("kartverket tide failed, trying NOAA", e);
+  if (inKartverketArea(lat, lon)) {
+    try {
+      const res = await fetchKartverketTide(lat, lon, isoTs);
+      if (res) return res;
+    } catch (e) {
+      console.warn("kartverket tide failed, trying NOAA", e);
+    }
   }
   try {
     return await fetchNOAATide(lat, lon, isoTs);
@@ -1380,13 +1525,19 @@ function deriveHourlyWx(omData, atMs) {
 // the caller's current state, so anything deleted locally (or by another
 // device, once that tombstone has synced) simply isn't in the array to begin
 // with and can never be resurrected by this pass.
+// Records the archive answered for but still couldn't complete (it doesn't
+// serve that field there) are not re-fetched on every launch — only weekly.
+const WX_TRIED_KEY = "cl_wx_repair_tried";
+const WX_RETRY_MS = 7 * 86400000;
 async function repairMissingWeather({ trips, spots, catches, observations, mutTrips, mutSpots, mutCatches, mutObs, showToast }) {
   if (!navigator.onLine) return;
+  let tried; try { tried = JSON.parse(localStorage.getItem(WX_TRIED_KEY) || "{}"); } catch { tried = {}; }
+  const due = r => needsWxRepair(r) && !(tried[r.id] && Date.now() - tried[r.id] < WX_RETRY_MS);
   const targets = [
-    ...spots.filter(needsWxRepair).map(r => ({ kind: "spot", r })),
-    ...catches.filter(needsWxRepair).map(r => ({ kind: "catch", r })),
-    ...observations.filter(needsWxRepair).map(r => ({ kind: "obs", r })),
-    ...trips.filter(t => t.mode === "trolling" && needsWxRepair(t)).map(r => ({ kind: "trip", r }))
+    ...spots.filter(due).map(r => ({ kind: "spot", r })),
+    ...catches.filter(due).map(r => ({ kind: "catch", r })),
+    ...observations.filter(due).map(r => ({ kind: "obs", r })),
+    ...trips.filter(t => t.mode === "trolling" && due(t)).map(r => ({ kind: "trip", r }))
   ];
   if (!targets.length) return;
 
@@ -1399,6 +1550,9 @@ async function repairMissingWeather({ trips, spots, catches, observations, mutTr
   const keyOf = (lat, lon, ts) => `${(+lat).toFixed(4)},${(+lon).toFixed(4)}|${new Date(ts).toISOString().slice(0, 10)}`;
   const mutOf = { spot: mutSpots, catch: mutCatches, obs: mutObs, trip: mutTrips };
   let repaired = 0, failed = 0;
+  // Patches collected per kind and applied in ONE mutator call each — one
+  // localStorage write and one cloud push, not one per record
+  const patches = { spot: {}, catch: {}, obs: {}, trip: {} };
   for (const { kind, r } of targets) {
     const ts = r.timestamp || r.startTime;
     const k = keyOf(r.gps.lat, r.gps.lon, ts);
@@ -1415,11 +1569,25 @@ async function repairMissingWeather({ trips, spots, catches, observations, mutTr
     if (!derived) { failed++; continue; }
     const patch = {};
     WX_FIELDS.forEach(f => { if (r.weather?.[f] == null && derived[f] != null) patch[f] = derived[f]; });
+    if (WX_FIELDS.some(f => r.weather?.[f] == null && derived[f] == null)) tried[r.id] = Date.now();
     if (!Object.keys(patch).length) continue;
-    const newWeather = { ...(r.weather || {}), ...patch };
-    mutOf[kind](list => list.map(x => x.id === r.id ? { ...x, weather: newWeather } : x));
+    patches[kind][r.id] = patch;
     repaired++;
   }
+  try { _origLocalStorageSet(WX_TRIED_KEY, JSON.stringify(tried)); } catch {}
+  // Patch built against the record AS IT IS NOW (the fetches above took a
+  // while), filling only fields still empty — an edit made meanwhile wins
+  Object.keys(patches).forEach(kind => {
+    const byId = patches[kind];
+    if (!Object.keys(byId).length) return;
+    mutOf[kind](list => list.map(x => {
+      const patch = byId[x.id];
+      if (!patch) return x;
+      const fill = {};
+      Object.keys(patch).forEach(f => { if (x.weather?.[f] == null) fill[f] = patch[f]; });
+      return Object.keys(fill).length ? { ...x, weather: { ...(x.weather || {}), ...fill } } : x;
+    }));
+  });
   if (repaired) showToast(`Backfilled weather for ${repaired} record${repaired === 1 ? "" : "s"}${failed ? ` (${failed} unavailable)` : ""}`);
 }
 
@@ -1432,11 +1600,17 @@ function useEnv() {
   const [weatherStatus, setWeatherStatus] = useState("idle");
   const [tide, setTide] = useState(null);
   const [tideStatus, setTideStatus] = useState("idle");
+  // Every fetchEnv call takes a ticket; only the newest may write state. A
+  // re-acquire (return to foreground, new GPS fix) starts a second fetch, and
+  // without this a slower OLDER response could land last and overwrite it.
+  const reqRef = useRef(0);
   const fetchEnv = useCallback(async (la, lo, ts) => {
+    const ticket = ++reqRef.current;
+    const live = () => ticket === reqRef.current;
     // Weather and tide run in PARALLEL — tide used to wait behind the whole
     // weather/pressure-history chain (up to ~30s on flaky proxies) before even starting
     const weatherTask = (async () => {
-    setWeatherStatus("loading");
+    if (live()) setWeatherStatus("loading");
 
     // --- Current conditions from met.no Locationforecast (Norwegian model, sea-level pressure) ---
     // Isolated in its own try/catch. Until this fix, met.no's fetch shared an
@@ -1641,6 +1815,9 @@ function useEnv() {
     // still reports "error" rather than writing an all-null weather object
     const gotAnything = airTemp != null || pressure != null || windSpeed != null || windDir != null ||
                          weatherCode != null || cloudCover != null || precipMm != null || pressureHistory != null;
+    if (!live()) return;
+    // Moon for the RECORD's moment, not today's (matters for backdated records)
+    const tsDate = new Date(ts);
     if (gotAnything) {
       setWeather({
         airTemp,
@@ -1656,7 +1833,7 @@ function useEnv() {
         weatherCode,
         cloudCover,
         precipMm,
-        moon: getMoonPhase(new Date())
+        moon: getMoonPhase(isNaN(tsDate.getTime()) ? new Date() : tsDate)
       });
       setWeatherStatus("ok");
     } else {
@@ -1664,16 +1841,17 @@ function useEnv() {
     }
     })();
     const tideTask = (async () => {
-    setTideStatus("loading");
+    if (live()) setTideStatus("loading");
     try {
       const res = await fetchTideData(la, lo, ts);
+      if (!live()) return;
       if (res) {
         setTide(res);
         setTideStatus("ok");
       } else setTideStatus("unavailable");
     } catch (e) {
       console.warn("tide", e);
-      setTideStatus("error");
+      if (live()) setTideStatus("error");
     }
     })();
     await Promise.allSettled([weatherTask, tideTask]);
@@ -1729,6 +1907,7 @@ function useEnv() {
   }, [fetchEnv, clearWatch]);
   const reset = () => {
     clearWatch();
+    reqRef.current++; // orphan any fetch still in flight
     setGps(null);
     setGpsStatus("idle");
     setWeather(null);
@@ -1804,7 +1983,7 @@ const spotsCSV = (spots, trips) => {
   return [h, ...spots.map(s => {
     const t = trips.find(x => x.id === s.tripId);
     const tz = tzFor(s.gps);
-    return row([s.id, s.tripId, t?.name || "", s.name || "", s.timestamp, tz || "", tz ? isoLocal(s.timestamp, tz) : "", s.gps?.lat ?? "", s.gps?.lon ?? "", s.lineType || "", s.waterTemp || "", s.photo ? "1" : "0", s.weather?.airTemp ?? "", wxLabel(s.weather?.weatherCode, s.weather?.cloudCover) || "", s.weather?.cloudCover ?? "", s.weather?.precipMm ?? "", s.weather?.pressure ?? "", s.weather?.pressureLevel || "", s.weather?.pressureTrend || "", s.weather?.windSpeed ?? "", s.weather?.windDir ?? "", moonCSV(s.weather?.moon), s.tide?.seasonal != null ? tidePct(s.tide.seasonal) : "", s.tide?.direction || "", s.tide?.valueCM ?? "", s.notes || ""]);
+    return row([s.id, s.tripId, t?.name || "", s.name || "", s.timestamp, tz || "", tz ? isoLocal(s.timestamp, tz) : "", s.gps?.lat ?? "", s.gps?.lon ?? "", s.lineType || "", s.waterTemp ?? "", s.photo ? "1" : "0", s.weather?.airTemp ?? "", wxLabel(s.weather?.weatherCode, s.weather?.cloudCover) || "", s.weather?.cloudCover ?? "", s.weather?.precipMm ?? "", s.weather?.pressure ?? "", s.weather?.pressureLevel || "", s.weather?.pressureTrend || "", s.weather?.windSpeed ?? "", s.weather?.windDir ?? "", moonCSV(s.weather?.moon), s.tide?.seasonal != null ? tidePct(s.tide.seasonal) : "", s.tide?.direction || "", s.tide?.valueCM ?? "", s.notes || ""]);
   })].join("\n");
 };
 const catchesCSV = (catches, spots, trips) => {
@@ -1915,8 +2094,35 @@ function restoreFromFile(file, onDone) {
           !Array.isArray(data.catches) || !Array.isArray(data.observations)) {
         alert("Invalid backup file — missing expected data."); return;
       }
+      // Field-level checks: a record with an unparseable date poisons every
+      // Insights loop with NaN, and a malformed gps/track/photo crashes the
+      // views that read it. Required fields bad → record dropped (and counted);
+      // optional fields bad → just that field cleared.
+      var validDate = function(v) { return typeof v === 'string' && !isNaN(new Date(v).getTime()); };
+      var finite = function(v) { return typeof v === 'number' && isFinite(v); };
+      var dropped = 0;
       ['trips', 'spots', 'catches', 'observations'].forEach(function(k) {
-        data[k] = data[k].filter(function(r) { return r && typeof r === 'object' && r.id; });
+        data[k] = data[k].filter(function(r) {
+          var ok = r && typeof r === 'object' && typeof r.id === 'string' && r.id &&
+            (k === 'trips' ? validDate(r.startTime) : validDate(r.timestamp));
+          if (!ok) dropped++;
+          return ok;
+        });
+        data[k].forEach(function(r) {
+          if (r.gps != null && !(typeof r.gps === 'object' && finite(r.gps.lat) && finite(r.gps.lon))) r.gps = null;
+          if (k === 'trips') {
+            if (r.endTime != null && !validDate(r.endTime)) r.endTime = null;
+            if (r.track != null) {
+              var flat = Array.isArray(r.track) ? (Array.isArray(r.track[0]) ? [].concat.apply([], r.track) : r.track) : null;
+              r.track = flat && flat.every(finite) ? flat : [];
+            }
+            if (r.pauses != null && !Array.isArray(r.pauses)) r.pauses = [];
+          }
+          ['photo', 'fishPhoto', 'flyPhoto'].forEach(function(f) {
+            var v = r[f];
+            if (v != null && !(typeof v === 'string' && (isPhotoId(v) || /^data:image\//.test(v)))) r[f] = null;
+          });
+        });
       });
       var tasks = [];
       var importPhoto = function(rec, field) {
@@ -1935,6 +2141,7 @@ function restoreFromFile(file, onDone) {
       Promise.allSettled(tasks).then(function(results) {
         var failed = results.filter(function(r) { return r.status === 'rejected'; }).length;
         if (failed) alert(failed + " photo(s) could not be restored and will show blank. All catch/spot data was restored.");
+        if (dropped) alert(dropped + " damaged record(s) in the backup were skipped (missing id or unreadable date).");
         onDone(data);
       });
     } catch(err) { alert("Could not read backup file. Make sure it's a valid CatchLog JSON backup."); }
@@ -2005,6 +2212,9 @@ var photoDB = {
         tx.objectStore('photos').put({ id: id, blob: blob });
         tx.oncomplete = function() { resolve(); };
         tx.onerror = function(e) { reject(e.target.error); };
+        // A quota failure ABORTS the transaction; without this the promise
+        // never settled and compressPhoto's callback never ran
+        tx.onabort = function() { reject(tx.error || new Error('Photo write aborted')); };
       });
     });
   },
@@ -2026,6 +2236,7 @@ var photoDB = {
         tx.objectStore('photos').delete(id);
         tx.oncomplete = function() { resolve(); };
         tx.onerror = function(e) { reject(e.target.error); };
+        tx.onabort = function() { reject(tx.error || new Error('Photo delete aborted')); };
       });
     });
   }
@@ -2046,6 +2257,19 @@ function reportStorageError(msg) {
   try { window.dispatchEvent(new CustomEvent('catchlog-storage-error', { detail: msg })); } catch (e) {}
 }
 
+// Fetch a remote photo as a Blob. Rejects on an HTTP error or a non-image
+// body — r.blob() alone happily returned a 403/404 error page, which then got
+// cached in IndexedDB as "the photo" and was never re-fetched.
+function fetchImageBlob(url) {
+  return fetch(url).then(function(r) {
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.blob();
+  }).then(function(b) {
+    if (!b || !/^image\//.test(b.type)) throw new Error('Not an image');
+    return b;
+  });
+}
+
 function photoIdToBase64(id) {
   if (!id) return Promise.resolve(null);
   if (!isPhotoId(id)) return Promise.resolve(id);
@@ -2053,7 +2277,9 @@ function photoIdToBase64(id) {
     if (!blob) return null;
     return new Promise(function(resolve) {
       var reader = new FileReader();
-      reader.onloadend = function() { resolve(reader.result); };
+      // onloadend fires on success AND failure; a failed read gives null
+      // instead of leaving backupAll's Promise.all waiting forever
+      reader.onloadend = function() { resolve(reader.error ? null : reader.result); };
       reader.readAsDataURL(blob);
     });
   });
@@ -2124,9 +2350,9 @@ function usePhoto(ref) {
               setSrc(urls[ref]);
               // Best-effort: cache the blob into IDB for offline use. Needs bucket CORS;
               // harmless if it fails since the image is already displaying via the URL.
-              fetch(urls[ref]).then(function(r) { return r.blob(); }).then(function(b) {
+              fetchImageBlob(urls[ref]).then(function(b) {
                 if (cancelled) return;
-                photoDB.put(ref, b);
+                return photoDB.put(ref, b);
               }).catch(function() {});
             }
           } catch(e) {}
@@ -2199,6 +2425,34 @@ function PhotoLightbox() {
 // Photo input + display. Empty: tap opens camera/picker. Filled: tap opens the
 // zoom viewer, a Replace button reaches the picker. `natural` shows the image
 // in its captured aspect ratio (spots); otherwise a square cover thumb (catch).
+// A picked photo is written to IndexedDB at once, long before its form is
+// saved. Forms track their unsaved picks here: a pick replaced by another is
+// deleted immediately, and anything still unsaved when the form goes away
+// (cancel, tab switch) is deleted then — these used to stay in IndexedDB
+// forever, eating the storage quota. A failed pick keeps the previous photo
+// (compressPhoto reports null; the old code cleared the slot with it).
+function usePendingPhotos() {
+  const pending = useRef(new Set());
+  const slots = useRef({});
+  const discard = id => {
+    photoDB.del(id).catch(() => {});
+    const u = photoCache.get(id);
+    if (u) { URL.revokeObjectURL(u); photoCache.delete(id); }
+  };
+  useEffect(() => () => { pending.current.forEach(discard); pending.current.clear(); }, []);
+  const pick = (file, slot, setter) => compressPhoto(file, id => {
+    if (!id) return;
+    const prev = slots.current[slot];
+    if (prev && pending.current.has(prev)) { pending.current.delete(prev); discard(prev); }
+    slots.current[slot] = id;
+    pending.current.add(id);
+    setter(id);
+  });
+  // Call just BEFORE handing the record to onSave: these ids are now referenced
+  const commit = () => { pending.current.clear(); slots.current = {}; };
+  return { pick, commit };
+}
+
 function PhotoField({ photo, label, natural, camera, onPick }) {
   const ref = useRef();
   const pick = () => { if (ref.current) ref.current.click(); };
@@ -2299,6 +2553,7 @@ function cloudSyncPhotos(uid) {
     if (isPhotoId(c.flyPhoto) && !urlMap[c.flyPhoto]) ids.push(c.flyPhoto);
   });
   if (!ids.length) { _photoSyncRunning = false; return; }
+  var found = {}; // only what THIS run uploaded
   var chain = Promise.resolve();
   ids.forEach(function(id) {
     chain = chain.then(function() {
@@ -2309,6 +2564,7 @@ function cloudSyncPhotos(uid) {
           return ref.getDownloadURL();
         }).then(function(url) {
           urlMap[id] = url;
+          found[id] = url;
         });
       }).catch(function(err) {
         console.error('Photo upload error (' + id + '):', err);
@@ -2316,13 +2572,27 @@ function cloudSyncPhotos(uid) {
     });
   });
   chain.then(function() {
-    _origLocalStorageSet('cl_photo_urls', JSON.stringify(urlMap));
-    return cloudDoc(uid).update({ photoUrls: urlMap });
+    return cloudSavePhotoUrls(uid, found);
   }).catch(function(err) {
     console.error('Photo sync error:', err);
   }).then(function() {
     _photoSyncRunning = false;
   });
+}
+
+// Record newly found photo URLs. Merges into the map as it is NOW and writes
+// only these keys to the cloud: the upload and recovery jobs run concurrently,
+// and each used to write back its whole start-of-run copy, so whichever
+// finished last erased the other's new entries (locally and in Firestore).
+function cloudSavePhotoUrls(uid, found) {
+  var ids = Object.keys(found);
+  if (!ids.length) return Promise.resolve();
+  var cur; try { cur = JSON.parse(localStorage.getItem('cl_photo_urls') || '{}'); } catch(e) { cur = {}; }
+  ids.forEach(function(id) { cur[id] = found[id]; });
+  _origLocalStorageSet('cl_photo_urls', JSON.stringify(cur));
+  var upd = {};
+  ids.forEach(function(id) { upd['photoUrls.' + id] = found[id]; });
+  return cloudDoc(uid).update(upd);
 }
 
 function cloudDeletePhoto(photoId) {
@@ -2345,7 +2615,7 @@ function cloudDownloadPhotos(photoUrls) {
   Object.keys(photoUrls).forEach(function(id) {
     photoDB.get(id).then(function(blob) {
       if (blob) return;
-      return fetch(photoUrls[id]).then(function(r) { return r.blob(); }).then(function(b) {
+      return fetchImageBlob(photoUrls[id]).then(function(b) {
         return photoDB.put(id, b);
       });
     }).catch(function() {});
@@ -2367,11 +2637,12 @@ function cloudRecoverPhotoUrls(uid) {
   if (!ids.length) return;
   console.log('[catchlog] recovering ' + ids.length + ' photo URL(s) from Storage…');
   var recovered = 0, failed = 0;
+  var found = {};
   var chain = Promise.resolve();
   ids.forEach(function(id) {
     chain = chain.then(function() {
       return fbStorage.ref('users/' + uid + '/photos/' + id + '.jpg').getDownloadURL().then(function(url) {
-        urlMap[id] = url; recovered++;
+        urlMap[id] = url; found[id] = url; recovered++;
       }).catch(function(err) {
         failed++;
         console.warn('[catchlog] could not recover photo ' + id + ': ' + (err && err.code ? err.code : err));
@@ -2380,10 +2651,12 @@ function cloudRecoverPhotoUrls(uid) {
   });
   chain.then(function() {
     console.log('[catchlog] photo recovery done — ' + recovered + ' recovered, ' + failed + ' failed');
-    _origLocalStorageSet('cl_photo_urls', JSON.stringify(urlMap));
-    cloudDownloadPhotos(urlMap);
+    var saved = cloudSavePhotoUrls(uid, found).catch(function() {});
+    cloudDownloadPhotos(found);
     window.dispatchEvent(new CustomEvent('catchlog-photos-ready'));
-    if (recovered > 0) cloudDoc(uid).update({ photoUrls: urlMap }).catch(function() {});
+    return saved;
+  }).catch(function(err) {
+    console.warn('[catchlog] photo recovery failed', err);
   });
 }
 
@@ -2544,6 +2817,29 @@ function FishLog() {
     return function() { _onCloudSync = null; };
   }, []);
 
+  // A push found records another device had added/changed/deleted. Merge them
+  // into CURRENT state (inside each updater, so anything edited here since the
+  // push started — a new track point, a just-saved catch — is kept: the newest
+  // updatedAt wins, as everywhere else). Written with the raw setter so this
+  // doesn't itself schedule another push.
+  useEffect(function() {
+    _onCloudMerged = function(merged, remoteDeleted) {
+      let localDeleted; try { localDeleted = JSON.parse(localStorage.getItem('fl_deleted_v1') || '{}'); } catch (e) { localDeleted = {}; }
+      const deleted = cloudMergeDeleted(localDeleted, remoteDeleted);
+      try { _origLocalStorageSet('fl_deleted_v1', JSON.stringify(deleted)); } catch (e) {}
+      const absorb = (setter, key, arr) => setter(p => {
+        const u = cloudMergeById(p, arr, deleted);
+        try { _origLocalStorageSet(key, JSON.stringify(u)); } catch (e) { reportStorageError("Storage is full — synced changes not saved on this device"); }
+        return u;
+      });
+      absorb(setTrips, SK.trips, merged.trips);
+      absorb(setSpots, SK.spots, merged.spots);
+      absorb(setCatches, SK.catches, merged.catches);
+      absorb(setObservations, SK.obs, merged.observations);
+    };
+    return function() { _onCloudMerged = null; };
+  }, []);
+
   // Storage failures (quota, IndexedDB) surface as toasts
   useEffect(() => {
     const onErr = e => showToast(e.detail || "Storage error");
@@ -2676,6 +2972,7 @@ function FishLog() {
     document.addEventListener("visibilitychange", onVis);
     let lastRaw = null; // last decent raw fix, for derived-speed fallback
     let ema = null;     // smoothed live speed (m/s)
+    const gpsWarned = {};
     const watchId = navigator.geolocation.watchPosition(pos => {
       // Live speed: prefer the GPS chip's Doppler speed; fall back to
       // deriving from successive decent fixes. Broadcast as an event only —
@@ -2698,7 +2995,15 @@ function FishLog() {
       lastPt = [lat, lon];
       // Checked inside the updater so a pause takes effect immediately
       mutTrips(p => p.map(t => t.id === tripId && !isPaused(t) ? { ...t, track: [...(t.track || []), lat, lon, Math.round(pos.timestamp / 1000)] } : t));
-    }, () => {}, { enableHighAccuracy: true, maximumAge: 4000, timeout: 60000 });
+    }, err => {
+      // Timeouts are routine on the water; a denied permission means nothing
+      // is being recorded at all, which the banner would otherwise hide.
+      // Each kind is reported once per session so a flaky fix can't spam.
+      if (!err || gpsWarned[err.code]) return;
+      gpsWarned[err.code] = true;
+      if (err.code === 1) showToast("Location permission denied — route is NOT being recorded");
+      else if (err.code === 2) showToast("GPS unavailable — route recording paused until a fix returns");
+    }, { enableHighAccuracy: true, maximumAge: 4000, timeout: 60000 });
     return () => {
       stopped = true;
       navigator.geolocation.clearWatch(watchId);
@@ -2766,10 +3071,13 @@ function FishLog() {
     showToast("Session resumed ▶");
     setShowQuickAction(false);
   };
-  const updTrip = t => {
-    mutTrips(p => p.map(x => x.id === t.id ? t : x));
+  // Updates take a PATCH merged onto the CURRENT record, never a whole record:
+  // TripDetail's copy is a snapshot from when it opened, so swapping it in
+  // threw away every track point recorded since (and any synced-in change).
+  const updTrip = (id, patch) => {
+    mutTrips(p => p.map(x => x.id === id ? { ...x, ...patch } : x));
     // Keep the open TripDetail in step, otherwise "Save changes" never clears
-    setSelTrip(prev => prev && prev.id === t.id ? t : prev);
+    setSelTrip(prev => prev && prev.id === id ? { ...prev, ...patch } : prev);
   };
   const delTrip = id => {
     if (!confirm("Delete this session and all its data?")) return;
@@ -2789,7 +3097,7 @@ function FishLog() {
     setSelTrip(null);
     showToast("Trip deleted");
   };
-  const updSpot = s => mutSpots(p => p.map(x => x.id === s.id ? s : x));
+  const updSpot = (id, patch) => mutSpots(p => p.map(x => x.id === id ? { ...x, ...patch } : x));
   const restoreAll = data => {
     // A restore replaces everything: tombstone current records missing from
     // the backup so cloud merge doesn't resurrect them
@@ -2881,7 +3189,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.70-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.71-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -2960,7 +3268,8 @@ function FishLog() {
     cloudStatus: cloudStatus,
     cloudLastSynced: cloudLastSynced
   }), selTrip && /*#__PURE__*/React.createElement(TripDetail, {
-    trip: selTrip,
+    // The live record, so an open session's route keeps drawing
+    trip: trips.find(x => x.id === selTrip.id) || selTrip,
     onClose: () => setSelTrip(null),
     onDelete: delTrip,
     onUpdate: updTrip,
@@ -3040,7 +3349,7 @@ function FishLog() {
     className: "qa-heading"
   }, "Live Session"), /*#__PURE__*/React.createElement("div", {
     className: "qa-context"
-  }, activeSpot ? (activeSpot.name || "Unnamed spot") : "No spot yet", activeSpot?.waterTemp ? ` \xB7 ${activeSpot.waterTemp}\xB0C` : ""), /*#__PURE__*/React.createElement("button", {
+  }, activeSpot ? (activeSpot.name || "Unnamed spot") : "No spot yet", activeSpot?.waterTemp != null ? `\xB7 ${activeSpot.waterTemp}\xB0C` : ""), /*#__PURE__*/React.createElement("button", {
     className: "qa-btn primary",
     onClick: () => { setShowQuickAction(false); setLogMode("catch"); setTab("log"); }
   }, "Record Catch"), /*#__PURE__*/React.createElement("button", {
@@ -3221,7 +3530,7 @@ function ConditionsModal({ onClose }) {
     style: {width: `${Math.max(0,Math.min(100,tide.seasonal*100))}%`}
   })), /*#__PURE__*/React.createElement("div", {
     className: "tide-bar-labels"
-  }, /*#__PURE__*/React.createElement("span", null, "Typical Low", tide.mhwsCM != null ? ` (${tide.mlwsCM}cm)` : ""), /*#__PURE__*/React.createElement("span", null, "Typical High", tide.mhwsCM != null ? ` (${tide.mhwsCM}cm)` : ""))),
+  }, /*#__PURE__*/React.createElement("span", null, "Typical Low", tide.mlwsCM != null ? ` (${tide.mlwsCM}cm)` : ""), /*#__PURE__*/React.createElement("span", null, "Typical High", tide.mhwsCM != null ? ` (${tide.mhwsCM}cm)` : ""))),
     (tide.nextHigh || tide.nextLow) && (function() {
       var items = [
         tide.nextHigh && { t: tide.nextHigh.t, el: /*#__PURE__*/React.createElement("span", { key: "h" }, "▲ High ", fmtTime(tide.nextHigh.t.toISOString()), tide.nextHigh.v != null ? " · " + Math.round(tide.nextHigh.v) + "cm" : "") },
@@ -3330,6 +3639,7 @@ function TripsList({
   const [targetSpecies, setTargetSpecies] = useState("");
   const [spotNotes, setSpotNotes] = useState("");
   const [spotPhoto, setSpotPhoto] = useState(null);
+  const pendingPhotos = usePendingPhotos();
   const [trollMode, setTrollMode] = useState(false);
   const [trollLure, setTrollLure] = useState("");
   const [trollDepth, setTrollDepth] = useState("");
@@ -3358,6 +3668,7 @@ function TripsList({
     else if (spotName !== "" && spotName === autoNameRef.current) { setSpotName(""); autoNameRef.current = null; }
   }, [gps]);
   const handleStart = () => {
+    pendingPhotos.commit();
     onStartSession({
       name: spotName.trim(),
       gps,
@@ -3535,7 +3846,7 @@ function TripsList({
     label: "Spot Photo \xB7 optional",
     natural: true,
     camera: true,
-    onPick: f => compressPhoto(f, setSpotPhoto)
+    onPick: f => pendingPhotos.pick(f, "spot", setSpotPhoto)
   })), /*#__PURE__*/React.createElement("div", {
     className: "field-row"
   }, /*#__PURE__*/React.createElement("span", {
@@ -3692,7 +4003,7 @@ function TripsList({
     style: {width: `${Math.max(0,Math.min(100,tide.seasonal*100))}%`}
   })), /*#__PURE__*/React.createElement("div", {
     className: "tide-bar-labels"
-  }, /*#__PURE__*/React.createElement("span", null, "Typical Low", tide.mhwsCM != null ? ` (${tide.mlwsCM}cm)` : ""), /*#__PURE__*/React.createElement("span", null, "Typical High", tide.mhwsCM != null ? ` (${tide.mhwsCM}cm)` : ""))))), /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("span", null, "Typical Low", tide.mlwsCM != null ? ` (${tide.mlwsCM}cm)` : ""), /*#__PURE__*/React.createElement("span", null, "Typical High", tide.mhwsCM != null ? ` (${tide.mhwsCM}cm)` : ""))))), /*#__PURE__*/React.createElement("div", {
     className: "field-row"
   }, /*#__PURE__*/React.createElement("span", {
     className: "field-icon"
@@ -3702,10 +4013,7 @@ function TripsList({
     className: "field-value"
   }, weather.pressure, " hPa", weather.pressureLevel ? ` \xB7 ${weather.pressureLevel}` : "", weather.pressureTrend === "rising" ? " \u2191" : weather.pressureTrend === "falling" ? " \u2193" : "", weather.pressureLabel ? /*#__PURE__*/React.createElement("span", {
     style: {fontSize: 10, color: "#999", fontStyle: "italic"}
-  }, ` (${weather.pressureLabel})`) : null) : /*#__PURE__*/React.createElement("input", {
-    className: "field-input",
-    placeholder: "e.g. 1013 hPa"
-  })), /*#__PURE__*/React.createElement("div", {
+  }, ` (${weather.pressureLabel})`) : null) : /*#__PURE__*/React.createElement("span", { className: "field-value", style: { color: "#ccc" } }, "—")), /*#__PURE__*/React.createElement("div", {
     className: "field-row"
   }, /*#__PURE__*/React.createElement("span", {
     className: "field-icon"
@@ -3903,7 +4211,7 @@ function AddSpotForm({
   const [lineType, setLineType] = useState(lastSpot?.lineType || "");
   const [notes, setNotes] = useState("");
   const [photo, setPhoto] = useState(null);
-  const photoRef = useRef();
+  const pendingPhotos = usePendingPhotos();
   const [timestamp, setTimestamp] = useState(new Date().toISOString());
   const { gps, gpsStatus, weather, weatherStatus, tide, tideStatus, getGPS, reset: resetEnv } = useEnv();
   useEffect(() => { getGPS(timestamp); }, []);
@@ -3919,6 +4227,7 @@ function AddSpotForm({
     else if (name !== "" && name === autoNameRef.current) { setName(""); autoNameRef.current = null; }
   }, [gps]);
   const handleSave = () => {
+    pendingPhotos.commit();
     onSave({
       id: `s_${Date.now()}`,
       tripId: activeTrip.id,
@@ -3951,7 +4260,7 @@ function AddSpotForm({
     label: "Spot Photo \xB7 optional",
     natural: true,
     camera: true,
-    onPick: f => compressPhoto(f, setPhoto)
+    onPick: f => pendingPhotos.pick(f, "spot", setPhoto)
   })), /*#__PURE__*/React.createElement("div", {
     className: "field-row"
   }, /*#__PURE__*/React.createElement("span", {
@@ -4091,7 +4400,7 @@ function AddSpotForm({
     style: {width: `${Math.max(0,Math.min(100,tide.seasonal*100))}%`}
   })), /*#__PURE__*/React.createElement("div", {
     className: "tide-bar-labels"
-  }, /*#__PURE__*/React.createElement("span", null, "Typical Low", tide.mhwsCM != null ? ` (${tide.mlwsCM}cm)` : ""), /*#__PURE__*/React.createElement("span", null, "Typical High", tide.mhwsCM != null ? ` (${tide.mhwsCM}cm)` : ""))))), /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("span", null, "Typical Low", tide.mlwsCM != null ? ` (${tide.mlwsCM}cm)` : ""), /*#__PURE__*/React.createElement("span", null, "Typical High", tide.mhwsCM != null ? ` (${tide.mhwsCM}cm)` : ""))))), /*#__PURE__*/React.createElement("div", {
     className: "field-row"
   }, /*#__PURE__*/React.createElement("span", {
     className: "field-icon"
@@ -4101,10 +4410,7 @@ function AddSpotForm({
     className: "field-value"
   }, weather.pressure, " hPa", weather.pressureLevel ? ` \xB7 ${weather.pressureLevel}` : "", weather.pressureTrend === "rising" ? " \u2191" : weather.pressureTrend === "falling" ? " \u2193" : "", weather.pressureLabel ? /*#__PURE__*/React.createElement("span", {
     style: {fontSize: 10, color: "#999", fontStyle: "italic"}
-  }, ` (${weather.pressureLabel})`) : null) : /*#__PURE__*/React.createElement("input", {
-    className: "field-input",
-    placeholder: "e.g. 1013 hPa"
-  })), /*#__PURE__*/React.createElement("div", {
+  }, ` (${weather.pressureLabel})`) : null) : /*#__PURE__*/React.createElement("span", { className: "field-value", style: { color: "#ccc" } }, "—")), /*#__PURE__*/React.createElement("div", {
     className: "field-row"
   }, /*#__PURE__*/React.createElement("span", {
     className: "field-icon"
@@ -4162,16 +4468,10 @@ function CatchForm({
   } = useEnv();
   useEffect(() => { getGPS(timestamp); }, []);
   useFreshEnvOnReturn(null, getGPS, setTimestamp);
-  const fishRef = useRef(),
-    flyRef = useRef();
-  const hp = s => e => {
-    const f = e.target.files[0];
-    if (!f) return;
-    compressPhoto(f, s);
-    e.target.value = "";
-  };
+  const pendingPhotos = usePendingPhotos();
   const handleSave = () => {
     if (!species.trim()) return;
+    pendingPhotos.commit();
     onSave({
       id: `c_${Date.now()}`,
       timestamp,
@@ -4220,7 +4520,7 @@ function CatchForm({
     key: label,
     photo: photo,
     label: label,
-    onPick: f => compressPhoto(f, setter)
+    onPick: f => pendingPhotos.pick(f, label, setter)
   }))), /*#__PURE__*/React.createElement("div", {
     className: "field-group"
   }, /*#__PURE__*/React.createElement("div", {
@@ -4328,10 +4628,7 @@ function CatchForm({
     className: "field-label"
   }, "Air Temp"), weather?.airTemp != null ? /*#__PURE__*/React.createElement("span", {
     className: "field-value"
-  }, weather.airTemp, " \xB0C") : /*#__PURE__*/React.createElement("input", {
-    className: "field-input",
-    placeholder: "e.g. 12 \xB0C"
-  })), /*#__PURE__*/React.createElement(ConditionsRow, { weather }), /*#__PURE__*/React.createElement("div", {
+  }, weather.airTemp, " \xB0C") : /*#__PURE__*/React.createElement("span", { className: "field-value", style: { color: "#ccc" } }, "—")),/*#__PURE__*/React.createElement(ConditionsRow, { weather }), /*#__PURE__*/React.createElement("div", {
     className: "field-row"
   }, /*#__PURE__*/React.createElement("span", {
     className: "field-icon"
@@ -4385,7 +4682,7 @@ function CatchForm({
     }
   })), /*#__PURE__*/React.createElement("div", {
     className: "tide-bar-labels"
-  }, /*#__PURE__*/React.createElement("span", null, "Typical Low", tide.mhwsCM != null ? ` (${tide.mlwsCM}cm)` : ""), /*#__PURE__*/React.createElement("span", null, "Typical High", tide.mhwsCM != null ? ` (${tide.mhwsCM}cm)` : ""))))), /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("span", null, "Typical Low", tide.mlwsCM != null ? ` (${tide.mlwsCM}cm)` : ""), /*#__PURE__*/React.createElement("span", null, "Typical High", tide.mhwsCM != null ? ` (${tide.mhwsCM}cm)` : ""))))), /*#__PURE__*/React.createElement("div", {
     className: "field-row"
   }, /*#__PURE__*/React.createElement("span", {
     className: "field-icon"
@@ -4397,10 +4694,7 @@ function CatchForm({
     weather.pressureLevel ? ` · ${weather.pressureLevel}` : "",
     weather.pressureTrend === "rising" ? " ↑" : weather.pressureTrend === "falling" ? " ↓" : "",
     weather.pressureLabel ? /*#__PURE__*/React.createElement("span", { style: { fontSize: 10, color: "#999", fontStyle: "italic" } }, ` (${weather.pressureLabel})`) : null
-  ) : /*#__PURE__*/React.createElement("input", {
-    className: "field-input",
-    placeholder: "e.g. 1013 hPa"
-  })), /*#__PURE__*/React.createElement("div", {
+  ) : /*#__PURE__*/React.createElement("span", { className: "field-value", style: { color: "#ccc" } }, "—")), /*#__PURE__*/React.createElement("div", {
     className: "field-row"
   }, /*#__PURE__*/React.createElement("span", {
     className: "field-icon"
@@ -4857,7 +5151,7 @@ function Analytics({ catches, spots, trips, observations }) {
   var pressBuckets = ["<1000", "1000–1005", "1005–1010", "1010–1015", "1015–1020", "1020–1025", "1025–1030", ">1030"];
   var moonBuckets  = ["🌑 New", "🌒 Wax.Cres.", "🌓 First Q.", "🌔 Wax.Gib.", "🌕 Full", "🌖 Wan.Gib.", "🌗 Last Q.", "🌘 Wan.Cres."];
 
-  var getWT = function(c) { return c.waterTemp != null ? c.waterTemp : (spots.find(function(s) { return s.id === c.spotId; }) || {}).waterTemp || null; };
+  var getWT = function(c) { return c.waterTemp != null ? c.waterTemp : (spots.find(function(s) { return s.id === c.spotId; }) || {}).waterTemp ?? null; };
   var getPress = function(c) {
     var p = c.weather ? c.weather.pressure : null;
     if (p != null) return p;
@@ -5454,10 +5748,16 @@ function Analytics({ catches, spots, trips, observations }) {
         incCatches && incObs && React.createElement("div", { style: { display: "flex", gap: 6, margin: "0 0 8px" } },
           chip(showMapCatches, function() { setShowMapCatches(!showMapCatches); }, "#3d5a4a", "Catches"),
           chip(showMapObs, function() { setShowMapObs(!showMapObs); }, "#b8863b", "Observed")),
-        // key remounts the map when filters/toggles change — markers are drawn once at mount
+        // key remounts the map when what it shows changes — markers are drawn once at mount.
+        // Keyed on the CONTENT (hashed), not on filter names plus counts: the month
+        // filter was missing from the old key, and a change that kept the counts
+        // equal left stale markers and hour labels on the map.
         // Chip toggles only apply when both types are on the map (chips hidden otherwise)
         React.createElement(ClusterMap, {
-          key: dataFilter + "|" + (area ? area.n + "," + area.w : "all") + "|" + speciesFilter + "|" + yearFilter + "|" + showMapCatches + "|" + showMapObs + "|" + mapCatches.length + "|" + mapObs.length + "|" + mapSpotPts.length,
+          key: (area ? area.n + "," + area.w : "all") + "|" + showMapCatches + "|" + showMapObs + "|" + strHash(JSON.stringify([
+            mapCatches.map(function(c) { return c.id; }),
+            mapObs.map(function(o) { return o.id + ":" + o.count; }),
+            mapSpotPts.map(function(p) { return [p.lat, p.lon, p.w, p.label]; })])),
           catches: (!incObs || showMapCatches) ? mapCatches : [],
           obs: (!incCatches || showMapObs) ? mapObs : [],
           spotPts: mapSpotPts,
@@ -5824,16 +6124,34 @@ function loadLeafletCluster() {
   return _clusterPromise;
 }
 
+// Short stable hash of a string (djb2) — for React keys derived from content
+function strHash(str) {
+  let h = 5381;
+  for (let i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(36) + "_" + str.length;
+}
+
 function TrollMap({ track, catches, highlightId, fill }) {
   const boxRef = useRef(null);
   const mapRef = useRef(null);
   const lineRef = useRef(null);
+  const catchLayerRef = useRef(null);
   const [mapErr, setMapErr] = useState(false);
   const pts = trackPts(track).map(p => [p[0], p[1]]);
   const catchPts = (catches || []).filter(c => c.gps)
     .map(c => ({ id: c.id, lat: c.gps.lat, lon: c.gps.lon, label: c.species }))
     .sort((a, b) => (a.id === highlightId) - (b.id === highlightId)); // highlighted marker drawn last, on top
   const hasData = pts.length > 0 || catchPts.length > 0;
+  const catchSig = catchPts.map(cp => cp.id + "@" + cp.lat + "," + cp.lon + ":" + cp.label).join("|") + "#" + highlightId;
+  const drawCatches = (L, layer) => {
+    layer.clearLayers();
+    catchPts.forEach(cp => {
+      const hot = cp.id === highlightId;
+      const col = hot ? "#b85a4a" : "#3d5a4a";
+      const m = L.circleMarker([cp.lat, cp.lon], { radius: hot ? 9 : 7, color: col, fillColor: col, fillOpacity: .85 }).addTo(layer);
+      if (cp.label) m.bindTooltip(cp.label);
+    });
+  };
   useEffect(() => {
     if (!hasData) return;
     let dead = false;
@@ -5849,18 +6167,15 @@ function TrollMap({ track, catches, highlightId, fill }) {
       lineRef.current = L.polyline(pts, { color: "#2b5d75", weight: 3 }).addTo(map);
       if (pts.length >= 2) bounds.extend(lineRef.current.getBounds());
       else if (pts.length === 1) bounds.extend(pts[0]);
-      catchPts.forEach(cp => {
-        const hot = cp.id === highlightId;
-        const col = hot ? "#b85a4a" : "#3d5a4a";
-        const m = L.circleMarker([cp.lat, cp.lon], { radius: hot ? 9 : 7, color: col, fillColor: col, fillOpacity: .85 }).addTo(map);
-        if (cp.label) m.bindTooltip(cp.label);
-        bounds.extend([cp.lat, cp.lon]);
-      });
+      catchLayerRef.current = L.layerGroup().addTo(map);
+      drawCatches(L, catchLayerRef.current);
+      catchPts.forEach(cp => bounds.extend([cp.lat, cp.lon]));
       map.fitBounds(bounds.pad(0.2), { maxZoom: 15 });
     }).catch(() => { if (!dead) setMapErr(true); });
     return () => {
       dead = true;
       lineRef.current = null;
+      catchLayerRef.current = null;
       if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; }
     };
   }, [hasData]);
@@ -5869,6 +6184,11 @@ function TrollMap({ track, catches, highlightId, fill }) {
   useEffect(() => {
     if (mapRef.current && lineRef.current && pts.length) lineRef.current.setLatLngs(pts);
   }, [pts.length]);
+  // Live update: catches recorded while the map is open (they used to appear
+  // only after the overlay was closed and reopened)
+  useEffect(() => {
+    if (mapRef.current && catchLayerRef.current && window.L) drawCatches(window.L, catchLayerRef.current);
+  }, [catchSig]);
   if (!hasData) return /*#__PURE__*/React.createElement("div", {
     style: fill
       ? { flex: 1, minHeight: 0, width: "100%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: "rgba(255,255,255,.4)", border: "1px dashed rgba(255,255,255,.15)", borderRadius: 4 }
@@ -6012,7 +6332,7 @@ function TripDetail({
   const [selHistorySpot, setSelHistorySpot] = useState(null);
   const [editingSpotId, setEditingSpotId] = useState(null);
   const [editingSpotName, setEditingSpotName] = useState("");
-  const saveSpotName = s => { onUpdSpot({ ...s, name: editingSpotName.trim() || s.name }); setEditingSpotId(null); };
+  const saveSpotName = s => { onUpdSpot(s.id, { name: editingSpotName.trim() || s.name }); setEditingSpotId(null); };
   // Everything about the end time — display, picker value, validation — is in
   // the TRIP's own timezone (where it actually happened), since the phone
   // reading this may be anywhere. The picker is fed trip-local wall-clock
@@ -6042,8 +6362,7 @@ function TripDetail({
       alert("End time must be after the session start (" + fmtDT(t.startTime, tripTz) + ").");
       return false;
     }
-    onUpdate({
-      ...t,
+    onUpdate(t.id, {
       targetSpecies: editTarget,
       notes: editNotes,
       endTime: currentEndISO || t.endTime
@@ -6317,7 +6636,7 @@ function TripDetail({
       style: {
         marginLeft: "auto"
       }
-    }, s.lineType), s.waterTemp && /*#__PURE__*/React.createElement("span", {
+    }, s.lineType), s.waterTemp != null && /*#__PURE__*/React.createElement("span", {
       style: {
         fontSize: 10,
         color: "var(--water)",
@@ -6337,7 +6656,8 @@ function TripDetail({
       label: "📷 Add spot photo",
       natural: true,
       camera: true,
-      onPick: function(f) { var old = s.photo; compressPhoto(f, function(d) { if (isPhotoId(old)) { photoDB.del(old); cloudDeletePhoto(old); } onUpdSpot(Object.assign({}, s, { photo: d })); }); }
+      // Only drop the old photo once the new one is stored and the record points at it — compressPhoto gives null on failure
+      onPick: function(f) { var old = s.photo; compressPhoto(f, function(d) { if (!d) return; onUpdSpot(s.id, { photo: d }); if (isPhotoId(old) && old !== d) { photoDB.del(old); cloudDeletePhoto(old); } }); }
     })), s.weather && /*#__PURE__*/React.createElement("div", {
       style: {fontSize: 10, color: "#999", marginBottom: 6, lineHeight: 1.6, fontFamily: "'Source Code Pro',monospace"}
     }, [s.weather.airTemp != null ? `${s.weather.airTemp}\xB0C air` : null, s.weather.pressure != null ? `${s.weather.pressure} hPa${s.weather.pressureLevel ? ` ${s.weather.pressureLevel}` : ""}` : null, s.weather.windSpeed != null ? `${s.weather.windSpeed} m/s ${windCompass(s.weather.windDir)}` : null, s.tide?.seasonal != null ? `Tide ${tidePct(s.tide.seasonal)}%${tideArrow(s.tide.direction)}` : null, s.weather.moon || null].filter(Boolean).join(" \xB7 ")), /*#__PURE__*/React.createElement("div", {
@@ -6469,7 +6789,8 @@ function CatchDetail({
     key: p.label,
     photo: p.photo,
     label: p.label,
-    onPick: f => { var old = p.photo; compressPhoto(f, d => { if (isPhotoId(old)) { photoDB.del(old); cloudDeletePhoto(old); } onUpdate(c.id, {[p.key]: d}); }); }
+    // Only drop the old photo once the new one is stored and the record points at it — compressPhoto gives null on failure
+    onPick: f => { var old = p.photo; compressPhoto(f, d => { if (!d) return; onUpdate(c.id, {[p.key]: d}); if (isPhotoId(old) && old !== d) { photoDB.del(old); cloudDeletePhoto(old); } }); }
   }))), /*#__PURE__*/React.createElement("div", {
     className: "modal-section"
   }, /*#__PURE__*/React.createElement("div", {
