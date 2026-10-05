@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.87-exp</title>
+  <title>The Catch Log v2.88-exp</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -737,6 +737,26 @@ const css = `
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
+// Sunrise, solar noon and sunset (ms) of the solar day nearest `ms` at lat/lon —
+// the standard sunrise equation, about a minute's accuracy, no network. Checked
+// against published times: Bergen 04:11–23:12 at midsummer, 09:45–15:30 at
+// midwinter; New York 05:31–20:31 on 4 July. Beyond the polar circles the sun
+// may not rise or set: rise/set come back null with `polar` "day" or "night".
+function sunDay(ms, lat, lon) {
+  var rad = Math.PI / 180;
+  var jd = ms / 86400000 + 2440587.5;
+  var jStar = Math.round(jd - 2451545.0009 + lon / 360) + 0.0009 - lon / 360;
+  var M = (357.5291 + 0.98560028 * jStar) % 360;
+  var C = 1.9148 * Math.sin(M * rad) + 0.02 * Math.sin(2 * M * rad) + 0.0003 * Math.sin(3 * M * rad);
+  var lam = (M + C + 180 + 102.9372) % 360;
+  var jNoon = 2451545 + jStar + 0.0053 * Math.sin(M * rad) - 0.0069 * Math.sin(2 * lam * rad);
+  var sinDec = Math.sin(lam * rad) * Math.sin(23.4397 * rad);
+  var cosW = (Math.sin(-0.833 * rad) - Math.sin(lat * rad) * sinDec) / (Math.cos(lat * rad) * Math.cos(Math.asin(sinDec)));
+  var toMs = function(j) { return (j - 2440587.5) * 86400000; };
+  if (cosW < -1 || cosW > 1) return { rise: null, noon: toMs(jNoon), set: null, polar: cosW < -1 ? "day" : "night" };
+  var w = Math.acos(cosW) / rad / 360;
+  return { rise: toMs(jNoon - w), noon: toMs(jNoon), set: toMs(jNoon + w) };
+}
 function getMoonPhase(d) {
   const phases = ["🌑 New", "🌒 Waxing Crescent", "🌓 First Quarter", "🌔 Waxing Gibbous", "🌕 Full", "🌖 Waning Gibbous", "🌗 Last Quarter", "🌘 Waning Crescent"];
   // Reference new moon: 2000-01-06 18:14 UTC. The +0.5 centres each phase on
@@ -3248,7 +3268,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.87-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.88-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -5112,6 +5132,75 @@ function AnalyticsView({ catches, spots, trips, observations }) {
     r.label = p[1];
   });
 
+  // ── Tide Range — spring vs neap ──
+  // The stored next high minus next low is that day's range; divided by the
+  // spot's typical range (MHW - MLW) it says how big today's tide is. Fixed
+  // cut-offs from the physics, not sized to the data: below 0.8x Neap, from
+  // 1.2x Spring. (NOAA spots store MHHW - MLLW as the typical range, which runs
+  // larger, so US sessions read a little toward Neap.)
+  var rangeBuckets = ["Neap", "Mid", "Spring"];
+  var rangeBucket = function(td) {
+    if (!td || !td.nextHigh || !td.nextLow || td.nextHigh.v == null || td.nextLow.v == null) return null;
+    if (td.mhwsCM == null || td.mlwsCM == null || td.mhwsCM === td.mlwsCM) return null;
+    var r = Math.abs(td.nextHigh.v - td.nextLow.v) / Math.abs(td.mhwsCM - td.mlwsCM);
+    return r < 0.8 ? "Neap" : r < 1.2 ? "Mid" : "Spring";
+  };
+  var rangeHours = zeroHours(rangeBuckets);
+  endedTrips.forEach(function(t) {
+    forEachVisit(t, function(s, h) { addHours(rangeHours, rangeBucket(s.tide), h, t.id); });
+  });
+  var rangeChart = chartOf(rangeBuckets, rangeHours, function(c) {
+    return rangeBucket(c.tide) || rangeBucket((spotById[c.spotId] || {}).tide);
+  });
+
+  // ── Daylight — time relative to sunrise and sunset ──
+  // At 60N a clock hour means very different light across the season (07-11 is
+  // full day in May, partly dark in late October), so this buckets by the sun
+  // at the session's own position instead. Dawn and Dusk are the hour either
+  // side of sunrise / sunset; Night is everything outside them — at midsummer
+  // that is bright twilight, as it really is there.
+  var lightBuckets = ["Dawn ±1h", "Morning", "Afternoon", "Dusk ±1h", "Night"];
+  var lightBucket = function(ms, gps) {
+    if (!gps || gps.lat == null || gps.lon == null) return null;
+    var sd = sunDay(ms, gps.lat, gps.lon), H = 3600000;
+    if (!sd.rise) return sd.polar === "night" ? "Night" : ms < sd.noon ? "Morning" : "Afternoon";
+    if (ms >= sd.rise - H && ms < sd.rise + H) return lightBuckets[0];
+    if (ms >= sd.set - H && ms < sd.set + H) return lightBuckets[3];
+    if (ms >= sd.rise + H && ms < sd.noon) return "Morning";
+    if (ms >= sd.noon && ms < sd.set - H) return "Afternoon";
+    return "Night";
+  };
+  var lightHours = zeroHours(lightBuckets);
+  endedTrips.forEach(function(t) {
+    var g = tripAnchorGPS(t, tripSpotsMap[t.id]);
+    forEachQuarterHour(t, function(ms, h) { addHours(lightHours, lightBucket(ms + h * 1800000, g), h, t.id); });
+  });
+  var lightChart = chartOf(lightBuckets, lightHours, function(c) {
+    return lightBucket(new Date(c.timestamp).getTime(), itemAnchorGPS(c, spotById));
+  });
+
+  // ── Month and Year — change over time ──
+  // Calendar month / year as lived at the session's own location, like the
+  // filters above. The Year chart only renders once two years have hours.
+  var monthBuckets = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  var monthHours = zeroHours(monthBuckets);
+  var yearList = allYears.slice().sort();
+  var yearHours = zeroHours(yearList);
+  endedTrips.forEach(function(t) {
+    var tTz = tzFor(tripAnchorGPS(t, tripSpotsMap[t.id]));
+    forEachQuarterHour(t, function(ms, h) {
+      var lp = localParts(ms, tTz);
+      addHours(monthHours, monthBuckets[lp.month], h, t.id);
+      addHours(yearHours, String(lp.year), h, t.id);
+    });
+  });
+  var monthChart = chartOf(monthBuckets, monthHours, function(c) {
+    return monthBuckets[localParts(new Date(c.timestamp).getTime(), tzFor(itemAnchorGPS(c, spotById))).month];
+  });
+  var yearChart = chartOf(yearList, yearHours, function(c) {
+    return String(localParts(new Date(c.timestamp).getTime(), tzFor(itemAnchorGPS(c, spotById))).year);
+  });
+
   // ── Water Temp — hours per catch (temp assumed constant per spot) ──
   var tempHours = zeroHours(tempBucketsAll);
   endedTrips.forEach(function(t) {
@@ -5315,7 +5404,7 @@ function AnalyticsView({ catches, spots, trips, observations }) {
     sizeCounts = sizeBuckets.map(function(b) { return counts[b]; });
   }
 
-    return { allYears, allSpecies, fc, fObs, totalCatches, fishLbl, successRate, largestFish, largest, hrsPerCatch, sizeBuckets, sizeUnit, sizeCounts, rateUnit, fmtRate, tideChart, methodChart, tempChart, timeChart, pressChart, windChart, skyChart, rainChart, speedChart, moonChart, totalSpotsFished, fmtH, totalSpotHours, avgHoursPerSpot, spotGroups, totalSessions };
+    return { allYears, allSpecies, fc, fObs, totalCatches, fishLbl, successRate, largestFish, largest, hrsPerCatch, sizeBuckets, sizeUnit, sizeCounts, rateUnit, fmtRate, tideChart, rangeChart, lightChart, monthChart, yearChart, methodChart, tempChart, timeChart, pressChart, windChart, skyChart, rainChart, speedChart, moonChart, totalSpotsFished, fmtH, totalSpotHours, avgHoursPerSpot, spotGroups, totalSessions };
   }, [catches, spots, trips, observations, speciesFilter, yearFilter, monthFilter, dataFilter, area]);
   var allYears = S.allYears;
   var allSpecies = S.allSpecies;
@@ -5423,13 +5512,17 @@ function AnalyticsView({ catches, spots, trips, observations }) {
     React.createElement(StatChart, rc("Method", S.methodChart)),
     React.createElement(StatChart, rc("Water Temp", S.tempChart)),
     React.createElement(StatChart, rc("Tide", S.tideChart)),
+    React.createElement(StatChart, rc("Tide Range", S.rangeChart)),
     React.createElement(StatChart, rc("Time of Day", S.timeChart)),
+    React.createElement(StatChart, rc("Daylight", S.lightChart)),
     React.createElement(StatChart, rc("Air Pressure", S.pressChart)),
     React.createElement(StatChart, rc("Wind Direction", S.windChart)),
     React.createElement(StatChart, rc("Sky", S.skyChart)),
     React.createElement(StatChart, rc("Rain", S.rainChart)),
     React.createElement(StatChart, rc("Trolling Speed", S.speedChart)),
-    React.createElement(StatChart, rc("Moon Phase", S.moonChart))
+    React.createElement(StatChart, rc("Moon Phase", S.moonChart)),
+    React.createElement(StatChart, rc("Month", S.monthChart)),
+    S.yearChart.rows.filter(function(r) { return r.hours > 0; }).length >= 2 && React.createElement(StatChart, rc("Year", S.yearChart))
     ),
     // ── Spots-mode KPI tiles (shown instead of the catch/obs ones above) ──
     dataFilter === "spots" && React.createElement("div", { className: "stat-summary" },
