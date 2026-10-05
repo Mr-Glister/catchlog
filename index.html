@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.73-exp</title>
+  <title>The Catch Log v2.74-exp</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -3226,7 +3226,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.73-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.74-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -3646,24 +3646,51 @@ function RecordConditions({ weather: w, waterTemp, tide }) {
         /*#__PURE__*/React.createElement(TideRangeLabels, { tide, style: { display: "flex", justifyContent: "space-between", fontSize: 9, color: "#aaa", marginTop: 3 } })),
       /*#__PURE__*/React.createElement("div", { style: { fontSize: 9, color: "#ccc", marginTop: 4 } }, tideAttribution(tide.source).short)));
 }
-function SpeciesSelect({
-  value,
-  onChange
-}) {
+// Species picker: the phone's own dropdown, kept SHORT. Android draws a <select>
+// as a dialog that is centred while it fits on screen, but once the list is
+// longer it fills the whole screen with "Recent" pinned at the very top, out of
+// thumb reach. So it first offers only Recent (plus the current value) and
+// "More species…"; choosing that switches the field to the full list.
+const MORE_SPECIES = "__more_species__"; // never a real species name
+function SpeciesSelect({ value, onChange }) {
   const data = useContext(SpeciesCtx);
+  const selectRef = useRef(null);
   const groups = useMemo(() => buildSpeciesGroups(data?.trips, data?.catches, data?.observations, value), [data, value]);
+  const [showAll, setShowAll] = useState(false);
+  // Nothing recent yet (new user) or nothing beyond it: the short list would
+  // save nothing, so show everything straight away
+  const full = showAll || !groups.recent.length || !groups.more.length;
+  // Open the full list right away where the browser allows it (showPicker on a
+  // select: recent Chrome on Android, not iOS Safari) — otherwise it's one more
+  // tap on the field
+  useEffect(() => {
+    if (!showAll || !selectRef.current) return;
+    try { selectRef.current.showPicker && selectRef.current.showPicker(); } catch (e) {}
+  }, [showAll]);
   const opt = s => /*#__PURE__*/React.createElement("option", { key: s, value: s }, s);
+  const currentElsewhere = value && groups.recent.indexOf(value) < 0;
   return /*#__PURE__*/React.createElement("div", {
     className: "field-select-wrap"
   }, /*#__PURE__*/React.createElement("select", {
+    ref: selectRef,
     className: "field-select",
     value: value,
-    onChange: e => onChange(e.target.value)
+    onChange: e => {
+      if (e.target.value === MORE_SPECIES) { setShowAll(true); return; }
+      setShowAll(false); // back to the short list for next time
+      onChange(e.target.value);
+    }
   }, /*#__PURE__*/React.createElement("option", {
     value: ""
-  }, "\u2014 select \u2014"),
+  }, "— select —"),
     groups.recent.length ? /*#__PURE__*/React.createElement("optgroup", { key: "r", label: "Recent" }, groups.recent.map(opt)) : null,
-    groups.more.length ? /*#__PURE__*/React.createElement("optgroup", { key: "m", label: groups.recent.length ? "More" : "Species" }, groups.more.map(opt)) : null
+    full
+      ? (groups.more.length ? /*#__PURE__*/React.createElement("optgroup", { key: "m", label: groups.recent.length ? "More" : "Species" }, groups.more.map(opt)) : null)
+      : [
+          // the select must always contain its current value, or it shows blank
+          currentElsewhere ? opt(value) : null,
+          /*#__PURE__*/React.createElement("option", { key: "more", value: MORE_SPECIES }, "More species…")
+        ]
   ));
 }
 function ConditionsModal({ onClose }) {
