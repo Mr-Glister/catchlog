@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.76-exp</title>
+  <title>The Catch Log v2.87-exp</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -720,6 +720,11 @@ const css = `
   .stat-fill-c { height: 100%; background: var(--moss); border-radius: 0 3px 3px 0; transition: width .3s; }
   .stat-fill-h { height: 100%; background: var(--text-2); border-radius: 0 3px 3px 0; opacity: 0.4; transition: width .3s; }
   .stat-ct { font-size: 10px; color: var(--text-2); width: 32px; text-align: right; font-family: 'Source Code Pro', monospace; flex-shrink: 0; }
+  .stat-track-r { position: relative; height: 8px; }
+  .stat-track-r .stat-fill-c { position: relative; z-index: 1; }
+  .stat-base { position: absolute; top: 50%; width: 4px; height: 4px; margin: -2px 0 0 -2px; border-radius: 50%; background: var(--text); opacity: .7; z-index: 2; }
+  .stat-group { font-size: 10px; font-weight: 700; letter-spacing: .5px; text-transform: uppercase; color: var(--text-2); padding: 10px 14px 4px; font-family: 'Source Code Pro', monospace; border-bottom: 1px solid var(--rule); }
+  .stat-n { font-size: 9px; color: var(--text-3); font-family: 'Source Code Pro', monospace; padding-top: 3px; }
   .stat-ct-h { font-size: 9px; color: var(--text-3); width: 32px; text-align: right; font-family: 'Source Code Pro', monospace; flex-shrink: 0; }
   .stat-filter { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .stat-filter select { flex: 1; min-width: 0; background: var(--paper-2); border: 1px solid var(--rule); color: var(--text); padding: 8px 10px; border-radius: 3px; font-size: 11px; letter-spacing: .5px; font-weight: 500; }
@@ -3243,7 +3248,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.76-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.87-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -4597,37 +4602,52 @@ function ObsForm({
 
 // ── Analytics helpers ─────────────────────────────────────────────────────────
 
-function StatChart({ title, buckets, values, fmt, hours }) {
-  var maxVal = Math.max.apply(null, values.concat([0.001]));
-  var maxHrs = hours ? Math.max.apply(null, hours.concat([0.001])) : 0;
-  var hasData = hours ? hours.some(function(h) { return h > 0; }) : values.some(function(v) { return v > 0; });
-  if (!hasData) return null;
-  var format = fmt || function(v) { return Number.isInteger(v) ? v : v.toFixed(2); };
+// One rate chart. `chart` = { rows: [{ label, hours, count, rate, catchSess,
+// sess }], base } from chartOf in AnalyticsView. Per row: the rate bar with the
+// chart's average rate as a small dark dot inside it, the hours bar, then the
+// count and how many sessions it came from.
+function StatChart({ title, chart, fmt }) {
+  var rows = chart.rows.filter(function(r) { return r.hours > 0; });
+  if (!rows.length) return null;
+  var base = chart.base;
+  var scale = Math.max.apply(null, rows.map(function(r) { return r.rate; }).concat([base, 0.001]));
+  var maxHrs = Math.max.apply(null, rows.map(function(r) { return r.hours; }).concat([0.001]));
+  var pctOf = function(rate) { return Math.min(100, rate / scale * 100); };
   var fmtH = fmtHours;
   return React.createElement("div", { className: "stat-card" },
-    React.createElement("div", { className: "stat-card-title" }, title),
-    buckets.map(function(lbl, i) {
-      var show = hours ? hours[i] > 0 : values[i] > 0;
-      if (!show) return null;
-      var pct = Math.round(values[i] / maxVal * 100);
-      var pctH = hours ? Math.round(hours[i] / maxHrs * 100) : 0;
-      return React.createElement("div", { key: lbl, className: "stat-row" },
-        React.createElement("div", { className: "stat-lbl" }, lbl),
+    React.createElement("div", { className: "stat-card-title", style: { display: "flex", justifyContent: "space-between", gap: 8 } },
+      React.createElement("span", null, title),
+      base > 0 && React.createElement("span", { style: { textTransform: "none", letterSpacing: 0, fontWeight: 400, whiteSpace: "nowrap" } }, "average " + fmt(base))),
+    rows.map(function(r, i) {
+      // Optional sub-header whenever the row's group changes (Tide: Rising / Falling)
+      var head = r.group && (i === 0 || rows[i - 1].group !== r.group) &&
+        React.createElement("div", { key: "g:" + r.group, className: "stat-group" }, r.group);
+      var row = React.createElement("div", { key: (r.group || "") + "|" + r.label, className: "stat-row" },
+        React.createElement("div", { className: "stat-lbl" }, r.label),
         React.createElement("div", { className: "stat-bars" },
           React.createElement("div", { className: "stat-bar-line" },
-            React.createElement("div", { className: "stat-track" },
-              React.createElement("div", { className: "stat-fill-c", style: { width: pct + "%" } })
+            React.createElement("div", { className: "stat-track stat-track-r" },
+              React.createElement("div", { className: "stat-fill-c", style: { width: pctOf(r.rate) + "%" } }),
+              base > 0 && React.createElement("div", { className: "stat-base", style: { left: pctOf(base) + "%" } })
             ),
-            React.createElement("div", { className: "stat-ct" }, format(values[i]))
+            React.createElement("div", { className: "stat-ct" }, fmt(r.rate))
           ),
-          hours && React.createElement("div", { className: "stat-bar-line" },
+          React.createElement("div", { className: "stat-bar-line" },
             React.createElement("div", { className: "stat-track" },
-              React.createElement("div", { className: "stat-fill-h", style: { width: pctH + "%" } })
+              React.createElement("div", { className: "stat-fill-h", style: { width: Math.round(r.hours / maxHrs * 100) + "%" } })
             ),
-            React.createElement("div", { className: "stat-ct-h" }, fmtH(hours[i]))
-          )
+            React.createElement("div", { className: "stat-ct-h" }, fmtH(r.hours))
+          ),
+          React.createElement("div", { className: "stat-n" },
+            // "13 fish from 22% of 41 sessions": the share of sessions that
+            // fished this bucket and had at least one fish in it. A percentage
+            // reads oddly for a single session or for no fish, so those say it plainly.
+            (Math.round(r.count * 10) / 10) + " fish " +
+            (r.count === 0 ? "in " : r.sess === 1 ? "from " : "from " + Math.round(r.catchSess / r.sess * 100) + "% of ") +
+            r.sess + " session" + (r.sess === 1 ? "" : "s"))
         )
       );
+      return head ? [head, row] : row;
     })
   );
 }
@@ -4769,18 +4789,16 @@ function AnalyticsView({ catches, spots, trips, observations }) {
   var obsWeight = function(o) { var n = parseInt(o.count, 10); return n > 0 ? n : 1; };
   var fEvents = (incCatches ? fc.map(function(c) { return Object.assign({}, c, { _w: 1 }); }) : [])
     .concat(incObs ? fObs.map(function(o) { return Object.assign({}, o, { _w: obsWeight(o) }); }) : []);
-  // Unfiltered-by-mode twin of fEvents, used only so Spots mode's species
-  // narrowing below can still match a trip via an actual catch/obs even
-  // though incCatches/incObs are both false in that mode.
-  var fAllEvents = fc.map(function(c) { return Object.assign({}, c, { _w: 1 }); })
-    .concat(fObs.map(function(o) { return Object.assign({}, o, { _w: obsWeight(o) }); }));
-
-  // When a species filter is active, narrow sessions to those targeting that species
+  // When a species filter is active, narrow sessions to those TARGETING that
+  // species. Target species is set before the session starts, so the choice
+  // can't depend on how it went. Also admitting any session that happened to
+  // catch the species let every incidental catch bring its session's hours in,
+  // while a blank session for that species never could — rates and Success
+  // Rate ran high. Incidental catches still show in the Catches total, map and
+  // sizes; they just don't enter the rates (fEventsEnded is keyed on these trips).
+  var targetKey = speciesFilter.trim().toLowerCase();
   var kpiTrips = speciesFilter === "all" ? lTrips
-    : lTrips.filter(function(t) {
-        if (t.targetSpecies === speciesFilter) return true;
-        return (incSpots ? fAllEvents : fEvents).some(function(e) { return e.tripId === t.id; });
-      });
+    : lTrips.filter(function(t) { return (t.targetSpecies || "").trim().toLowerCase() === targetKey; });
 
   // Catches/hr math must pair catches with the same trips that supply the
   // hours: only ENDED trips contribute hours, so catches from a live (or
@@ -4884,12 +4902,6 @@ function AnalyticsView({ catches, spots, trips, observations }) {
     var lo = Math.floor(v / 2) * 2;
     return lo + "–" + (lo + 2) + "\xB0C";
   };
-  var buildCounts = function(items, fn, buckets) {
-    var counts = {};
-    buckets.forEach(function(b) { counts[b] = 0; });
-    items.forEach(function(item) { var b = fn(item); if (b != null && b in counts) counts[b] += (item._w || 1); });
-    return buckets.map(function(b) { return counts[b]; });
-  };
 
   // ── Bucket definitions ──
   var timeBuckets  = ["04–07", "07–11", "11–14", "14–17", "17–20", "20–04"];
@@ -4915,29 +4927,6 @@ function AnalyticsView({ catches, spots, trips, observations }) {
     return out;
   })();
 
-  // ── Raw catch counts (Tide) — grouped by Rising / Falling ──
-  var tideLevelBucket = function(c) {
-    return tideBucket(c.tide ? c.tide.seasonal : null);
-  };
-  var tideDir = function(c) {
-    return c.tide ? c.tide.direction : null;
-  };
-  var tideGroups = [
-    { key: "rising", label: "Rising ↑" },
-    { key: "falling", label: "Falling ↓" }
-  ];
-  var tideHierarchy = tideGroups.map(function(g) {
-    var dirEvents = fEvents.filter(function(e) { return tideDir(e) === g.key; });
-    var counts = buildCounts(dirEvents, tideLevelBucket, tideBuckets);
-    var total = counts.reduce(function(s, v) { return s + v; }, 0);
-    return { label: g.label, buckets: tideBuckets, counts: counts, total: total };
-  });
-  var untagged = fEvents.filter(function(e) { return tideLevelBucket(e) && !tideDir(e); });
-  if (untagged.length) {
-    var uCounts = buildCounts(untagged, tideLevelBucket, tideBuckets);
-    tideHierarchy.push({ label: "Unknown dir.", buckets: tideBuckets, counts: uCounts, total: untagged.length });
-  }
-
   // ── Shared walks ──
   // Every rate below is (weighted catches in a bucket) / (fished hours in that
   // bucket). These walks hand out the hours.
@@ -4962,9 +4951,40 @@ function AnalyticsView({ catches, spots, trips, observations }) {
     });
   };
   var zeroHours = function(buckets) { var h = {}; buckets.forEach(function(b) { h[b] = 0; }); return h; };
-  var addHours = function(hrs, b, h) { if (b && b in hrs) hrs[b] += h; };
-  var ratesOf = function(buckets, counts, hrs) {
-    return buckets.map(function(b, i) { return hrs[b] > 0 ? counts[i] / hrs[b] : 0; });
+  // Which sessions put hours into each bucket, per hours table — so a bar can
+  // say how many separate sessions it rests on, not just how many hours
+  var hourSess = new Map();
+  var addHours = function(hrs, b, h, tid) {
+    if (!b || !(b in hrs)) return;
+    hrs[b] += h;
+    if (h > 0) {
+      var m = hourSess.get(hrs);
+      if (!m) hourSess.set(hrs, m = {});
+      (m[b] = m[b] || {})[tid] = 1;
+    }
+  };
+  // Everything one rate chart shows: per bucket the hours, the (weighted)
+  // count, the rate, how many sessions fished it and how many of those the
+  // count came from; plus the chart's overall rate across its own buckets —
+  // its own, because each chart covers different hours (Trolling Speed only
+  // trolling, weather charts only time with a reading).
+  var chartOf = function(buckets, hrs, bucketOf) {
+    var hs = hourSess.get(hrs) || {};
+    var cnt = {}, cs = {};
+    fEventsEnded.forEach(function(e) {
+      var b = bucketOf(e);
+      if (b == null || !(b in hrs)) return;
+      cnt[b] = (cnt[b] || 0) + (e._w || 1);
+      (cs[b] = cs[b] || {})[e.tripId] = 1;
+    });
+    var totC = 0, totH = 0;
+    var rows = buckets.map(function(b) {
+      var h = hrs[b] || 0, n = cnt[b] || 0;
+      if (h > 0) { totC += n; totH += h; }
+      return { label: b, hours: h, count: n, rate: h > 0 ? n / h : 0,
+               catchSess: Object.keys(cs[b] || {}).length, sess: Object.keys(hs[b] || {}).length };
+    });
+    return { rows: rows, base: totH > 0 ? totC / totH : 0 };
   };
   // ── Helper: get representative weather for a trip (from catches or spots) ──
   // First catch / first spot carrying weather, per trip (array order, same as
@@ -4986,10 +5006,10 @@ function AnalyticsView({ catches, spots, trips, observations }) {
     var pf = presenceField || field;
     endedTrips.forEach(function(t) {
       if (sortedSpotsOf(t).some(function(s) { return s.weather && s.weather[pf] != null; })) {
-        forEachVisit(t, function(s, h) { addHours(hrs, bucketOf(s.weather ? s.weather[field] : null), h); });
+        forEachVisit(t, function(s, h) { addHours(hrs, bucketOf(s.weather ? s.weather[field] : null), h, t.id); });
       } else {
         var w = getTripWeather(t);
-        addHours(hrs, bucketOf(w ? w[field] : null), segHours(t));
+        addHours(hrs, bucketOf(w ? w[field] : null), segHours(t), t.id);
       }
     });
     return hrs;
@@ -5011,18 +5031,93 @@ function AnalyticsView({ catches, spots, trips, observations }) {
   var timeHours = zeroHours(timeBuckets);
   endedTrips.forEach(function(t) {
     var tTz = tzFor(tripAnchorGPS(t, tripSpotsMap[t.id])); // resolved once per trip, not per 15-min step
-    forEachQuarterHour(t, function(ms, h) { timeHours[hourBucket(localParts(ms, tTz).hour)] += h; });
+    forEachQuarterHour(t, function(ms, h) { addHours(timeHours, hourBucket(localParts(ms, tTz).hour), h, t.id); });
   });
-  var cTimeCounts = buildCounts(fEventsEnded, function(c) { return timeBucket(c.timestamp, tzFor(itemAnchorGPS(c, spotById))); }, timeBuckets);
-  var timeRates = ratesOf(timeBuckets, cTimeCounts, timeHours);
+  var timeChart = chartOf(timeBuckets, timeHours, function(c) { return timeBucket(c.timestamp, tzFor(itemAnchorGPS(c, spotById))); });
+
+  // ── Tide — hours per catch, by direction then level ──
+  // A record's tide object holds the level at arrival (valueCM) plus the next
+  // high and next low (time + cm). Those two extremes give the half-period and
+  // both amplitudes, so a cosine through them gives the tide at any moment of
+  // the visit, not just at arrival. valueCM is the REAL water level while the
+  // extremes are astronomical, so their difference at arrival (weather surge,
+  // slow-moving) is carried as a constant offset. Ported from the Insights Lab,
+  // where it predicted a LATER spot's stored level to a median 2.2 cm, against
+  // 10.6 cm for reusing the arrival reading.
+  var tideCurve = function(td, ms) {
+    var H = td.nextHigh, L = td.nextLow;
+    if (!(H && L && H.t && L.t && H.v != null && L.v != null)) return null;
+    var th = new Date(H.t).getTime(), tl = new Date(L.t).getTime();
+    var T = Math.abs(th - tl);
+    if (!isFinite(th) || !isFinite(tl) || !(T > 0)) return null;
+    var t1 = Math.min(th, tl), v1 = th < tl ? H.v : L.v, v2 = th < tl ? L.v : H.v;
+    var k = Math.floor((ms - t1) / T);
+    var even = ((k % 2) + 2) % 2 === 0;
+    var vA = even ? v1 : v2, vB = even ? v2 : v1; // bracketing extremes alternate high/low
+    var frac = (ms - (t1 + k * T)) / T;
+    return { cm: vA + (vB - vA) * (1 - Math.cos(Math.PI * frac)) / 2, dir: vB > vA ? "rising" : "falling" };
+  };
+  // -> { frac (share of the MLW..MHW range, as tide.seasonal), dir } or null.
+  // Without both extremes, falls back to the record's own stored reading.
+  var tideAt = function(rec, ms) {
+    var td = rec && rec.tide;
+    if (!td) return null;
+    var mh = td.mhwsCM, ml = td.mlwsCM;
+    var m = mh != null && ml != null && mh !== ml ? tideCurve(td, ms) : null;
+    if (m) {
+      var cm = m.cm;
+      var anchor = tideCurve(td, new Date(rec.timestamp).getTime());
+      if (anchor && td.valueCM != null) cm += td.valueCM - anchor.cm; // surge
+      return { frac: (cm - ml) / (mh - ml), dir: m.dir };
+    }
+    return td.seasonal != null ? { frac: td.seasonal, dir: td.direction || null } : null;
+  };
+  var tideDirs = [["rising", "Rising ↑"], ["falling", "Falling ↓"], [null, "Direction unknown"]];
+  var tideKey = function(td) {
+    var lvl = td ? tideBucket(td.frac) : null;
+    if (!lvl) return null;
+    return (td.dir === "rising" || td.dir === "falling" ? td.dir : "?") + "|" + lvl;
+  };
+  var tideKeys = [];
+  tideDirs.forEach(function(d) { tideBuckets.forEach(function(b) { tideKeys.push((d[0] || "?") + "|" + b); }); });
+  // Hours: every 15 minutes of each spot visit, at that moment's tide
+  var tideHours = zeroHours(tideKeys);
+  endedTrips.forEach(function(t) {
+    var ts = sortedSpotsOf(t);
+    var tripEnd = new Date(t.endTime).getTime();
+    ts.forEach(function(s, idx) {
+      if (!spotInLoc(s) || !s.tide) return;
+      var start = new Date(s.timestamp).getTime();
+      var end = idx < ts.length - 1 ? new Date(ts[idx + 1].timestamp).getTime() : tripEnd;
+      cutPauses([[start, Math.max(start, end)]], t).forEach(function(sg) {
+        for (var ms = sg[0]; ms < sg[1]; ms += 900000) {
+          var stepEnd = Math.min(ms + 900000, sg[1]);
+          addHours(tideHours, tideKey(tideAt(s, (ms + stepEnd) / 2)), (stepEnd - ms) / 3600000, t.id);
+        }
+      });
+    });
+  });
+  // Catches: their OWN measured tide (the value shown on the catch itself);
+  // the spot's curve only when the catch has none. Not the curve first: it
+  // mirrors the next high/low back in time, and the two daily highs differ, so
+  // a spot logged just after high water put a measured 50% catch at 63%.
+  var tideChart = chartOf(tideKeys, tideHours, function(c) {
+    var own = c.tide && c.tide.seasonal != null ? { frac: c.tide.seasonal, dir: c.tide.direction || null } : null;
+    return tideKey(own || tideAt(spotById[c.spotId], new Date(c.timestamp).getTime()));
+  });
+  // Rows grouped under Rising / Falling sub-headers, labelled by level
+  tideChart.rows.forEach(function(r) {
+    var p = r.label.split("|");
+    r.group = (tideDirs.filter(function(d) { return (d[0] || "?") === p[0]; })[0] || [null, ""])[1];
+    r.label = p[1];
+  });
 
   // ── Water Temp — hours per catch (temp assumed constant per spot) ──
   var tempHours = zeroHours(tempBucketsAll);
   endedTrips.forEach(function(t) {
-    forEachVisit(t, function(s, h) { addHours(tempHours, tempBucket(s.waterTemp), h); });
+    forEachVisit(t, function(s, h) { addHours(tempHours, tempBucket(s.waterTemp), h, t.id); });
   });
-  var cTempCounts = buildCounts(fEventsEnded, function(c) { return tempBucket(getWT(c)); }, tempBucketsAll);
-  var tempRates = ratesOf(tempBucketsAll, cTempCounts, tempHours);
+  var tempChart = chartOf(tempBucketsAll, tempHours, function(c) { return tempBucket(getWT(c)); });
 
   // ── Moon Phase — hours per catch ──
   // getMoonPhase is a pure function of the timestamp — no capture dependency,
@@ -5032,16 +5127,14 @@ function AnalyticsView({ catches, spots, trips, observations }) {
   // boundary, which a snapshot never could.
   var moonHours = zeroHours(moonBuckets);
   endedTrips.forEach(function(t) {
-    forEachQuarterHour(t, function(ms, h) { addHours(moonHours, moonBucket(getMoonPhase(new Date(ms))), h); });
+    forEachQuarterHour(t, function(ms, h) { addHours(moonHours, moonBucket(getMoonPhase(new Date(ms))), h, t.id); });
   });
-  var cMoonCounts = buildCounts(fEventsEnded, function(c) { return moonBucket(getMoonPhase(new Date(c.timestamp))); }, moonBuckets);
-  var moonRates = ratesOf(moonBuckets, cMoonCounts, moonHours);
+  var moonChart = chartOf(moonBuckets, moonHours, function(c) { return moonBucket(getMoonPhase(new Date(c.timestamp))); });
 
   // ── Air Pressure — hours per catch ──
   var getPress = weatherOf("pressure");
   var pressHours = weatherHours(pressBuckets, "pressure", pressBucket);
-  var cPressCounts = buildCounts(fEventsEnded, function(c) { return pressBucket(getPress(c)); }, pressBuckets);
-  var pressRates = ratesOf(pressBuckets, cPressCounts, pressHours);
+  var pressChart = chartOf(pressBuckets, pressHours, function(c) { return pressBucket(getPress(c)); });
 
   // ── Wind Direction — hours per catch ──
   var windBuckets = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
@@ -5052,8 +5145,7 @@ function AnalyticsView({ catches, spots, trips, observations }) {
   };
   var getWindDir = weatherOf("windDir");
   var windHours = weatherHours(windBuckets, "windDir", windBucket);
-  var cWindCounts = buildCounts(fEventsEnded, function(c) { return windBucket(getWindDir(c)); }, windBuckets);
-  var windRates = ratesOf(windBuckets, cWindCounts, windHours);
+  var windChart = chartOf(windBuckets, windHours, function(c) { return windBucket(getWindDir(c)); });
 
   // ── Sky & Rain — hours per catch ──
   // Two charts, not one wxGroup axis: cloud and rain act on fish through
@@ -5087,10 +5179,8 @@ function AnalyticsView({ catches, spots, trips, observations }) {
   var getPrecip = weatherOf("precipMm");
   var skyHours = weatherHours(skyBuckets, "cloudCover", skyLabel);
   var rainHours = weatherHours(rainBuckets, "precipMm", rainBucket, "cloudCover");
-  var cSkyCounts = buildCounts(fEventsEnded, function(c) { return skyLabel(getCloud(c)); }, skyBuckets);
-  var skyRates = ratesOf(skyBuckets, cSkyCounts, skyHours);
-  var cRainCounts = buildCounts(fEventsEnded, function(c) { return rainBucket(getPrecip(c)); }, rainBuckets);
-  var rainRates = ratesOf(rainBuckets, cRainCounts, rainHours);
+  var skyChart = chartOf(skyBuckets, skyHours, function(c) { return skyLabel(getCloud(c)); });
+  var rainChart = chartOf(rainBuckets, rainHours, function(c) { return rainBucket(getPrecip(c)); });
 
   // ── Trolling Speed — hours per catch ──
   // Hours come straight from the track: each segment's duration lands in the
@@ -5115,39 +5205,26 @@ function AnalyticsView({ catches, spots, trips, observations }) {
       if (area && !(gpsInArea({ lat: pts[i - 1][0], lon: pts[i - 1][1] }) && gpsInArea({ lat: pts[i][0], lon: pts[i][1] }))) continue;
       var seg = geoDistM(pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1]) / dt;
       var b = speedBucket(seg);
-      if (b) speedHours[b] += dt / 3600;
+      addHours(speedHours, b, dt / 3600, t.id);
     }
   });
-  var cSpeedCounts = buildCounts(fEventsEnded, function(c) { return speedBucket(c.speedMS); }, speedBuckets);
-  var speedRates = ratesOf(speedBuckets, cSpeedCounts, speedHours);
+  var speedChart = chartOf(speedBuckets, speedHours, function(c) { return speedBucket(c.speedMS); });
 
   // ── Catch rate by method ──
-  var methodHours = {};
+  // Each spot visit's own net hours go to that spot's line type — the same
+  // per-visit walk as Water Temp. Splitting a trip's hours by the NUMBER of
+  // spots per line gave a 10-minute spot the same share as a 3-hour one.
+  // Sorted best-first, as before.
+  var methodList = [];
   endedTrips.forEach(function(t) {
-    var dur = segHours(t);
-    var tripSpots = (tripSpotsMap[t.id] || []).filter(spotInLoc);
-    var lines = tripSpots.map(function(s) { return s.lineType; }).filter(Boolean);
-    if (!lines.length) return;
-    var counts = {};
-    lines.forEach(function(lt) { counts[lt] = (counts[lt] || 0) + 1; });
-    var total = lines.length;
-    Object.keys(counts).forEach(function(lt) {
-      if (!methodHours[lt]) methodHours[lt] = 0;
-      methodHours[lt] += dur * counts[lt] / total;
-    });
+    sortedSpotsOf(t).forEach(function(s) { if (s.lineType && methodList.indexOf(s.lineType) < 0) methodList.push(s.lineType); });
   });
-  var methodCatches = {};
-  fEventsEnded.forEach(function(c) {
-    var spot = spotById[c.spotId];
-    var lt = spot ? spot.lineType : null;
-    if (!lt) return;
-    methodCatches[lt] = (methodCatches[lt] || 0) + (c._w || 1);
+  var methodHours = zeroHours(methodList);
+  endedTrips.forEach(function(t) {
+    forEachVisit(t, function(s, h) { addHours(methodHours, s.lineType, h, t.id); });
   });
-  var allMethods = Object.keys(methodHours).filter(function(lt) { return methodHours[lt] > 0; });
-  var methodRates = allMethods.map(function(lt) { return (methodCatches[lt] || 0) / methodHours[lt]; });
-  var methodIdx = allMethods.map(function(_, i) { return i; }).sort(function(a, b) { return methodRates[b] - methodRates[a]; });
-  var methodBuckets = methodIdx.map(function(i) { return allMethods[i]; });
-  var methodValues  = methodIdx.map(function(i) { return methodRates[i]; });
+  var methodChart = chartOf(methodList, methodHours, function(c) { var spot = spotById[c.spotId]; return spot ? spot.lineType : null; });
+  methodChart.rows.sort(function(a, b) { return b.rate - a.rate; });
 
   var fmtH = fmtHours;
 
@@ -5238,7 +5315,7 @@ function AnalyticsView({ catches, spots, trips, observations }) {
     sizeCounts = sizeBuckets.map(function(b) { return counts[b]; });
   }
 
-    return { allYears, allSpecies, fc, fObs, totalCatches, fishLbl, successRate, largestFish, largest, hrsPerCatch, sizeBuckets, sizeUnit, sizeCounts, methodBuckets, rateUnit, methodValues, fmtRate, methodHours, tempBucketsAll, tempRates, tempHours, tideHierarchy, timeBuckets, timeRates, timeHours, pressBuckets, pressRates, pressHours, windBuckets, windRates, windHours, skyBuckets, skyRates, skyHours, rainBuckets, rainRates, rainHours, speedBuckets, speedRates, speedHours, moonBuckets, moonRates, moonHours, totalSpotsFished, fmtH, totalSpotHours, avgHoursPerSpot, spotGroups, totalSessions };
+    return { allYears, allSpecies, fc, fObs, totalCatches, fishLbl, successRate, largestFish, largest, hrsPerCatch, sizeBuckets, sizeUnit, sizeCounts, rateUnit, fmtRate, tideChart, methodChart, tempChart, timeChart, pressChart, windChart, skyChart, rainChart, speedChart, moonChart, totalSpotsFished, fmtH, totalSpotHours, avgHoursPerSpot, spotGroups, totalSessions };
   }, [catches, spots, trips, observations, speciesFilter, yearFilter, monthFilter, dataFilter, area]);
   var allYears = S.allYears;
   var allSpecies = S.allSpecies;
@@ -5253,36 +5330,12 @@ function AnalyticsView({ catches, spots, trips, observations }) {
   var sizeBuckets = S.sizeBuckets;
   var sizeUnit = S.sizeUnit;
   var sizeCounts = S.sizeCounts;
-  var methodBuckets = S.methodBuckets;
   var rateUnit = S.rateUnit;
-  var methodValues = S.methodValues;
   var fmtRate = S.fmtRate;
-  var methodHours = S.methodHours;
-  var tempBucketsAll = S.tempBucketsAll;
-  var tempRates = S.tempRates;
-  var tempHours = S.tempHours;
-  var tideHierarchy = S.tideHierarchy;
-  var timeBuckets = S.timeBuckets;
-  var timeRates = S.timeRates;
-  var timeHours = S.timeHours;
-  var pressBuckets = S.pressBuckets;
-  var pressRates = S.pressRates;
-  var pressHours = S.pressHours;
-  var windBuckets = S.windBuckets;
-  var windRates = S.windRates;
-  var windHours = S.windHours;
-  var skyBuckets = S.skyBuckets;
-  var skyRates = S.skyRates;
-  var skyHours = S.skyHours;
-  var rainBuckets = S.rainBuckets;
-  var rainRates = S.rainRates;
-  var rainHours = S.rainHours;
-  var speedBuckets = S.speedBuckets;
-  var speedRates = S.speedRates;
-  var speedHours = S.speedHours;
-  var moonBuckets = S.moonBuckets;
-  var moonRates = S.moonRates;
-  var moonHours = S.moonHours;
+  // Props shared by every rate chart
+  var rc = function(name, chart) {
+    return { title: name + " (" + rateUnit + ")", chart: chart, fmt: fmtRate };
+  };
   var totalSpotsFished = S.totalSpotsFished;
   var fmtH = S.fmtH;
   var totalSpotHours = S.totalSpotHours;
@@ -5367,40 +5420,16 @@ function AnalyticsView({ catches, spots, trips, observations }) {
     sizeBuckets.length > 0 && React.createElement(SizeHistogram, { title: "Fish Size" + (sizeUnit ? " (" + sizeUnit + ")" : ""), buckets: sizeBuckets, values: sizeCounts }),
     // ── Charts (ordered: Method, Temp, Tide, Time, Pressure, Wind, Sky, Rain,
     //    Trolling Speed, Moon) — the three weather-model charts sit together ──
-    methodBuckets.length > 0 && React.createElement(StatChart, { title: "Method (" + rateUnit + ")", buckets: methodBuckets, values: methodValues, fmt: fmtRate, hours: methodBuckets.map(function(b) { return methodHours[b] || 0; }) }),
-    tempBucketsAll.length > 0 && React.createElement(StatChart, { title: "Water Temp (" + rateUnit + ")", buckets: tempBucketsAll, values: tempRates, fmt: fmtRate, hours: tempBucketsAll.map(function(b) { return tempHours[b] || 0; }) }),
-    tideHierarchy.some(function(g) { return g.total > 0; }) && (function() {
-      var tideMax = Math.max.apply(null, tideHierarchy.reduce(function(a, g) { return a.concat(g.counts); }, []).concat([0.001]));
-      return React.createElement("div", { className: "stat-card" },
-      React.createElement("div", { className: "stat-card-title" }, "Tide Level (" + (incObs ? "fish" : "catch") + " count)"),
-      tideHierarchy.filter(function(g) { return g.total > 0; }).map(function(g) {
-        return React.createElement("div", { key: g.label, style: { marginBottom: 10 } },
-          React.createElement("div", { style: { fontSize: 10, fontWeight: 700, letterSpacing: .5, textTransform: "uppercase", color: "var(--text-2)", padding: "6px 14px 2px", fontFamily: "'Source Code Pro', monospace" } }, g.label + "  (" + g.total + ")"),
-          g.buckets.map(function(lbl, i) {
-            if (g.counts[i] === 0) return null;
-            var pct = Math.round(g.counts[i] / tideMax * 100);
-            return React.createElement("div", { key: lbl, className: "stat-row" },
-              React.createElement("div", { className: "stat-lbl", style: { paddingLeft: 10 } }, lbl),
-              React.createElement("div", { className: "stat-bars" },
-                React.createElement("div", { className: "stat-bar-line" },
-                  React.createElement("div", { className: "stat-track" },
-                    React.createElement("div", { className: "stat-fill-c", style: { width: pct + "%" } })
-                  ),
-                  React.createElement("div", { className: "stat-ct" }, g.counts[i])
-                )
-              )
-            );
-          })
-        );
-      })
-    ); })(),
-    React.createElement(StatChart, { title: "Time of Day (" + rateUnit + ")", buckets: timeBuckets,  values: timeRates, fmt: fmtRate, hours: timeBuckets.map(function(b) { return timeHours[b] || 0; }) }),
-    React.createElement(StatChart, { title: "Air Pressure (" + rateUnit + ")", buckets: pressBuckets, values: pressRates, fmt: fmtRate, hours: pressBuckets.map(function(b) { return pressHours[b] || 0; }) }),
-    React.createElement(StatChart, { title: "Wind Direction (" + rateUnit + ")", buckets: windBuckets, values: windRates, fmt: fmtRate, hours: windBuckets.map(function(b) { return windHours[b] || 0; }) }),
-    React.createElement(StatChart, { title: "Sky (" + rateUnit + ")", buckets: skyBuckets, values: skyRates, fmt: fmtRate, hours: skyBuckets.map(function(b) { return skyHours[b] || 0; }) }),
-    React.createElement(StatChart, { title: "Rain (" + rateUnit + ")", buckets: rainBuckets, values: rainRates, fmt: fmtRate, hours: rainBuckets.map(function(b) { return rainHours[b] || 0; }) }),
-    React.createElement(StatChart, { title: "Trolling Speed (" + rateUnit + ")", buckets: speedBuckets, values: speedRates, fmt: fmtRate, hours: speedBuckets.map(function(b) { return speedHours[b] || 0; }) }),
-    React.createElement(StatChart, { title: "Moon Phase (" + rateUnit + ")",  buckets: moonBuckets,  values: moonRates, fmt: fmtRate, hours: moonBuckets.map(function(b) { return moonHours[b] || 0; }) })
+    React.createElement(StatChart, rc("Method", S.methodChart)),
+    React.createElement(StatChart, rc("Water Temp", S.tempChart)),
+    React.createElement(StatChart, rc("Tide", S.tideChart)),
+    React.createElement(StatChart, rc("Time of Day", S.timeChart)),
+    React.createElement(StatChart, rc("Air Pressure", S.pressChart)),
+    React.createElement(StatChart, rc("Wind Direction", S.windChart)),
+    React.createElement(StatChart, rc("Sky", S.skyChart)),
+    React.createElement(StatChart, rc("Rain", S.rainChart)),
+    React.createElement(StatChart, rc("Trolling Speed", S.speedChart)),
+    React.createElement(StatChart, rc("Moon Phase", S.moonChart))
     ),
     // ── Spots-mode KPI tiles (shown instead of the catch/obs ones above) ──
     dataFilter === "spots" && React.createElement("div", { className: "stat-summary" },
