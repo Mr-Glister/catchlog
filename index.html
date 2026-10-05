@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.75-exp</title>
+  <title>The Catch Log v2.76-exp</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -2754,9 +2754,10 @@ function buildSpeciesGroups(trips, catches, observations, currentValue) {
   const more = Array.from(known).filter(s => s && !seen.has(s)).sort();
   return { recent, more };
 }
-// Context so the six dropdown call sites don't each need trips/catches threaded
-// through them — CatchForm and ObsForm only receive activeTrip/activeSpot/onSave.
-const SpeciesCtx = React.createContext(null);
+// The log's records for the pickers' "Recent" lists, so the dropdown call sites
+// don't each need trips/spots/catches threaded through them — CatchForm and
+// ObsForm only receive activeTrip/activeSpot/onSave.
+const LogDataCtx = React.createContext(null);
 function deriveMethod(tripSpots, trip) {
   if (trip && trip.mode === "trolling") return "Trolling";
   const lines = tripSpots.map(s => s.lineType).filter(Boolean);
@@ -3198,12 +3199,12 @@ function FishLog() {
   const tripObs = t => (byTrip.obs[t.id] || []).slice();
   // Stable context value: a fresh object every render made every species
   // dropdown rebuild its lists on each keystroke anywhere in the app
-  const speciesCtx = useMemo(() => ({ trips, catches, observations }), [trips, catches, observations]);
+  const logData = useMemo(() => ({ trips, spots, catches, observations }), [trips, spots, catches, observations]);
   const backupDays = daysSinceBackup();
   // Provider stands in for the Fragment that used to be here — same children,
   // no extra nesting — so the six species dropdowns can read trips/catches
   // without threading props through CatchForm/ObsForm, which receive neither.
-  return /*#__PURE__*/React.createElement(SpeciesCtx.Provider, { value: speciesCtx }, /*#__PURE__*/React.createElement("style", null, css), /*#__PURE__*/React.createElement("div", {
+  return /*#__PURE__*/React.createElement(LogDataCtx.Provider, { value: logData }, /*#__PURE__*/React.createElement("style", null, css), /*#__PURE__*/React.createElement("div", {
     className: "app"
   }, /*#__PURE__*/React.createElement("header", {
     className: "header"
@@ -3242,7 +3243,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.75-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.76-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -3503,19 +3504,6 @@ function ConditionsTitle({ weatherStatus, tideStatus }) {
   return /*#__PURE__*/React.createElement("div", { className: "field-group-title" },
     "Conditions", (weatherStatus === "loading" || tideStatus === "loading") && /*#__PURE__*/React.createElement("span", { style: { opacity: .5, fontSize: 9 } }, " \xB7 fetching…"));
 }
-// Fly/Spin line picker with its badge (start session + new spot)
-function LineTypeSelect({ value, onChange }) {
-  const opt = l => /*#__PURE__*/React.createElement("option", { key: l, value: l }, l);
-  return /*#__PURE__*/React.createElement(React.Fragment, null,
-    /*#__PURE__*/React.createElement("div", { className: "field-select-wrap" },
-      /*#__PURE__*/React.createElement("select", { className: "field-select", value: value, onChange: e => onChange(e.target.value) },
-        /*#__PURE__*/React.createElement("option", { value: "" }, "— select —"),
-        /*#__PURE__*/React.createElement("optgroup", { label: "Fly" }, FLY_LINES.map(opt)),
-        /*#__PURE__*/React.createElement("optgroup", { label: "Spin" }, SPIN_LINES.map(opt)))),
-    value && /*#__PURE__*/React.createElement("span", {
-      className: `line-type-badge ${FLY_LINES.includes(value) ? "line-type-fly" : "line-type-spin"}`
-    }, FLY_LINES.includes(value) ? "Fly" : "Spin"));
-}
 // Typical low/high sea level under a tide bar (every tide display shows it)
 function TideRangeLabels({ tide, style, className }) {
   return /*#__PURE__*/React.createElement("div", { className, style },
@@ -3662,53 +3650,54 @@ function RecordConditions({ weather: w, waterTemp, tide }) {
         /*#__PURE__*/React.createElement(TideRangeLabels, { tide, style: { display: "flex", justifyContent: "space-between", fontSize: 9, color: "#aaa", marginTop: 3 } })),
       /*#__PURE__*/React.createElement("div", { style: { fontSize: 9, color: "#ccc", marginTop: 4 } }, tideAttribution(tide.source).short)));
 }
-// Species picker: the phone's own dropdown, kept SHORT. Android draws a <select>
-// as a dialog that is centred while it fits on screen, but once the list is
-// longer it fills the whole screen with "Recent" pinned at the very top, out of
-// thumb reach. So the dropdown offers only Recent (plus the current value) and
-// "More species…", which opens the app's own panel with every species.
+// Pickers for species and line type: the phone's own dropdown, kept SHORT.
+// Android draws a <select> as a dialog that is centred while it fits on
+// screen, but once the list is longer it fills the whole screen with the top
+// entries pinned at the very top, out of thumb reach. So the dropdown offers
+// only the recent choices (plus the current value) and "More …", which opens
+// the app's own panel with every option.
 // (A second, longer dropdown can't be opened for the user: Android doesn't let
 // a page open one from a choice made inside another — it needed a second tap
 // and looked like nothing had happened.)
-const MORE_SPECIES = "__more_species__"; // never a real species name
-function SpeciesSelect({ value, onChange }) {
-  const data = useContext(SpeciesCtx);
-  const groups = useMemo(() => buildSpeciesGroups(data?.trips, data?.catches, data?.observations, value), [data, value]);
+const MORE_OPTION = "__more_options__"; // never a real value
+// fullGroups: the dropdown's groups when there is nothing to shorten.
+// panelSections: what the "More …" panel lists, top to bottom.
+function ShortSelect({ value, onChange, recent, fullGroups, panelSections, moreLabel, panelTitle }) {
   const [panel, setPanel] = useState(false);
-  // Nothing recent yet (new user) or nothing beyond it: a short list would save
-  // nothing, so the dropdown just holds everything
-  const short = groups.recent.length > 0 && groups.more.length > 0;
-  const opt = s => /*#__PURE__*/React.createElement("option", { key: s, value: s }, s);
-  const currentElsewhere = value && groups.recent.indexOf(value) < 0;
+  // Nothing recent yet (new user) or nothing beyond it: a short list would
+  // save nothing, so the dropdown just holds everything
+  const short = recent.length > 0 && fullGroups.some(g => g.items.some(i => recent.indexOf(i) < 0));
+  const opt = v => /*#__PURE__*/React.createElement("option", { key: v, value: v }, v);
+  const currentElsewhere = value && recent.indexOf(value) < 0;
   return /*#__PURE__*/React.createElement(React.Fragment, null,
     /*#__PURE__*/React.createElement("div", { className: "field-select-wrap" },
       /*#__PURE__*/React.createElement("select", {
         className: "field-select",
         value: value,
         onChange: e => {
-          if (e.target.value === MORE_SPECIES) { setPanel(true); return; }
+          if (e.target.value === MORE_OPTION) { setPanel(true); return; }
           onChange(e.target.value);
         }
       },
-        /*#__PURE__*/React.createElement("option", { value: "" }, "\u2014 select \u2014"),
-        groups.recent.length ? /*#__PURE__*/React.createElement("optgroup", { key: "r", label: "Recent" }, groups.recent.map(opt)) : null,
+        /*#__PURE__*/React.createElement("option", { value: "" }, "— select —"),
         short
           ? [
+              /*#__PURE__*/React.createElement("optgroup", { key: "r", label: "Recent" }, recent.map(opt)),
               // the select must always contain its current value, or it shows blank
               currentElsewhere ? opt(value) : null,
-              /*#__PURE__*/React.createElement("option", { key: "more", value: MORE_SPECIES }, "More species\u2026")
+              /*#__PURE__*/React.createElement("option", { key: "more", value: MORE_OPTION }, moreLabel)
             ]
-          : (groups.more.length ? /*#__PURE__*/React.createElement("optgroup", { key: "m", label: groups.recent.length ? "More" : "Species" }, groups.more.map(opt)) : null))),
+          : fullGroups.filter(g => g.items.length).map(g => /*#__PURE__*/React.createElement("optgroup", { key: g.label, label: g.label }, g.items.map(opt))))),
     // Portal: the field is also used inside modals, whose overflow would clip the panel
-    panel && ReactDOM.createPortal(/*#__PURE__*/React.createElement(SpeciesSheet, {
-      groups, value, title: "All species",
+    panel && ReactDOM.createPortal(/*#__PURE__*/React.createElement(PickerSheet, {
+      sections: panelSections, value, title: panelTitle,
       onPick: v => { onChange(v); setPanel(false); },
       onClose: () => setPanel(false)
     }), document.body));
 }
-// The "All species" panel: slides up from the bottom, Recent first (around the
+// The "More …" panel: slides up from the bottom, Recent first (around the
 // middle of the screen), then everything else.
-function SpeciesSheet({ groups, value, title, onPick, onClose }) {
+function PickerSheet({ sections, value, title, onPick, onClose }) {
   const listRef = useRef(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
@@ -3717,7 +3706,7 @@ function SpeciesSheet({ groups, value, title, onPick, onClose }) {
     // closes the sheet instead of leaving the app. Closing any other way
     // removes that entry again (in the cleanup).
     let popped = false;
-    history.pushState({ speciesSheet: true }, "");
+    history.pushState({ pickerSheet: true }, "");
     const onPop = () => { popped = true; onCloseRef.current(); };
     const onKey = e => { if (e.key === "Escape") onCloseRef.current(); };
     window.addEventListener("popstate", onPop);
@@ -3725,32 +3714,70 @@ function SpeciesSheet({ groups, value, title, onPick, onClose }) {
     // Keep the page underneath from scrolling while the list is dragged
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
-    // A current value further down (in "More") is scrolled into view
+    // A current value further down is scrolled into view
     const on = listRef.current && listRef.current.querySelector(".sheet-item.on");
     if (on && on.offsetTop > listRef.current.clientHeight) on.scrollIntoView({ block: "center" });
     return () => {
       window.removeEventListener("popstate", onPop);
       document.removeEventListener("keydown", onKey);
       document.body.style.overflow = prevOverflow;
-      if (!popped && history.state && history.state.speciesSheet) history.back();
+      if (!popped && history.state && history.state.pickerSheet) history.back();
     };
   }, []);
-  const item = s => /*#__PURE__*/React.createElement("button", {
-    key: s, type: "button", className: "sheet-item" + (s === value ? " on" : ""), onClick: () => onPick(s)
-  }, /*#__PURE__*/React.createElement("span", null, s), s === value ? /*#__PURE__*/React.createElement("span", null, "✓") : null);
-  const section = (label, list) => list.length ? [
-    /*#__PURE__*/React.createElement("div", { key: "h-" + label, className: "sheet-group" }, label),
-    ...list.map(item)
-  ] : [];
+  // Keys carry the section: line types appear under Recent AND under Fly/Spin
+  const item = (sec, v) => /*#__PURE__*/React.createElement("button", {
+    key: sec + ":" + v, type: "button", className: "sheet-item" + (v === value ? " on" : ""), onClick: () => onPick(v)
+  }, /*#__PURE__*/React.createElement("span", null, v), v === value ? /*#__PURE__*/React.createElement("span", null, "✓") : null);
   return /*#__PURE__*/React.createElement("div", { className: "sheet-backdrop", onClick: onClose },
     /*#__PURE__*/React.createElement("div", { className: "sheet", onClick: e => e.stopPropagation() },
       /*#__PURE__*/React.createElement("div", { className: "sheet-head" },
         /*#__PURE__*/React.createElement("span", { className: "sheet-title" }, title),
         /*#__PURE__*/React.createElement("button", { type: "button", className: "sheet-close", onClick: onClose }, "\xD7")),
       /*#__PURE__*/React.createElement("div", { className: "sheet-list", ref: listRef },
-        ...section("Recent", groups.recent),
-        ...section(groups.recent.length ? "More" : "Species", groups.more),
+        ...sections.filter(sec => sec.items.length).flatMap(sec => [
+          /*#__PURE__*/React.createElement("div", { key: "h-" + sec.label, className: "sheet-group" }, sec.label),
+          ...sec.items.map(v => item(sec.label, v))
+        ]),
         value ? /*#__PURE__*/React.createElement("button", { key: "clear", type: "button", className: "sheet-item clear", onClick: () => onPick("") }, "Clear selection") : null)));
+}
+function SpeciesSelect({ value, onChange }) {
+  const data = useContext(LogDataCtx);
+  const groups = useMemo(() => buildSpeciesGroups(data?.trips, data?.catches, data?.observations, value), [data, value]);
+  const rest = { label: groups.recent.length ? "More" : "Species", items: groups.more };
+  return /*#__PURE__*/React.createElement(ShortSelect, {
+    value, onChange, recent: groups.recent,
+    fullGroups: [{ label: "Recent", items: groups.recent }, rest],
+    panelSections: [{ label: "Recent", items: groups.recent }, rest],
+    moreLabel: "More species…", panelTitle: "All species"
+  });
+}
+// Line types used at spots in the last RECENT_SESSION_COUNT sessions, most
+// recently used first — same session window as the species "Recent" group
+function recentLineTypes(trips, spots) {
+  const ids = new Set((trips || []).filter(t => t && t.startTime)
+    .sort((a, b) => new Date(b.startTime) - new Date(a.startTime))
+    .slice(0, RECENT_SESSION_COUNT).map(t => t.id));
+  const out = [];
+  (spots || []).filter(s => ids.has(s.tripId) && ALL_LINES.includes(s.lineType))
+    .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+    .forEach(s => { if (out.indexOf(s.lineType) < 0) out.push(s.lineType); });
+  return out;
+}
+// Fly/Spin line picker with its badge (start session + new spot)
+function LineTypeSelect({ value, onChange }) {
+  const data = useContext(LogDataCtx);
+  const recent = useMemo(() => recentLineTypes(data?.trips, data?.spots), [data]);
+  const groups = [{ label: "Fly", items: FLY_LINES }, { label: "Spin", items: SPIN_LINES }];
+  return /*#__PURE__*/React.createElement(React.Fragment, null,
+    /*#__PURE__*/React.createElement(ShortSelect, {
+      value, onChange, recent,
+      fullGroups: groups,
+      panelSections: [{ label: "Recent", items: recent }, ...groups],
+      moreLabel: "More lines…", panelTitle: "All line types"
+    }),
+    value && /*#__PURE__*/React.createElement("span", {
+      className: `line-type-badge ${FLY_LINES.includes(value) ? "line-type-fly" : "line-type-spin"}`
+    }, FLY_LINES.includes(value) ? "Fly" : "Spin"));
 }
 function ConditionsModal({ onClose }) {
   const [ts] = useState(new Date().toISOString());
