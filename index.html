@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.72-exp</title>
+  <title>The Catch Log v2.73-exp</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -816,6 +816,23 @@ function localPartsUncached(ms, tz) {
     return { year: parseInt(get("year"), 10), month: parseInt(get("month"), 10) - 1, hour: parseInt(get("hour"), 10) % 24 };
   } catch (e) { return { year: d.getFullYear(), month: d.getMonth(), hour: d.getHours() }; }
 }
+// Date/time parts (strings) of an instant as lived in tz. Formatters are
+// expensive to build and these run per record in exports — cache one per zone.
+const ZONED_FMT_CACHE = new Map();
+function zonedParts(ms, tz) {
+  let fmt = ZONED_FMT_CACHE.get(tz);
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz, hourCycle: "h23",
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit"
+    });
+    ZONED_FMT_CACHE.set(tz, fmt);
+  }
+  const parts = {};
+  fmt.formatToParts(new Date(ms)).forEach(p => { parts[p.type] = p.value; });
+  return parts;
+}
 // iso -> the same instant, formatted with tz's correct local offset (DST-aware)
 // instead of "Z" — self-contained for any external tool (export use), no
 // separate timezone lookup needed to make sense of it on its own. Falls back
@@ -826,13 +843,7 @@ function isoLocal(iso, tz) {
   const d = new Date(iso);
   if (isNaN(d.getTime())) return iso;
   try {
-    const fmt = new Intl.DateTimeFormat("en-US", {
-      timeZone: tz, hourCycle: "h23",
-      year: "numeric", month: "2-digit", day: "2-digit",
-      hour: "2-digit", minute: "2-digit", second: "2-digit"
-    });
-    const parts = {};
-    fmt.formatToParts(d).forEach(p => { parts[p.type] = p.value; });
+    const parts = zonedParts(d.getTime(), tz);
     const asUTC = Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour % 24, +parts.minute, +parts.second, d.getUTCMilliseconds());
     const offsetMin = Math.round((asUTC - d.getTime()) / 60000);
     const sign = offsetMin >= 0 ? "+" : "-";
@@ -854,11 +865,7 @@ function wallClockIn(iso, tz) {
   const p = n => String(n).padStart(2, "0");
   if (tz) {
     try {
-      const parts = {};
-      new Intl.DateTimeFormat("en-US", {
-        timeZone: tz, hourCycle: "h23",
-        year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit"
-      }).formatToParts(d).forEach(x => { parts[x.type] = x.value; });
+      const parts = zonedParts(d.getTime(), tz);
       return `${parts.year}-${parts.month}-${parts.day}T${p(+parts.hour % 24)}:${parts.minute}`;
     } catch (e) {}
   }
@@ -873,11 +880,7 @@ function wallClockToISO(str, tz) {
   try {
     // Offset of tz at a given instant, in ms (positive east of UTC)
     const offsetAt = ms => {
-      const parts = {};
-      new Intl.DateTimeFormat("en-US", {
-        timeZone: tz, hourCycle: "h23",
-        year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit"
-      }).formatToParts(new Date(ms)).forEach(x => { parts[x.type] = x.value; });
+      const parts = zonedParts(ms, tz);
       return Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour % 24, +parts.minute, +parts.second) - ms;
     };
     // Two passes so a date on the other side of a DST change gets its own offset
@@ -896,10 +899,17 @@ const pausedMs = (t, untilISO) => (t && t.pauses || []).reduce((sum, p) => {
   return sum + Math.max(0, e - s);
 }, 0);
 const isPaused = t => !!t && (t.pauses || []).some(p => !p.end);
+// Fished minutes between s and e: wall-clock time minus pauses
+const netMinutes = (s, e, t) => Math.max(0, Math.round(((new Date(e) - new Date(s)) - pausedMs(t, e)) / 60000));
 const durStr = (s, e, t) => {
-  const m = Math.max(0, Math.round(((new Date(e) - new Date(s)) - pausedMs(t, e)) / 60000));
+  const m = netMinutes(s, e, t);
   return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`;
 };
+// Hours as "45m" / "4.2h" — Insights' tables and the map's spot badges
+const fmtHours = h => h < 1 ? (h * 60).toFixed(0) + "m" : h.toFixed(1) + "h";
+// pressureHistory is a live-capture-only field (the sparkline); it is never
+// stored on a record
+const stripLiveFields = weather => weather ? (({ pressureHistory, ...w }) => w)(weather) : null;
 function geoDistM(lat1, lon1, lat2, lon2) {
   const R = 6371000, dLat = (lat2 - lat1) * Math.PI / 180, dLon = (lon2 - lon1) * Math.PI / 180;
   const x = dLon * Math.cos((lat1 + lat2) * Math.PI / 360);
@@ -1460,7 +1470,7 @@ function tideAttribution(source) {
 // independent Open-Meteo fetch down with it), plus any future double-outage.
 // Two weather fields are deliberately NOT in the list below.
 // `pressureHistory`: a live-capture-only sparkline field, already stripped out
-// before a record is ever saved (see the `(({pressureHistory, ...w}) => w)`
+// before a record is ever saved (see stripLiveFields)
 // destructure at every save site), so there is nothing to repair.
 // `moon`: every render site already falls back to `getMoonPhase(new Date())`
 // when it's missing and the Insights chart derives it from the timestamp
@@ -1490,12 +1500,20 @@ async function fetchHistoricalWx(lat, lon, dateStr) {
     clearTimeout(tid);
   }
 }
-// Same hour-selection rules as live capture (see fetchEnv above): pressure and
-// wind speed are continuous instants, interpolated to the minute; weather code
-// and wind direction take the nearer hour instead (categorical / circular —
-// direction wraps at 360, so interpolating 350° and 10° would wrongly give
-// 180°); precipitation is the sum of the PRECEDING hour, so it comes from the
-// next boundary, not the one the record's own hour is stamped with.
+// Conditions at one moment from an Open-Meteo hourly response — used by both
+// live capture (fetchEnv) and the weather backfill, so the two can't disagree.
+// Open-Meteo's valid times differ per variable and getting them wrong is not
+// subtle:
+// - cloud_cover, pressure and wind speed are INSTANT values at the stamped
+//   hour: interpolated to the record's minute. Flooring left them up to 59
+//   minutes stale — in Bergen that reported 99% cloud from the top of the hour
+//   while the sky was already at 84% and yr.no said so.
+// - weather_code and wind direction take the NEARER hour instead (categorical /
+//   circular — direction wraps at 360, so interpolating 350° and 10° would
+//   wrongly give 180°).
+// - precipitation is the sum of the PRECEDING hour, so the value stamped 14:00
+//   covers 13:00-14:00: for a record at 14:35 the right one is stamped 15:00.
+//   Using the record's own hour reported a drizzle that had already stopped.
 function deriveHourlyWx(omData, atMs) {
   const times = omData.hourly?.time || [];
   let idx = -1;
@@ -1747,57 +1765,16 @@ function useEnv() {
       // future hour and store a forecast, defeating the whole point of
       // reading a hindcast.
       const atMs = Math.min(isNaN(tsMs) ? Date.now() : tsMs, Date.now());
-      let wxIdx = -1;
-      for (let i = 0; i < times.length; i++) {
-        if (new Date(times[i] + 'Z').getTime() <= atMs) wxIdx = i;
-        else break;
-      }
-      if (wxIdx >= 0) {
-        const codes    = omData.hourly?.weather_code || [];
-        const clouds   = omData.hourly?.cloud_cover || [];
-        const precips  = omData.hourly?.precipitation || [];
-        const windSpds = omData.hourly?.wind_speed_10m || [];
-        const windDirs = omData.hourly?.wind_direction_10m || [];
-        // Open-Meteo's stated valid times differ per variable and getting them
-        // wrong is not subtle: cloud_cover and weather_code are INSTANT values
-        // at the stamped hour, while precipitation is the sum of the PRECEDING
-        // hour. So the precipitation stamped 14:00 covers 13:00-14:00 — for a
-        // record at 14:35 that is the hour before you were fishing, which is
-        // how a trace of drizzle that fell earlier got reported as current.
-        const hi = wxIdx + 1 < times.length ? wxIdx + 1 : wxIdx;
-        const loMs = new Date(times[wxIdx] + 'Z').getTime();
-        const hiMs = new Date(times[hi] + 'Z').getTime();
-        const span = hiMs - loMs;
-        const frac = span > 0 ? Math.max(0, Math.min(1, (atMs - loMs) / span)) : 0;
-        // Instant values: interpolate cloud to the record's minute, and take
-        // the code from whichever hour boundary is nearer. Flooring left both
-        // up to 59 minutes stale — in Bergen that reported 99% cloud from the
-        // top of the hour while the sky was already at 84% and yr.no said so.
-        if (clouds[wxIdx] != null) {
-          const a = clouds[wxIdx];
-          const b = clouds[hi] != null ? clouds[hi] : a;
-          cloudCover = Math.round(a + (b - a) * frac);
-        }
-        const nearer = frac < 0.5 ? wxIdx : hi;
-        if (codes[nearer] != null) weatherCode = codes[nearer];
-        // Preceding-hour sum: the accumulation for the hour CONTAINING the
-        // record is the one stamped at the next boundary.
-        if (precips[hi] != null) precipMm = Math.round(precips[hi] * 10) / 10;
-        // Pressure/wind fallback for the CURRENT hour, used only if met.no
-        // above didn't supply its own reading. Pressure and wind speed are
-        // continuous instants, so interpolate them exactly like cloud cover.
-        // Wind DIRECTION takes the nearer hour instead, same as weatherCode:
-        // degrees wrap at 360, so a naive average of e.g. 350 and 10 would
-        // give 180 (due south) instead of 0 (due north).
-        if (vals[wxIdx] != null) {
-          const a = vals[wxIdx], b = vals[hi] != null ? vals[hi] : a;
-          omPressureNow = Math.round((a + (b - a) * frac) * 10) / 10;
-        }
-        if (windSpds[wxIdx] != null) {
-          const a = windSpds[wxIdx], b = windSpds[hi] != null ? windSpds[hi] : a;
-          omWindSpeedNow = Math.round((a + (b - a) * frac) * 10) / 10;
-        }
-        if (windDirs[nearer] != null) omWindDirNow = Math.round(windDirs[nearer]);
+      // Same hour rules as the weather backfill. Pressure and wind here are
+      // only the fallback for when met.no above failed.
+      const hw = deriveHourlyWx(omData, atMs);
+      if (hw) {
+        cloudCover = hw.cloudCover;
+        weatherCode = hw.weatherCode;
+        precipMm = hw.precipMm;
+        omPressureNow = hw.pressure;
+        omWindSpeedNow = hw.windSpeed;
+        omWindDirNow = hw.windDir;
       }
     } catch (fe) {
       console.warn('Open-Meteo unavailable:', fe.message);
@@ -1987,42 +1964,47 @@ const esc = v => {
   return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 };
 const row = cells => cells.map(esc).join(",");
+// Weather + tide columns shared by the spots, catches and observations sheets
+const WX_TIDE_HEAD = ["air_temp_c", "conditions", "cloud_pct", "precip_mm", "pressure_hpa", "pressure_level", "pressure_trend", "wind_ms", "wind_dir_deg", "moon_phase", "tide_seasonal_pct", "tide_direction", "tide_cm"];
+const wxTideCells = r => [
+  r.weather?.airTemp ?? "", wxLabel(r.weather?.weatherCode, r.weather?.cloudCover) || "", r.weather?.cloudCover ?? "", r.weather?.precipMm ?? "",
+  r.weather?.pressure ?? "", r.weather?.pressureLevel || "", r.weather?.pressureTrend || "", r.weather?.windSpeed ?? "", r.weather?.windDir ?? "",
+  moonCSV(r.weather?.moon), r.tide?.seasonal != null ? tidePct(r.tide.seasonal) : "", r.tide?.direction || "", r.tide?.valueCM ?? ""
+];
+const byId = arr => { const m = {}; arr.forEach(x => { m[x.id] = x; }); return m; };
+const byTripId = arr => { const m = {}; arr.forEach(x => { (m[x.tripId] = m[x.tripId] || []).push(x); }); return m; };
+const byTimestamp = arr => [...arr].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+// Record's own local time, alongside the raw UTC timestamp
+const localCells = (iso, tz) => [tz || "", tz ? isoLocal(iso, tz) : ""];
 const tripsCSV = (trips, spots, catches, obs) => {
   const h = row(["trip_id", "name", "start_time", "end_time", "timezone", "start_time_local", "end_time_local", "duration_min", "target_species", "method", "spot_count", "catch_count", "obs_count", "notes"]);
+  const sp = byTripId(spots), ca = byTripId(catches), ob = byTripId(obs);
   return [h, ...trips.map(t => {
-    const ts = spots.filter(s => s.tripId === t.id);
-    const tc = catches.filter(c => c.tripId === t.id);
-    const to = obs.filter(o => o.tripId === t.id);
-    const dur = t.endTime ? Math.max(0, Math.round(((new Date(t.endTime) - new Date(t.startTime)) - pausedMs(t, t.endTime)) / 60000)) : "";
-    const method = deriveMethod(ts, t) || "";
+    const ts = sp[t.id] || [];
     const tz = tzFor(tripAnchorGPS(t, ts));
-    return row([t.id, t.name, t.startTime, t.endTime || "", tz || "", tz ? isoLocal(t.startTime, tz) : "", t.endTime && tz ? isoLocal(t.endTime, tz) : "", dur, t.targetSpecies || "", method, ts.length, tc.length, to.length, t.notes || ""]);
+    const dur = t.endTime ? netMinutes(t.startTime, t.endTime, t) : "";
+    return row([t.id, t.name, t.startTime, t.endTime || "", ...localCells(t.startTime, tz), t.endTime && tz ? isoLocal(t.endTime, tz) : "", dur, t.targetSpecies || "", deriveMethod(ts, t) || "", ts.length, (ca[t.id] || []).length, (ob[t.id] || []).length, t.notes || ""]);
   })].join("\n");
 };
 const spotsCSV = (spots, trips) => {
-  const h = row(["spot_id", "trip_id", "trip_name", "name", "timestamp", "timezone", "timestamp_local", "gps_lat", "gps_lon", "line_type", "water_temp", "has_spot_photo", "air_temp_c", "conditions", "cloud_pct", "precip_mm", "pressure_hpa", "pressure_level", "pressure_trend", "wind_ms", "wind_dir_deg", "moon_phase", "tide_seasonal_pct", "tide_direction", "tide_cm", "notes"]);
+  const h = row(["spot_id", "trip_id", "trip_name", "name", "timestamp", "timezone", "timestamp_local", "gps_lat", "gps_lon", "line_type", "water_temp", "has_spot_photo", ...WX_TIDE_HEAD, "notes"]);
+  const tr = byId(trips);
   return [h, ...spots.map(s => {
-    const t = trips.find(x => x.id === s.tripId);
-    const tz = tzFor(s.gps);
-    return row([s.id, s.tripId, t?.name || "", s.name || "", s.timestamp, tz || "", tz ? isoLocal(s.timestamp, tz) : "", s.gps?.lat ?? "", s.gps?.lon ?? "", s.lineType || "", s.waterTemp ?? "", s.photo ? "1" : "0", s.weather?.airTemp ?? "", wxLabel(s.weather?.weatherCode, s.weather?.cloudCover) || "", s.weather?.cloudCover ?? "", s.weather?.precipMm ?? "", s.weather?.pressure ?? "", s.weather?.pressureLevel || "", s.weather?.pressureTrend || "", s.weather?.windSpeed ?? "", s.weather?.windDir ?? "", moonCSV(s.weather?.moon), s.tide?.seasonal != null ? tidePct(s.tide.seasonal) : "", s.tide?.direction || "", s.tide?.valueCM ?? "", s.notes || ""]);
+    return row([s.id, s.tripId, tr[s.tripId]?.name || "", s.name || "", s.timestamp, ...localCells(s.timestamp, tzFor(s.gps)), s.gps?.lat ?? "", s.gps?.lon ?? "", s.lineType || "", s.waterTemp ?? "", s.photo ? "1" : "0", ...wxTideCells(s), s.notes || ""]);
   })].join("\n");
 };
 const catchesCSV = (catches, spots, trips) => {
-  const h = row(["catch_id", "trip_id", "trip_name", "spot_id", "spot_name", "timestamp", "timezone", "timestamp_local", "species", "fly_pattern", "troll_depth", "size", "gps_lat", "gps_lon", "water_temp", "air_temp_c", "conditions", "cloud_pct", "precip_mm", "pressure_hpa", "pressure_level", "pressure_trend", "wind_ms", "wind_dir_deg", "moon_phase", "tide_seasonal_pct", "tide_direction", "tide_cm", "tide_mlws_cm", "tide_mhws_cm", "has_fish_photo", "has_fly_photo", "notes"]);
-  return [h, ...[...catches].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp)).map(c => {
-    const t = trips.find(x => x.id === c.tripId),
-      s = spots.find(x => x.id === c.spotId);
-    const tz = tzFor(itemAnchorGPS(c, spots));
-    return row([c.id, c.tripId || "", t?.name || "", c.spotId || "", s?.name || "", c.timestamp, tz || "", tz ? isoLocal(c.timestamp, tz) : "", c.species, c.flyPattern || "", c.trollDepth || "", c.size || "", c.gps?.lat ?? "", c.gps?.lon ?? "", c.waterTemp ?? "", c.weather?.airTemp ?? "", wxLabel(c.weather?.weatherCode, c.weather?.cloudCover) || "", c.weather?.cloudCover ?? "", c.weather?.precipMm ?? "", c.weather?.pressure ?? "", c.weather?.pressureLevel || "", c.weather?.pressureTrend || "", c.weather?.windSpeed ?? "", c.weather?.windDir ?? "", moonCSV(c.weather?.moon), c.tide?.seasonal != null ? tidePct(c.tide.seasonal) : "", c.tide?.direction || "", c.tide?.valueCM ?? "", c.tide?.mlwsCM ?? "", c.tide?.mhwsCM ?? "", c.fishPhoto ? "1" : "0", c.flyPhoto ? "1" : "0", c.notes || ""]);
+  const h = row(["catch_id", "trip_id", "trip_name", "spot_id", "spot_name", "timestamp", "timezone", "timestamp_local", "species", "fly_pattern", "troll_depth", "size", "gps_lat", "gps_lon", "water_temp", ...WX_TIDE_HEAD, "tide_mlws_cm", "tide_mhws_cm", "has_fish_photo", "has_fly_photo", "notes"]);
+  const tr = byId(trips), sp = byId(spots);
+  return [h, ...byTimestamp(catches).map(c => {
+    return row([c.id, c.tripId || "", tr[c.tripId]?.name || "", c.spotId || "", sp[c.spotId]?.name || "", c.timestamp, ...localCells(c.timestamp, tzFor(itemAnchorGPS(c, sp))), c.species, c.flyPattern || "", c.trollDepth || "", c.size || "", c.gps?.lat ?? "", c.gps?.lon ?? "", c.waterTemp ?? "", ...wxTideCells(c), c.tide?.mlwsCM ?? "", c.tide?.mhwsCM ?? "", c.fishPhoto ? "1" : "0", c.flyPhoto ? "1" : "0", c.notes || ""]);
   })].join("\n");
 };
 const obsCSV = (observations, spots, trips) => {
-  const h = row(["obs_id", "trip_id", "trip_name", "spot_id", "spot_name", "timestamp", "timezone", "timestamp_local", "species", "count", "estimated_size", "gps_lat", "gps_lon", "air_temp_c", "conditions", "cloud_pct", "precip_mm", "pressure_hpa", "pressure_level", "pressure_trend", "wind_ms", "wind_dir_deg", "moon_phase", "tide_seasonal_pct", "tide_direction", "tide_cm", "notes"]);
-  return [h, ...[...observations].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp)).map(o => {
-    const t = trips.find(x => x.id === o.tripId),
-      s = spots.find(x => x.id === o.spotId);
-    const tz = tzFor(itemAnchorGPS(o, spots));
-    return row([o.id, o.tripId || "", t?.name || "", o.spotId || "", s?.name || "", o.timestamp, tz || "", tz ? isoLocal(o.timestamp, tz) : "", o.species, o.count || "", o.estimatedSize || "", o.gps?.lat ?? "", o.gps?.lon ?? "", o.weather?.airTemp ?? "", wxLabel(o.weather?.weatherCode, o.weather?.cloudCover) || "", o.weather?.cloudCover ?? "", o.weather?.precipMm ?? "", o.weather?.pressure ?? "", o.weather?.pressureLevel || "", o.weather?.pressureTrend || "", o.weather?.windSpeed ?? "", o.weather?.windDir ?? "", moonCSV(o.weather?.moon), o.tide?.seasonal != null ? tidePct(o.tide.seasonal) : "", o.tide?.direction || "", o.tide?.valueCM ?? "", o.notes || ""]);
+  const h = row(["obs_id", "trip_id", "trip_name", "spot_id", "spot_name", "timestamp", "timezone", "timestamp_local", "species", "count", "estimated_size", "gps_lat", "gps_lon", ...WX_TIDE_HEAD, "notes"]);
+  const tr = byId(trips), sp = byId(spots);
+  return [h, ...byTimestamp(observations).map(o => {
+    return row([o.id, o.tripId || "", tr[o.tripId]?.name || "", o.spotId || "", sp[o.spotId]?.name || "", o.timestamp, ...localCells(o.timestamp, tzFor(itemAnchorGPS(o, sp))), o.species, o.count || "", o.estimatedSize || "", o.gps?.lat ?? "", o.gps?.lon ?? "", ...wxTideCells(o), o.notes || ""]);
   })].join("\n");
 };
 function dlCSV(content, filename) {
@@ -2625,6 +2607,13 @@ function cloudSavePhotoUrls(uid, found) {
   return cloudDoc(uid).update(upd);
 }
 
+// Remove a photo everywhere: this device's IndexedDB and the cloud copy
+function deletePhoto(id) {
+  if (!isPhotoId(id)) return;
+  photoDB.del(id);
+  cloudDeletePhoto(id);
+}
+
 function cloudDeletePhoto(photoId) {
   if (!isPhotoId(photoId)) return;
   var user = fbAuth.currentUser;
@@ -2763,6 +2752,11 @@ function deriveMethod(tripSpots, trip) {
   if (hasSpin) return "Spin";
   return null;
 }
+// Trolling route recorder tuning
+const TRACK_MAX_ACC_M = 60;    // fixes coarser than this would zigzag the route
+const TRACK_MIN_STEP_M = 25;   // thin the route: a new point only after moving this far
+const SPEED_EMA_WEIGHT = 0.3;  // live speed smoothing — weight of the newest reading
+const SPEED_REST_MS = 0.155;   // < 0.3 kn reads as 0: GPS jitter while at rest
 const SK = {
   trips: "fl_trips_v3",
   spots: "fl_spots_v2",
@@ -3009,19 +3003,19 @@ function FishLog() {
       // never stored, so no storage writes or cloud pushes
       const nowMs = Date.now();
       let spd = (pos.coords.speed != null && pos.coords.speed >= 0) ? pos.coords.speed : null;
-      if (spd == null && pos.coords.accuracy <= 60 && lastRaw) {
+      if (spd == null && pos.coords.accuracy <= TRACK_MAX_ACC_M && lastRaw) {
         const dt = (nowMs - lastRaw.t) / 1000;
         if (dt >= 1 && dt <= 30) spd = geoDistM(lastRaw.lat, lastRaw.lon, pos.coords.latitude, pos.coords.longitude) / dt;
       }
-      if (pos.coords.accuracy <= 60) lastRaw = { lat: pos.coords.latitude, lon: pos.coords.longitude, t: nowMs };
+      if (pos.coords.accuracy <= TRACK_MAX_ACC_M) lastRaw = { lat: pos.coords.latitude, lon: pos.coords.longitude, t: nowMs };
       if (spd != null) {
-        ema = ema == null ? spd : ema * 0.7 + spd * 0.3;
-        window.dispatchEvent(new CustomEvent("catchlog-live-speed", { detail: { ms: ema < 0.155 ? 0 : ema } })); // <0.3 kn = GPS jitter at rest
+        ema = ema == null ? spd : ema * (1 - SPEED_EMA_WEIGHT) + spd * SPEED_EMA_WEIGHT;
+        window.dispatchEvent(new CustomEvent("catchlog-live-speed", { detail: { ms: ema < SPEED_REST_MS ? 0 : ema } }));
       }
-      if (pos.coords.accuracy > 60) return; // coarse fix — would zigzag the line
+      if (pos.coords.accuracy > TRACK_MAX_ACC_M) return; // coarse fix — would zigzag the line
       const lat = +pos.coords.latitude.toFixed(5);
       const lon = +pos.coords.longitude.toFixed(5);
-      if (lastPt && geoDistM(lastPt[0], lastPt[1], lat, lon) < 25) return;
+      if (lastPt && geoDistM(lastPt[0], lastPt[1], lat, lon) < TRACK_MIN_STEP_M) return;
       lastPt = [lat, lon];
       // Checked inside the updater so a pause takes effect immediately
       mutTrips(p => p.map(t => t.id === tripId && !isPaused(t) ? { ...t, track: [...(t.track || []), lat, lon, Math.round(pos.timestamp / 1000)] } : t));
@@ -3111,10 +3105,10 @@ function FishLog() {
   };
   const delTrip = id => {
     if (!confirm("Delete this session and all its data?")) return;
-    spots.filter(s => s.tripId === id).forEach(s => { if (isPhotoId(s.photo)) { photoDB.del(s.photo); cloudDeletePhoto(s.photo); } });
+    spots.filter(s => s.tripId === id).forEach(s => deletePhoto(s.photo));
     catches.filter(c => c.tripId === id).forEach(c => {
-      if (isPhotoId(c.fishPhoto)) { photoDB.del(c.fishPhoto); cloudDeletePhoto(c.fishPhoto); }
-      if (isPhotoId(c.flyPhoto)) { photoDB.del(c.flyPhoto); cloudDeletePhoto(c.flyPhoto); }
+      deletePhoto(c.fishPhoto);
+      deletePhoto(c.flyPhoto);
     });
     markDeleted([id,
       ...spots.filter(s => s.tripId === id).map(s => s.id),
@@ -3149,8 +3143,8 @@ function FishLog() {
     if (!confirm("Delete this catch?")) return;
     var dc = catches.find(x => x.id === id);
     if (dc) {
-      if (isPhotoId(dc.fishPhoto)) { photoDB.del(dc.fishPhoto); cloudDeletePhoto(dc.fishPhoto); }
-      if (isPhotoId(dc.flyPhoto)) { photoDB.del(dc.flyPhoto); cloudDeletePhoto(dc.flyPhoto); }
+      deletePhoto(dc.fishPhoto);
+      deletePhoto(dc.flyPhoto);
     }
     markDeleted([id]);
     mutCatches(p => p.filter(c => c.id !== id));
@@ -3232,7 +3226,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.72-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.73-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -3465,6 +3459,193 @@ function ConditionsRow({ weather, variant }) {
     /*#__PURE__*/React.createElement("span", { className: "field-label" }, "Conditions"),
     /*#__PURE__*/React.createElement("span", { className: "field-value" }, text));
 }
+// ── Shared condition rows ─────────────────────────────────────────────────────
+// The four capture forms (start session, new spot, catch, observation) and
+// Live Conditions each carried their own copy of these rows, and the copies had
+// drifted apart — different placeholders, and a tide label that read the wrong
+// field in four of them. One definition each now.
+
+// A weather value the APIs didn't supply. Before a GPS fix the reason is the
+// missing fix; after one, the API simply had nothing for that field.
+function MissingValue({ gps }) {
+  return gps
+    ? /*#__PURE__*/React.createElement("span", { className: "field-value", style: { color: "#ccc" } }, "—")
+    : /*#__PURE__*/React.createElement("span", { className: "field-value", style: { color: "#bbb" } }, "— get GPS first");
+}
+function GpsStatusRow({ icon, gps, gpsStatus, onGet }) {
+  return /*#__PURE__*/React.createElement("div", { className: "field-row" },
+    /*#__PURE__*/React.createElement("span", { className: "field-icon" }, icon || ""),
+    /*#__PURE__*/React.createElement("span", { className: "field-label" }, "GPS"),
+    gpsStatus === "idle" && /*#__PURE__*/React.createElement("button", { className: "gps-btn", onClick: onGet }, "Get GPS"),
+    gpsStatus === "loading" && /*#__PURE__*/React.createElement("span", { className: "status-badge status-loading" }, "Acquiring…"),
+    gpsStatus === "error" && /*#__PURE__*/React.createElement(React.Fragment, null,
+      /*#__PURE__*/React.createElement("span", { className: "status-badge status-error" }, "Failed"),
+      /*#__PURE__*/React.createElement("button", { className: "gps-btn", style: { marginLeft: 6 }, onClick: onGet }, "Retry")),
+    gpsStatus === "ok" && gps && /*#__PURE__*/React.createElement("span", { className: "gps-coords" }, formatCoords(gps.lat, gps.lon, gps.acc)));
+}
+function ConditionsTitle({ weatherStatus, tideStatus }) {
+  return /*#__PURE__*/React.createElement("div", { className: "field-group-title" },
+    "Conditions", (weatherStatus === "loading" || tideStatus === "loading") && /*#__PURE__*/React.createElement("span", { style: { opacity: .5, fontSize: 9 } }, " \xB7 fetching…"));
+}
+// Fly/Spin line picker with its badge (start session + new spot)
+function LineTypeSelect({ value, onChange }) {
+  const opt = l => /*#__PURE__*/React.createElement("option", { key: l, value: l }, l);
+  return /*#__PURE__*/React.createElement(React.Fragment, null,
+    /*#__PURE__*/React.createElement("div", { className: "field-select-wrap" },
+      /*#__PURE__*/React.createElement("select", { className: "field-select", value: value, onChange: e => onChange(e.target.value) },
+        /*#__PURE__*/React.createElement("option", { value: "" }, "— select —"),
+        /*#__PURE__*/React.createElement("optgroup", { label: "Fly" }, FLY_LINES.map(opt)),
+        /*#__PURE__*/React.createElement("optgroup", { label: "Spin" }, SPIN_LINES.map(opt)))),
+    value && /*#__PURE__*/React.createElement("span", {
+      className: `line-type-badge ${FLY_LINES.includes(value) ? "line-type-fly" : "line-type-spin"}`
+    }, FLY_LINES.includes(value) ? "Fly" : "Spin"));
+}
+// Typical low/high sea level under a tide bar (every tide display shows it)
+function TideRangeLabels({ tide, style, className }) {
+  return /*#__PURE__*/React.createElement("div", { className, style },
+    /*#__PURE__*/React.createElement("span", null, "Typical Low", tide.mlwsCM != null ? ` (${tide.mlwsCM}cm)` : ""),
+    /*#__PURE__*/React.createElement("span", null, "Typical High", tide.mhwsCM != null ? ` (${tide.mhwsCM}cm)` : ""));
+}
+// Next high/low water, soonest first (Live Conditions only)
+function NextTides({ tide }) {
+  if (!tide.nextHigh && !tide.nextLow) return null;
+  const items = [
+    tide.nextHigh && { t: tide.nextHigh.t, el: /*#__PURE__*/React.createElement("span", { key: "h" }, "▲ High ", fmtTime(tide.nextHigh.t.toISOString()), tide.nextHigh.v != null ? " \xB7 " + Math.round(tide.nextHigh.v) + "cm" : "") },
+    tide.nextLow && { t: tide.nextLow.t, el: /*#__PURE__*/React.createElement("span", { key: "l" }, "▼ Low ", fmtTime(tide.nextLow.t.toISOString()), tide.nextLow.v != null ? " \xB7 " + Math.round(tide.nextLow.v) + "cm" : "") }
+  ].filter(Boolean).sort((a, b) => a.t - b.t);
+  return /*#__PURE__*/React.createElement("div", { style: { fontSize: 11, color: "var(--text-3)", marginTop: 6, display: "flex", gap: 14 } },
+    items.map(i => i.el));
+}
+function LiveTideRow({ tide, tideStatus, showNext }) {
+  return /*#__PURE__*/React.createElement("div", { className: "field-row top" },
+    /*#__PURE__*/React.createElement("span", { className: "field-icon", style: { marginTop: 2 } }, "🌊"),
+    /*#__PURE__*/React.createElement("span", { className: "field-label", style: { marginTop: 2 } }, "Tide"),
+    tideStatus === "idle" && /*#__PURE__*/React.createElement("span", { style: { fontSize: 11, color: "#bbb" } }, "— get GPS first"),
+    tideStatus === "loading" && /*#__PURE__*/React.createElement("span", { className: "status-badge status-loading" }, "Loading…"),
+    tideStatus === "error" && /*#__PURE__*/React.createElement("span", { className: "status-badge status-error" }, "API error"),
+    tideStatus === "unavailable" && /*#__PURE__*/React.createElement("span", { className: "status-badge status-error" }, "No data"),
+    tideStatus === "ok" && tide && /*#__PURE__*/React.createElement("div", { className: "tide-bar-wrap" },
+      /*#__PURE__*/React.createElement("div", { className: "tide-value-line" },
+        /*#__PURE__*/React.createElement("span", { className: "tide-normalized" }, tide.seasonal != null ? tidePct(tide.seasonal) + "%" : "—"),
+        tide.valueCM != null && /*#__PURE__*/React.createElement("span", { className: "tide-raw" }, "(", tide.valueCM, " cm)"),
+        tide.seasonal != null && /*#__PURE__*/React.createElement("span", { className: "tide-hint" }, tideLabel(tide.seasonal), tideArrow(tide.direction))),
+      tide.seasonal != null && /*#__PURE__*/React.createElement(React.Fragment, null,
+        /*#__PURE__*/React.createElement("div", { className: "tide-bar-track" },
+          /*#__PURE__*/React.createElement("div", { className: "tide-bar-fill", style: { width: `${Math.max(0, Math.min(100, tide.seasonal * 100))}%` } })),
+        /*#__PURE__*/React.createElement(TideRangeLabels, { tide, className: "tide-bar-labels" })),
+      showNext && /*#__PURE__*/React.createElement(NextTides, { tide })));
+}
+// 24h pressure history with the Low/High bands (Live Conditions only)
+const PRESSURE_LOW_HPA = 1005;  // below: "Low" — same bands as pressureLevel in fetchEnv
+const PRESSURE_HIGH_HPA = 1015; // at/above: "High"
+function PressureSparkline({ history }) {
+  const pts = history;
+  const n = pts.length;
+  const LM = 28, W = 220, CW = W - LM, H = 60, PT = 4, PB = 18;
+  // Axis always spans both bands so the threshold lines are always visible
+  const minV = Math.min(Math.round(Math.min.apply(null, pts) - 1), PRESSURE_LOW_HPA - 1);
+  const maxV = Math.max(Math.round(Math.max.apply(null, pts) + 1), PRESSURE_HIGH_HPA + 1);
+  const range = maxV - minV || 1;
+  const toY = v => Math.round(H - PB - (v - minV) / range * (H - PT - PB) - 2);
+  const xs = pts.map((_, i) => LM + Math.round(i * CW / (n - 1)));
+  const ys = pts.map(toY);
+  const poly = xs.map((x, i) => x + "," + ys[i]).join(" ");
+  const cx = xs[n - 1], cy = ys[n - 1];
+  const yTop = PT + 2, yBot = H - PB - 2;
+  const axisY = yBot + 10;
+  const nowDate = new Date();
+  const ticks = [0, 6, 12, 18, 24].map(h => {
+    const t = new Date(nowDate.getTime() - h * 3600000);
+    return { x: Math.round(LM + (1 - h / 24) * CW), label: h === 0 ? "now" : String(t.getHours()).padStart(2, "0") + ":00" };
+  });
+  const thresholds = [
+    { v: PRESSURE_HIGH_HPA, color: "var(--warn)", label: "High" },
+    { v: PRESSURE_LOW_HPA, color: "var(--slate-light)", label: "Low" }
+  ];
+  // marginLeft lines the chart up under the value column, past the row's icon + label
+  return /*#__PURE__*/React.createElement("div", { style: { padding: "0 14px 8px", marginLeft: 105 } },
+    /*#__PURE__*/React.createElement("svg", { viewBox: "0 0 " + W + " " + H, style: { width: "100%", display: "block", overflow: "visible" } },
+      /*#__PURE__*/React.createElement("text", { x: LM - 4, y: yTop + 3, fontSize: 7, fill: "var(--text-3)", textAnchor: "end" }, maxV),
+      /*#__PURE__*/React.createElement("text", { x: LM - 4, y: yBot + 3, fontSize: 7, fill: "var(--text-3)", textAnchor: "end" }, minV),
+      /*#__PURE__*/React.createElement("line", { x1: LM, y1: yTop, x2: W, y2: yTop, stroke: "var(--rule)", strokeWidth: "0.5" }),
+      /*#__PURE__*/React.createElement("line", { x1: LM, y1: yBot, x2: W, y2: yBot, stroke: "var(--rule)", strokeWidth: "0.5" }),
+      thresholds.map(th => {
+        const ty = toY(th.v);
+        return /*#__PURE__*/React.createElement("g", { key: th.label },
+          /*#__PURE__*/React.createElement("line", { x1: LM, y1: ty, x2: W, y2: ty, stroke: th.color, strokeWidth: "0.7", strokeDasharray: "3,2", opacity: 0.7 }),
+          /*#__PURE__*/React.createElement("text", { x: LM + 2, y: ty - 2, fontSize: 6, fill: th.color, textAnchor: "start" }, th.label));
+      }),
+      /*#__PURE__*/React.createElement("polyline", { points: poly, fill: "none", stroke: "var(--slate)", strokeWidth: "2", strokeLinejoin: "round", strokeLinecap: "round" }),
+      /*#__PURE__*/React.createElement("circle", { cx: cx, cy: cy, r: 3, fill: "var(--slate)" }),
+      ticks.map(t => /*#__PURE__*/React.createElement("text", { key: t.label, x: t.x, y: axisY, fontSize: 7, fill: "var(--text-3)", textAnchor: "middle" }, t.label))));
+}
+function pressureText(w) {
+  return [w.pressure, " hPa", w.pressureLevel ? ` \xB7 ${w.pressureLevel}` : "",
+    w.pressureTrend === "rising" ? " ↑" : w.pressureTrend === "falling" ? " ↓" : ""];
+}
+// Everything below the GPS row of a capture form: weather, tide, pressure,
+// wind, moon and the two info notes. `afterSky` slots in a form's own row
+// (the catch form's water temp); `live` adds Live Conditions' extras.
+function LiveConditionsRows({ weather, tide, tideStatus, gps, afterSky, live }) {
+  return /*#__PURE__*/React.createElement(React.Fragment, null,
+    /*#__PURE__*/React.createElement("div", { className: "field-row" },
+      /*#__PURE__*/React.createElement("span", { className: "field-icon" }, "🌡️"),
+      /*#__PURE__*/React.createElement("span", { className: "field-label" }, "Air Temp"),
+      weather?.airTemp != null
+        ? /*#__PURE__*/React.createElement("span", { className: "field-value" }, weather.airTemp, " \xB0C")
+        : /*#__PURE__*/React.createElement(MissingValue, { gps })),
+    /*#__PURE__*/React.createElement(ConditionsRow, { weather }),
+    afterSky || null,
+    /*#__PURE__*/React.createElement(LiveTideRow, { tide, tideStatus, showNext: live }),
+    /*#__PURE__*/React.createElement("div", { className: "field-row" },
+      /*#__PURE__*/React.createElement("span", { className: "field-icon" }, "🔵"),
+      /*#__PURE__*/React.createElement("span", { className: "field-label" }, "Pressure"),
+      weather?.pressure != null
+        ? /*#__PURE__*/React.createElement("span", { className: "field-value" }, ...pressureText(weather),
+            weather.pressureLabel ? /*#__PURE__*/React.createElement("span", { style: { fontSize: 10, color: "#999", fontStyle: "italic" } }, ` (${weather.pressureLabel})`) : null)
+        : /*#__PURE__*/React.createElement(MissingValue, { gps })),
+    live && weather?.pressureHistory?.length >= 2 && /*#__PURE__*/React.createElement(PressureSparkline, { history: weather.pressureHistory }),
+    /*#__PURE__*/React.createElement("div", { className: "field-row" },
+      /*#__PURE__*/React.createElement("span", { className: "field-icon" }, "💨"),
+      /*#__PURE__*/React.createElement("span", { className: "field-label" }, "Wind"),
+      weather?.windSpeed != null
+        ? /*#__PURE__*/React.createElement("span", { className: "field-value" }, weather.windSpeed, " m/s", weather.windDir != null ? ` \xB7 ${windCompass(weather.windDir)} (${weather.windDir}\xB0)` : "")
+        : /*#__PURE__*/React.createElement(MissingValue, { gps })),
+    /*#__PURE__*/React.createElement("div", { className: "field-row" },
+      /*#__PURE__*/React.createElement("span", { className: "field-icon" }, "🌕"),
+      /*#__PURE__*/React.createElement("span", { className: "field-label" }, "Moon"),
+      /*#__PURE__*/React.createElement("span", { className: "field-value" }, weather?.moon ?? getMoonPhase(new Date()))),
+    !gps && /*#__PURE__*/React.createElement("div", { className: "info-note" }, "Get GPS fix to auto-load air temp, pressure, wind & tide"),
+    tideStatus === "ok" && tide && /*#__PURE__*/React.createElement("div", { className: "info-note" }, tideAttribution(tide.source).full));
+}
+// The saved-record version (catch + observation detail): a grid of stats plus
+// the tide panel. Rows only appear for values the record actually has.
+function RecordConditions({ weather: w, waterTemp, tide }) {
+  const stat = (label, ...value) => /*#__PURE__*/React.createElement("div", { className: "modal-stat" },
+    /*#__PURE__*/React.createElement("div", { className: "modal-stat-label" }, label),
+    /*#__PURE__*/React.createElement("div", { className: "modal-stat-value" }, ...value));
+  const norm = tide?.seasonal;
+  return /*#__PURE__*/React.createElement(React.Fragment, null,
+    /*#__PURE__*/React.createElement("div", { className: "modal-grid" },
+      w?.airTemp != null && stat("Air Temp", w.airTemp, "\xB0C"),
+      /*#__PURE__*/React.createElement(ConditionsRow, { weather: w, variant: "stat" }),
+      waterTemp != null && stat("Water Temp", waterTemp, "\xB0C"),
+      w?.pressure != null && stat("Pressure", ...pressureText(w),
+        w.pressureLabel ? /*#__PURE__*/React.createElement("span", { style: { fontSize: 10, color: "#999", fontStyle: "italic", display: "block" } }, w.pressureLabel) : null),
+      w?.windSpeed != null && stat("Wind", w.windSpeed, " m/s", w.windDir != null ? ` ${windCompass(w.windDir)}` : ""),
+      w?.moon && stat("Moon", w.moon)),
+    tide && /*#__PURE__*/React.createElement("div", { style: { marginTop: 10, background: "white", padding: "10px", borderRadius: 4 } },
+      /*#__PURE__*/React.createElement("div", { className: "modal-stat-label", style: { marginBottom: 5 } }, "Tide Level (Seasonal %)"),
+      /*#__PURE__*/React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" } },
+        norm != null && /*#__PURE__*/React.createElement("span", { style: { fontSize: 21, fontWeight: 700, color: "var(--water)" } }, tidePct(norm) + "%"),
+        tide.valueCM != null && /*#__PURE__*/React.createElement("span", { style: { fontSize: 11, color: "#888" } }, tide.valueCM, " cm above CD"),
+        norm != null && /*#__PURE__*/React.createElement("span", { style: { fontSize: 11, color: "var(--water-light)", fontStyle: "italic" } }, tideLabel(norm), tideArrow(tide.direction))),
+      norm != null && /*#__PURE__*/React.createElement(React.Fragment, null,
+        /*#__PURE__*/React.createElement("div", { className: "modal-tide-bar" },
+          /*#__PURE__*/React.createElement("div", { className: "modal-tide-fill", style: { width: `${Math.max(0, Math.min(100, norm * 100))}%` } })),
+        /*#__PURE__*/React.createElement(TideRangeLabels, { tide, style: { display: "flex", justifyContent: "space-between", fontSize: 9, color: "#aaa", marginTop: 3 } })),
+      /*#__PURE__*/React.createElement("div", { style: { fontSize: 9, color: "#ccc", marginTop: 4 } }, tideAttribution(tide.source).short)));
+}
 function SpeciesSelect({
   value,
   onChange
@@ -3485,182 +3666,19 @@ function SpeciesSelect({
     groups.more.length ? /*#__PURE__*/React.createElement("optgroup", { key: "m", label: groups.recent.length ? "More" : "Species" }, groups.more.map(opt)) : null
   ));
 }
-// Same list, different field label ("Targeting" vs "Species") \u2014 kept as a
-// separate name so the three call sites read correctly at a glance.
-function TargetSelect(props) {
-  return /*#__PURE__*/React.createElement(SpeciesSelect, props);
-}
 function ConditionsModal({ onClose }) {
   const [ts] = useState(new Date().toISOString());
   const { gps, gpsStatus, weather, tide, tideStatus, getGPS, reset } = useEnv();
   useEffect(() => { getGPS(ts, { refine: false }); }, []);
-  return /*#__PURE__*/React.createElement("div", {
-    className: "cond-backdrop",
-    onClick: () => { reset(); onClose(); }
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "cond-card",
-    onClick: e => e.stopPropagation()
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "cond-header"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "cond-title"
-  }, "Live Conditions"), /*#__PURE__*/React.createElement("button", {
-    className: "cond-close",
-    onClick: () => { reset(); onClose(); }
-  }, "\xD7")), /*#__PURE__*/React.createElement("div", {
-    className: "field-group",
-    style: {borderRadius: 0, margin: 0}
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "field-row"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "field-icon"
-  }, ""), /*#__PURE__*/React.createElement("span", {
-    className: "field-label"
-  }, "GPS"), gpsStatus === "idle" && /*#__PURE__*/React.createElement("button", {
-    className: "gps-btn",
-    onClick: () => getGPS(ts, { refine: false })
-  }, "Get GPS"), gpsStatus === "loading" && /*#__PURE__*/React.createElement("span", {
-    className: "status-badge status-loading"
-  }, "Acquiring…"), gpsStatus === "error" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
-    className: "status-badge status-error"
-  }, "Failed"), /*#__PURE__*/React.createElement("button", {
-    className: "gps-btn",
-    style: {marginLeft: 6},
-    onClick: () => getGPS(ts, { refine: false })
-  }, "Retry")), gpsStatus === "ok" && gps && /*#__PURE__*/React.createElement("span", {
-    className: "gps-coords"
-  }, formatCoords(gps.lat, gps.lon, gps.acc))), /*#__PURE__*/React.createElement("div", {
-    className: "field-row"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "field-icon"
-  }, "🌡️"), /*#__PURE__*/React.createElement("span", {
-    className: "field-label"
-  }, "Air Temp"), weather?.airTemp != null ? /*#__PURE__*/React.createElement("span", {
-    className: "field-value"
-  }, weather.airTemp, " \xB0C") : /*#__PURE__*/React.createElement("span", {
-    className: "field-value",
-    style: {color: "#bbb"}
-  }, "— get GPS first")), /*#__PURE__*/React.createElement(ConditionsRow, { weather }), /*#__PURE__*/React.createElement("div", {
-    className: "field-row top"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "field-icon",
-    style: {marginTop: 2}
-  }, "🌊"), /*#__PURE__*/React.createElement("span", {
-    className: "field-label",
-    style: {marginTop: 2}
-  }, "Tide"), tideStatus === "idle" && /*#__PURE__*/React.createElement("span", {
-    style: {fontSize: 11, color: "#bbb"}
-  }, "— get GPS first"), tideStatus === "loading" && /*#__PURE__*/React.createElement("span", {
-    className: "status-badge status-loading"
-  }, "Loading…"), tideStatus === "error" && /*#__PURE__*/React.createElement("span", {
-    className: "status-badge status-error"
-  }, "API error"), tideStatus === "unavailable" && /*#__PURE__*/React.createElement("span", {
-    className: "status-badge status-error"
-  }, "No data"), tideStatus === "ok" && tide && /*#__PURE__*/React.createElement("div", {
-    className: "tide-bar-wrap"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "tide-value-line"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "tide-normalized"
-  }, tide.seasonal != null ? tidePct(tide.seasonal) + "%" : "—"), tide.valueCM != null && /*#__PURE__*/React.createElement("span", {
-    className: "tide-raw"
-  }, "(", tide.valueCM, " cm)"), tide.seasonal != null && /*#__PURE__*/React.createElement("span", {
-    className: "tide-hint"
-  }, tideLabel(tide.seasonal), tideArrow(tide.direction))), tide.seasonal != null && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
-    className: "tide-bar-track"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "tide-bar-fill",
-    style: {width: `${Math.max(0,Math.min(100,tide.seasonal*100))}%`}
-  })), /*#__PURE__*/React.createElement("div", {
-    className: "tide-bar-labels"
-  }, /*#__PURE__*/React.createElement("span", null, "Typical Low", tide.mlwsCM != null ? ` (${tide.mlwsCM}cm)` : ""), /*#__PURE__*/React.createElement("span", null, "Typical High", tide.mhwsCM != null ? ` (${tide.mhwsCM}cm)` : ""))),
-    (tide.nextHigh || tide.nextLow) && (function() {
-      var items = [
-        tide.nextHigh && { t: tide.nextHigh.t, el: /*#__PURE__*/React.createElement("span", { key: "h" }, "▲ High ", fmtTime(tide.nextHigh.t.toISOString()), tide.nextHigh.v != null ? " · " + Math.round(tide.nextHigh.v) + "cm" : "") },
-        tide.nextLow && { t: tide.nextLow.t, el: /*#__PURE__*/React.createElement("span", { key: "l" }, "▼ Low ", fmtTime(tide.nextLow.t.toISOString()), tide.nextLow.v != null ? " · " + Math.round(tide.nextLow.v) + "cm" : "") }
-      ].filter(Boolean).sort(function(a, b) { return a.t - b.t; });
-      return /*#__PURE__*/React.createElement("div", { style: { fontSize: 11, color: "var(--text-3)", marginTop: 6, display: "flex", gap: 14 } },
-        items.map(function(i) { return i.el; }));
-    }()))),
-  // Pressure
-  /*#__PURE__*/React.createElement("div", { className: "field-row" },
-    /*#__PURE__*/React.createElement("span", { className: "field-icon" }, "🔵"),
-    /*#__PURE__*/React.createElement("span", { className: "field-label" }, "Pressure"),
-    weather?.pressure != null ? /*#__PURE__*/React.createElement("span", { className: "field-value" },
-      weather.pressure, " hPa", weather.pressureLevel ? " \xB7 " + weather.pressureLevel : "",
-      weather.pressureTrend === "rising" ? " ↑" : weather.pressureTrend === "falling" ? " ↓" : "",
-      weather.pressureLabel ? /*#__PURE__*/React.createElement("span", {
-        style: {fontSize: 10, color: "#999", fontStyle: "italic"}
-      }, " (" + weather.pressureLabel + ")") : null
-    ) : /*#__PURE__*/React.createElement("span", { className: "field-value", style: {color: "#bbb"} }, "— get GPS first")),
-  // Pressure sparkline (12h history)
-  weather?.pressureHistory?.length >= 2 && (function() {
-    var pts = weather.pressureHistory;
-    var n = pts.length;
-    var LM = 28, W = 220, CW = W - LM, H = 60, PT = 4, PB = 18;
-    var minV = Math.min(Math.round(Math.min.apply(null, pts) - 1), 1004); // always show Low threshold
-    var maxV = Math.max(Math.round(Math.max.apply(null, pts) + 1), 1016); // always show High threshold
-    var range = maxV - minV || 1;
-    var xs = pts.map(function(_, i) { return LM + Math.round(i * CW / (n - 1)); });
-    var ys = pts.map(function(v) { return Math.round(H - PB - (v - minV) / range * (H - PT - PB) - 2); });
-    var poly = xs.map(function(x, i) { return x + "," + ys[i]; }).join(" ");
-    var cx = xs[n - 1], cy = ys[n - 1];
-    var yTop = PT + 2, yBot = H - PB - 2;
-    var axisY = yBot + 10;
-    var nowDate = new Date();
-    var ticks = [0, 6, 12, 18, 24].map(function(h) {
-      var frac = 1 - h / 24;
-      var t = new Date(nowDate.getTime() - h * 3600000);
-      var label = h === 0 ? "now" : String(t.getHours()).padStart(2, "0") + ":00";
-      return { x: Math.round(LM + frac * CW), label: label };
-    });
-    var toY = function(v) { return Math.round(H - PB - (v - minV) / range * (H - PT - PB) - 2); };
-    var thresholds = [
-      { v: 1015, color: "var(--warn)", label: "High" },
-      { v: 1005, color: "var(--slate-light)", label: "Low" }
-    ].filter(function(th) { return th.v > minV && th.v < maxV; });
-    return /*#__PURE__*/React.createElement("div", { style: { padding: "0 14px 8px", marginLeft: 105 } },
-      /*#__PURE__*/React.createElement("svg", {
-        viewBox: "0 0 " + W + " " + H,
-        style: { width: "100%", display: "block", overflow: "visible" }
-      },
-        /*#__PURE__*/React.createElement("text", { x: LM - 4, y: yTop + 3, fontSize: 7, fill: "var(--text-3)", textAnchor: "end" }, maxV),
-        /*#__PURE__*/React.createElement("text", { x: LM - 4, y: yBot + 3, fontSize: 7, fill: "var(--text-3)", textAnchor: "end" }, minV),
-        /*#__PURE__*/React.createElement("line", { x1: LM, y1: yTop, x2: W, y2: yTop, stroke: "var(--rule)", strokeWidth: "0.5" }),
-        /*#__PURE__*/React.createElement("line", { x1: LM, y1: yBot, x2: W, y2: yBot, stroke: "var(--rule)", strokeWidth: "0.5" }),
-        thresholds.map(function(th) {
-          var ty = toY(th.v);
-          return /*#__PURE__*/React.createElement("g", { key: th.label },
-            /*#__PURE__*/React.createElement("line", { x1: LM, y1: ty, x2: W, y2: ty, stroke: th.color, strokeWidth: "0.7", strokeDasharray: "3,2", opacity: 0.7 }),
-            /*#__PURE__*/React.createElement("text", { x: LM + 2, y: ty - 2, fontSize: 6, fill: th.color, textAnchor: "start" }, th.label)
-          );
-        }),
-        /*#__PURE__*/React.createElement("polyline", {
-          points: poly, fill: "none", stroke: "var(--slate)", strokeWidth: "2",
-          strokeLinejoin: "round", strokeLinecap: "round"
-        }),
-        /*#__PURE__*/React.createElement("circle", { cx: cx, cy: cy, r: 3, fill: "var(--slate)" }),
-        ticks.map(function(t) {
-          return /*#__PURE__*/React.createElement("text", { key: t.label, x: t.x, y: axisY, fontSize: 7, fill: "var(--text-3)", textAnchor: "middle" }, t.label);
-        })
-      )
-    );
-  })(),
-  // Wind
-  /*#__PURE__*/React.createElement("div", { className: "field-row" },
-    /*#__PURE__*/React.createElement("span", { className: "field-icon" }, "💨"),
-    /*#__PURE__*/React.createElement("span", { className: "field-label" }, "Wind"),
-    weather?.windSpeed != null ? /*#__PURE__*/React.createElement("span", { className: "field-value" },
-      weather.windSpeed, " m/s", weather.windDir != null ? " \xB7 " + windCompass(weather.windDir) + " (" + weather.windDir + "\xB0)" : ""
-    ) : /*#__PURE__*/React.createElement("span", { className: "field-value", style: {color: "#bbb"} }, "— get GPS first")),
-  // Moon
-  /*#__PURE__*/React.createElement("div", { className: "field-row" },
-    /*#__PURE__*/React.createElement("span", { className: "field-icon" }, "🌕"),
-    /*#__PURE__*/React.createElement("span", { className: "field-label" }, "Moon"),
-    /*#__PURE__*/React.createElement("span", { className: "field-value" }, weather?.moon ?? getMoonPhase(new Date()))),
-  // Info notes
-  !gps && /*#__PURE__*/React.createElement("div", { className: "info-note" }, "Get GPS fix to auto-load air temp, pressure, wind & tide"),
-  tideStatus === "ok" && tide && /*#__PURE__*/React.createElement("div", { className: "info-note" }, tideAttribution(tide.source).full))));
+  const close = () => { reset(); onClose(); };
+  return /*#__PURE__*/React.createElement("div", { className: "cond-backdrop", onClick: close },
+    /*#__PURE__*/React.createElement("div", { className: "cond-card", onClick: e => e.stopPropagation() },
+      /*#__PURE__*/React.createElement("div", { className: "cond-header" },
+        /*#__PURE__*/React.createElement("span", { className: "cond-title" }, "Live Conditions"),
+        /*#__PURE__*/React.createElement("button", { className: "cond-close", onClick: close }, "\xD7")),
+      /*#__PURE__*/React.createElement("div", { className: "field-group", style: { borderRadius: 0, margin: 0 } },
+        /*#__PURE__*/React.createElement(GpsStatusRow, { gps, gpsStatus, onGet: () => getGPS(ts, { refine: false }) }),
+        /*#__PURE__*/React.createElement(LiveConditionsRows, { weather, tide, tideStatus, gps, live: true }))));
 }
 
 function TripsList({
@@ -3672,7 +3690,6 @@ function TripsList({
   activeTrip,
   onSelect,
   onStartSession,
-  showConditions,
   setShowConditions
 }) {
   const [showForm, setShowForm] = useState(false);
@@ -3686,7 +3703,6 @@ function TripsList({
   const [trollMode, setTrollMode] = useState(false);
   const [trollLure, setTrollLure] = useState("");
   const [trollDepth, setTrollDepth] = useState("");
-  const spotPhotoRef = useRef();
   const [timestamp, setTimestamp] = useState(new Date().toISOString());
   const { gps, gpsStatus, weather, weatherStatus, tide, tideStatus, getGPS, reset: resetEnv } = useEnv();
   const showFormRef = useRef(showForm);
@@ -3718,7 +3734,7 @@ function TripsList({
       waterTemp: waterTemp ? parseFloat(waterTemp) : null,
       lineType,
       photo: spotPhoto,
-      weather: weather ? (({pressureHistory, ...w}) => w)(weather) : null,
+      weather: stripLiveFields(weather),
       tide,
       notes: spotNotes.trim()
     }, {
@@ -3742,7 +3758,7 @@ function TripsList({
       trollDepth,
       waterTemp: waterTemp ? parseFloat(waterTemp) : null,
       gps,
-      weather: weather ? (({pressureHistory, ...w}) => w)(weather) : null,
+      weather: stripLiveFields(weather),
       tide,
       track: []
     });
@@ -3783,29 +3799,10 @@ function TripsList({
     className: "field-icon"
   }, ""), /*#__PURE__*/React.createElement("span", {
     className: "field-label"
-  }, "Targeting"), /*#__PURE__*/React.createElement(TargetSelect, {
+  }, "Targeting"), /*#__PURE__*/React.createElement(SpeciesSelect, {
     value: targetSpecies,
     onChange: setTargetSpecies
-  })), /*#__PURE__*/React.createElement("div", {
-    className: "field-row"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "field-icon"
-  }, "📍"), /*#__PURE__*/React.createElement("span", {
-    className: "field-label"
-  }, "GPS"), gpsStatus === "idle" && /*#__PURE__*/React.createElement("button", {
-    className: "gps-btn",
-    onClick: () => getGPS(timestamp)
-  }, "Get GPS"), gpsStatus === "loading" && /*#__PURE__*/React.createElement("span", {
-    className: "status-badge status-loading"
-  }, "Acquiring…"), gpsStatus === "error" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
-    className: "status-badge status-error"
-  }, "Failed"), /*#__PURE__*/React.createElement("button", {
-    className: "gps-btn",
-    style: { marginLeft: 6 },
-    onClick: () => getGPS(timestamp)
-  }, "Retry")), gpsStatus === "ok" && gps && /*#__PURE__*/React.createElement("span", {
-    className: "gps-coords"
-  }, formatCoords(gps.lat, gps.lon, gps.acc))), /*#__PURE__*/React.createElement("div", {
+  })), /*#__PURE__*/React.createElement(GpsStatusRow, { icon: "📍", gps, gpsStatus, onGet: () => getGPS(timestamp) }), /*#__PURE__*/React.createElement("div", {
     className: "field-row"
   }, /*#__PURE__*/React.createElement("span", {
     className: "field-icon"
@@ -3907,57 +3904,16 @@ function TripsList({
     className: "field-icon"
   }, ""), /*#__PURE__*/React.createElement("span", {
     className: "field-label"
-  }, "Targeting"), /*#__PURE__*/React.createElement(TargetSelect, {
+  }, "Targeting"), /*#__PURE__*/React.createElement(SpeciesSelect, {
     value: targetSpecies,
     onChange: setTargetSpecies
-  })), /*#__PURE__*/React.createElement("div", {
+  })), /*#__PURE__*/React.createElement(GpsStatusRow, { icon: "", gps, gpsStatus, onGet: () => getGPS(timestamp) }), /*#__PURE__*/React.createElement("div", {
     className: "field-row"
   }, /*#__PURE__*/React.createElement("span", {
     className: "field-icon"
   }, ""), /*#__PURE__*/React.createElement("span", {
     className: "field-label"
-  }, "GPS"), gpsStatus === "idle" && /*#__PURE__*/React.createElement("button", {
-    className: "gps-btn",
-    onClick: () => getGPS(timestamp)
-  }, "Get GPS"), gpsStatus === "loading" && /*#__PURE__*/React.createElement("span", {
-    className: "status-badge status-loading"
-  }, "Acquiring\u2026"), gpsStatus === "error" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
-    className: "status-badge status-error"
-  }, "Failed"), /*#__PURE__*/React.createElement("button", {
-    className: "gps-btn",
-    style: {
-      marginLeft: 6
-    },
-    onClick: () => getGPS(timestamp)
-  }, "Retry")), gpsStatus === "ok" && gps && /*#__PURE__*/React.createElement("span", {
-    className: "gps-coords"
-  }, formatCoords(gps.lat, gps.lon, gps.acc))), /*#__PURE__*/React.createElement("div", {
-    className: "field-row"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "field-icon"
-  }, ""), /*#__PURE__*/React.createElement("span", {
-    className: "field-label"
-  }, "Line Type"), /*#__PURE__*/React.createElement("div", {
-    className: "field-select-wrap"
-  }, /*#__PURE__*/React.createElement("select", {
-    className: "field-select",
-    value: lineType,
-    onChange: e => setLineType(e.target.value)
-  }, /*#__PURE__*/React.createElement("option", {
-    value: ""
-  }, "\u2014 select \u2014"), /*#__PURE__*/React.createElement("optgroup", {
-    label: "Fly"
-  }, FLY_LINES.map(l => /*#__PURE__*/React.createElement("option", {
-    key: l,
-    value: l
-  }, l))), /*#__PURE__*/React.createElement("optgroup", {
-    label: "Spin"
-  }, SPIN_LINES.map(l => /*#__PURE__*/React.createElement("option", {
-    key: l,
-    value: l
-  }, l))))), lineType && /*#__PURE__*/React.createElement("span", {
-    className: `line-type-badge ${FLY_LINES.includes(lineType) ? "line-type-fly" : "line-type-spin"}`
-  }, FLY_LINES.includes(lineType) ? "Fly" : "Spin")), /*#__PURE__*/React.createElement("div", {
+  }, "Line Type"), /*#__PURE__*/React.createElement(LineTypeSelect, { value: lineType, onChange: setLineType })), /*#__PURE__*/React.createElement("div", {
     className: "field-row"
   }, /*#__PURE__*/React.createElement("span", {
     className: "field-icon"
@@ -3995,91 +3951,7 @@ function TripsList({
   }, "Start Session"), /*#__PURE__*/React.createElement("div", {
     className: "mode-switch-link",
     onClick: () => setTrollMode(true)
-  }, "Trolling session instead →")), showForm && !activeTrip && /*#__PURE__*/React.createElement("div", {
-    className: "field-group",
-    style: { marginTop: 10 }
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "field-group-title"
-  }, "Conditions", (weatherStatus === "loading" || tideStatus === "loading") && /*#__PURE__*/React.createElement("span", {
-    style: {opacity: .5, fontSize: 9}
-  }, " \xB7 fetching\u2026")), /*#__PURE__*/React.createElement("div", {
-    className: "field-row"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "field-icon"
-  }, "\ud83c\udf21\ufe0f"), /*#__PURE__*/React.createElement("span", {
-    className: "field-label"
-  }, "Air Temp"), weather?.airTemp != null ? /*#__PURE__*/React.createElement("span", {
-    className: "field-value"
-  }, weather.airTemp, " \xB0C") : /*#__PURE__*/React.createElement("span", {
-    className: "field-value",
-    style: {color: "#bbb"}
-  }, "\u2014 get GPS first")), /*#__PURE__*/React.createElement(ConditionsRow, { weather }), /*#__PURE__*/React.createElement("div", {
-    className: "field-row top"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "field-icon",
-    style: {marginTop: 2}
-  }, "\ud83c\udf0a"), /*#__PURE__*/React.createElement("span", {
-    className: "field-label",
-    style: {marginTop: 2}
-  }, "Tide"), tideStatus === "idle" && /*#__PURE__*/React.createElement("span", {
-    style: {fontSize: 11, color: "#bbb"}
-  }, "\u2014 get GPS first"), tideStatus === "loading" && /*#__PURE__*/React.createElement("span", {
-    className: "status-badge status-loading"
-  }, "Loading\u2026"), tideStatus === "error" && /*#__PURE__*/React.createElement("span", {
-    className: "status-badge status-error"
-  }, "API error"), tideStatus === "unavailable" && /*#__PURE__*/React.createElement("span", {
-    className: "status-badge status-error"
-  }, "No data"), tideStatus === "ok" && tide && /*#__PURE__*/React.createElement("div", {
-    className: "tide-bar-wrap"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "tide-value-line"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "tide-normalized"
-  }, tide.seasonal != null ? tidePct(tide.seasonal) + "%" : "\u2014"), tide.valueCM != null && /*#__PURE__*/React.createElement("span", {
-    className: "tide-raw"
-  }, "(", tide.valueCM, " cm)"), tide.seasonal != null && /*#__PURE__*/React.createElement("span", {
-    className: "tide-hint"
-  }, tideLabel(tide.seasonal), tideArrow(tide.direction))), tide.seasonal != null && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
-    className: "tide-bar-track"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "tide-bar-fill",
-    style: {width: `${Math.max(0,Math.min(100,tide.seasonal*100))}%`}
-  })), /*#__PURE__*/React.createElement("div", {
-    className: "tide-bar-labels"
-  }, /*#__PURE__*/React.createElement("span", null, "Typical Low", tide.mlwsCM != null ? ` (${tide.mlwsCM}cm)` : ""), /*#__PURE__*/React.createElement("span", null, "Typical High", tide.mhwsCM != null ? ` (${tide.mhwsCM}cm)` : ""))))), /*#__PURE__*/React.createElement("div", {
-    className: "field-row"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "field-icon"
-  }, "\ud83d\udd35"), /*#__PURE__*/React.createElement("span", {
-    className: "field-label"
-  }, "Pressure"), weather?.pressure != null ? /*#__PURE__*/React.createElement("span", {
-    className: "field-value"
-  }, weather.pressure, " hPa", weather.pressureLevel ? ` \xB7 ${weather.pressureLevel}` : "", weather.pressureTrend === "rising" ? " \u2191" : weather.pressureTrend === "falling" ? " \u2193" : "", weather.pressureLabel ? /*#__PURE__*/React.createElement("span", {
-    style: {fontSize: 10, color: "#999", fontStyle: "italic"}
-  }, ` (${weather.pressureLabel})`) : null) : /*#__PURE__*/React.createElement("span", { className: "field-value", style: { color: "#ccc" } }, "—")), /*#__PURE__*/React.createElement("div", {
-    className: "field-row"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "field-icon"
-  }, "\ud83d\udca8"), /*#__PURE__*/React.createElement("span", {
-    className: "field-label"
-  }, "Wind"), weather?.windSpeed != null ? /*#__PURE__*/React.createElement("span", {
-    className: "field-value"
-  }, weather.windSpeed, " m/s", weather.windDir != null ? ` \xB7 ${windCompass(weather.windDir)} (${weather.windDir}\xB0)` : "") : /*#__PURE__*/React.createElement("span", {
-    className: "field-value",
-    style: {color: "#bbb"}
-  }, "\u2014 get GPS first")), /*#__PURE__*/React.createElement("div", {
-    className: "field-row"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "field-icon"
-  }, "\ud83c\udf15"), /*#__PURE__*/React.createElement("span", {
-    className: "field-label"
-  }, "Moon"), /*#__PURE__*/React.createElement("span", {
-    className: "field-value"
-  }, weather?.moon ?? getMoonPhase(new Date()))), !gps && /*#__PURE__*/React.createElement("div", {
-    className: "info-note"
-  }, "Get GPS fix to auto-load air temp, pressure, wind & tide"), tideStatus === "ok" && /*#__PURE__*/React.createElement("div", {
-    className: "info-note"
-  }, tide && tideAttribution(tide.source).full)), sorted.length === 0 && !showForm && /*#__PURE__*/React.createElement("div", {
+  }, "Trolling session instead →")), showForm && !activeTrip && /*#__PURE__*/React.createElement("div", { className: "field-group", style: { marginTop: 10 } }, /*#__PURE__*/React.createElement(ConditionsTitle, { weatherStatus, tideStatus }), /*#__PURE__*/React.createElement(LiveConditionsRows, { weather, tide, tideStatus, gps })), sorted.length === 0 && !showForm && /*#__PURE__*/React.createElement("div", {
     className: "empty-state"
   }, /*#__PURE__*/React.createElement("div", {
     className: "empty-icon"
@@ -4280,7 +4152,7 @@ function AddSpotForm({
       waterTemp: waterTemp ? parseFloat(waterTemp) : null,
       lineType,
       photo,
-      weather: weather ? (({pressureHistory, ...w}) => w)(weather) : null,
+      weather: stripLiveFields(weather),
       tide,
       notes: notes.trim()
     });
@@ -4315,54 +4187,13 @@ function AddSpotForm({
     value: name,
     onChange: e => setName(e.target.value),
     placeholder: "Pool name, bridge, bend\u2026"
-  })), /*#__PURE__*/React.createElement("div", {
+  })), /*#__PURE__*/React.createElement(GpsStatusRow, { icon: "", gps, gpsStatus, onGet: () => getGPS(timestamp) }), /*#__PURE__*/React.createElement("div", {
     className: "field-row"
   }, /*#__PURE__*/React.createElement("span", {
     className: "field-icon"
   }, ""), /*#__PURE__*/React.createElement("span", {
     className: "field-label"
-  }, "GPS"), gpsStatus === "idle" && /*#__PURE__*/React.createElement("button", {
-    className: "gps-btn",
-    onClick: () => getGPS(timestamp)
-  }, "Get GPS"), gpsStatus === "loading" && /*#__PURE__*/React.createElement("span", {
-    className: "status-badge status-loading"
-  }, "Acquiring\u2026"), gpsStatus === "error" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
-    className: "status-badge status-error"
-  }, "Failed"), /*#__PURE__*/React.createElement("button", {
-    className: "gps-btn",
-    style: {
-      marginLeft: 6
-    },
-    onClick: () => getGPS(timestamp)
-  }, "Retry")), gpsStatus === "ok" && gps && /*#__PURE__*/React.createElement("span", {
-    className: "gps-coords"
-  }, formatCoords(gps.lat, gps.lon, gps.acc))), /*#__PURE__*/React.createElement("div", {
-    className: "field-row"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "field-icon"
-  }, ""), /*#__PURE__*/React.createElement("span", {
-    className: "field-label"
-  }, "Line Type"), /*#__PURE__*/React.createElement("div", {
-    className: "field-select-wrap"
-  }, /*#__PURE__*/React.createElement("select", {
-    className: "field-select",
-    value: lineType,
-    onChange: e => setLineType(e.target.value)
-  }, /*#__PURE__*/React.createElement("option", {
-    value: ""
-  }, "\u2014 select \u2014"), /*#__PURE__*/React.createElement("optgroup", {
-    label: "Fly"
-  }, FLY_LINES.map(l => /*#__PURE__*/React.createElement("option", {
-    key: l,
-    value: l
-  }, l))), /*#__PURE__*/React.createElement("optgroup", {
-    label: "Spin"
-  }, SPIN_LINES.map(l => /*#__PURE__*/React.createElement("option", {
-    key: l,
-    value: l
-  }, l))))), lineType && /*#__PURE__*/React.createElement("span", {
-    className: `line-type-badge ${FLY_LINES.includes(lineType) ? "line-type-fly" : "line-type-spin"}`
-  }, FLY_LINES.includes(lineType) ? "Fly" : "Spin")), /*#__PURE__*/React.createElement("div", {
+  }, "Line Type"), /*#__PURE__*/React.createElement(LineTypeSelect, { value: lineType, onChange: setLineType })), /*#__PURE__*/React.createElement("div", {
     className: "field-row"
   }, /*#__PURE__*/React.createElement("span", {
     className: "field-icon"
@@ -4393,90 +4224,7 @@ function AddSpotForm({
       padding: "2px 0",
       resize: "none"
     }
-  }))), /*#__PURE__*/React.createElement("div", {
-    className: "field-group"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "field-group-title"
-  }, "Conditions", (weatherStatus === "loading" || tideStatus === "loading") && /*#__PURE__*/React.createElement("span", {
-    style: {opacity: .5, fontSize: 9}
-  }, " \xB7 fetching\u2026")), /*#__PURE__*/React.createElement("div", {
-    className: "field-row"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "field-icon"
-  }, "\ud83c\udf21\ufe0f"), /*#__PURE__*/React.createElement("span", {
-    className: "field-label"
-  }, "Air Temp"), weather?.airTemp != null ? /*#__PURE__*/React.createElement("span", {
-    className: "field-value"
-  }, weather.airTemp, " \xB0C") : /*#__PURE__*/React.createElement("span", {
-    className: "field-value",
-    style: {color: "#bbb"}
-  }, "\u2014 get GPS first")), /*#__PURE__*/React.createElement(ConditionsRow, { weather }), /*#__PURE__*/React.createElement("div", {
-    className: "field-row top"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "field-icon",
-    style: {marginTop: 2}
-  }, "\ud83c\udf0a"), /*#__PURE__*/React.createElement("span", {
-    className: "field-label",
-    style: {marginTop: 2}
-  }, "Tide"), tideStatus === "idle" && /*#__PURE__*/React.createElement("span", {
-    style: {fontSize: 11, color: "#bbb"}
-  }, "\u2014 get GPS first"), tideStatus === "loading" && /*#__PURE__*/React.createElement("span", {
-    className: "status-badge status-loading"
-  }, "Loading\u2026"), tideStatus === "error" && /*#__PURE__*/React.createElement("span", {
-    className: "status-badge status-error"
-  }, "API error"), tideStatus === "unavailable" && /*#__PURE__*/React.createElement("span", {
-    className: "status-badge status-error"
-  }, "No data"), tideStatus === "ok" && tide && /*#__PURE__*/React.createElement("div", {
-    className: "tide-bar-wrap"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "tide-value-line"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "tide-normalized"
-  }, tide.seasonal != null ? tidePct(tide.seasonal) + "%" : "\u2014"), tide.valueCM != null && /*#__PURE__*/React.createElement("span", {
-    className: "tide-raw"
-  }, "(", tide.valueCM, " cm)"), tide.seasonal != null && /*#__PURE__*/React.createElement("span", {
-    className: "tide-hint"
-  }, tideLabel(tide.seasonal), tideArrow(tide.direction))), tide.seasonal != null && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
-    className: "tide-bar-track"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "tide-bar-fill",
-    style: {width: `${Math.max(0,Math.min(100,tide.seasonal*100))}%`}
-  })), /*#__PURE__*/React.createElement("div", {
-    className: "tide-bar-labels"
-  }, /*#__PURE__*/React.createElement("span", null, "Typical Low", tide.mlwsCM != null ? ` (${tide.mlwsCM}cm)` : ""), /*#__PURE__*/React.createElement("span", null, "Typical High", tide.mhwsCM != null ? ` (${tide.mhwsCM}cm)` : ""))))), /*#__PURE__*/React.createElement("div", {
-    className: "field-row"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "field-icon"
-  }, "\ud83d\udd35"), /*#__PURE__*/React.createElement("span", {
-    className: "field-label"
-  }, "Pressure"), weather?.pressure != null ? /*#__PURE__*/React.createElement("span", {
-    className: "field-value"
-  }, weather.pressure, " hPa", weather.pressureLevel ? ` \xB7 ${weather.pressureLevel}` : "", weather.pressureTrend === "rising" ? " \u2191" : weather.pressureTrend === "falling" ? " \u2193" : "", weather.pressureLabel ? /*#__PURE__*/React.createElement("span", {
-    style: {fontSize: 10, color: "#999", fontStyle: "italic"}
-  }, ` (${weather.pressureLabel})`) : null) : /*#__PURE__*/React.createElement("span", { className: "field-value", style: { color: "#ccc" } }, "—")), /*#__PURE__*/React.createElement("div", {
-    className: "field-row"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "field-icon"
-  }, "\ud83d\udca8"), /*#__PURE__*/React.createElement("span", {
-    className: "field-label"
-  }, "Wind"), weather?.windSpeed != null ? /*#__PURE__*/React.createElement("span", {
-    className: "field-value"
-  }, weather.windSpeed, " m/s", weather.windDir != null ? ` \xB7 ${windCompass(weather.windDir)} (${weather.windDir}\xB0)` : "") : /*#__PURE__*/React.createElement("span", {
-    className: "field-value",
-    style: {color: "#bbb"}
-  }, "\u2014 get GPS first")), /*#__PURE__*/React.createElement("div", {
-    className: "field-row"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "field-icon"
-  }, "\ud83c\udf15"), /*#__PURE__*/React.createElement("span", {
-    className: "field-label"
-  }, "Moon"), /*#__PURE__*/React.createElement("span", {
-    className: "field-value"
-  }, weather?.moon ?? getMoonPhase(new Date()))), !gps && /*#__PURE__*/React.createElement("div", {
-    className: "info-note"
-  }, "Get GPS fix to auto-load air temp, pressure, wind & tide"), tideStatus === "ok" && /*#__PURE__*/React.createElement("div", {
-    className: "info-note"
-  }, tide && tideAttribution(tide.source).full)), /*#__PURE__*/React.createElement("button", {
+  }))), /*#__PURE__*/React.createElement("div", { className: "field-group" }, /*#__PURE__*/React.createElement(ConditionsTitle, { weatherStatus, tideStatus }), /*#__PURE__*/React.createElement(LiveConditionsRows, { weather, tide, tideStatus, gps })), /*#__PURE__*/React.createElement("button", {
     className: "save-btn",
     onClick: handleSave
   }, "Add Spot"));
@@ -4526,7 +4274,7 @@ function CatchForm({
       fishPhoto,
       flyPhoto,
       gps,
-      weather: weather ? (({pressureHistory, ...w}) => w)(weather) : null,
+      weather: stripLiveFields(weather),
       tide,
       tripId: activeTrip?.id || null,
       spotId: activeSpot?.id || null,
@@ -4633,45 +4381,7 @@ function CatchForm({
     style: {
       fontSize: 12
     }
-  }, fmtDT(timestamp))), /*#__PURE__*/React.createElement("div", {
-    className: "field-row"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "field-icon"
-  }, "\uD83D\uDCCD"), /*#__PURE__*/React.createElement("span", {
-    className: "field-label"
-  }, "GPS"), gpsStatus === "idle" && /*#__PURE__*/React.createElement("button", {
-    className: "gps-btn",
-    onClick: () => getGPS(timestamp)
-  }, "Get GPS"), gpsStatus === "loading" && /*#__PURE__*/React.createElement("span", {
-    className: "status-badge status-loading"
-  }, "Acquiring\u2026"), gpsStatus === "error" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
-    className: "status-badge status-error"
-  }, "Failed"), /*#__PURE__*/React.createElement("button", {
-    className: "gps-btn",
-    style: {
-      marginLeft: 6
-    },
-    onClick: () => getGPS(timestamp)
-  }, "Retry")), gpsStatus === "ok" && gps && /*#__PURE__*/React.createElement("span", {
-    className: "gps-coords"
-  }, formatCoords(gps.lat, gps.lon, gps.acc)))), /*#__PURE__*/React.createElement("div", {
-    className: "field-group"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "field-group-title"
-  }, "Conditions", (weatherStatus === "loading" || tideStatus === "loading") && /*#__PURE__*/React.createElement("span", {
-    style: {
-      opacity: .5,
-      fontSize: 9
-    }
-  }, " \xB7 fetching\u2026")), /*#__PURE__*/React.createElement("div", {
-    className: "field-row"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "field-icon"
-  }, "\uD83C\uDF21\uFE0F"), /*#__PURE__*/React.createElement("span", {
-    className: "field-label"
-  }, "Air Temp"), weather?.airTemp != null ? /*#__PURE__*/React.createElement("span", {
-    className: "field-value"
-  }, weather.airTemp, " \xB0C") : /*#__PURE__*/React.createElement("span", { className: "field-value", style: { color: "#ccc" } }, "—")),/*#__PURE__*/React.createElement(ConditionsRow, { weather }), /*#__PURE__*/React.createElement("div", {
+  }, fmtDT(timestamp))), /*#__PURE__*/React.createElement(GpsStatusRow, { icon: "\uD83D\uDCCD", gps, gpsStatus, onGet: () => getGPS(timestamp) })), /*#__PURE__*/React.createElement("div", { className: "field-group" }, /*#__PURE__*/React.createElement(ConditionsTitle, { weatherStatus, tideStatus }), /*#__PURE__*/React.createElement(LiveConditionsRows, { weather, tide, tideStatus, gps, afterSky: /*#__PURE__*/React.createElement("div", {
     className: "field-row"
   }, /*#__PURE__*/React.createElement("span", {
     className: "field-icon"
@@ -4683,84 +4393,7 @@ function CatchForm({
     placeholder: activeSpot?.waterTemp != null ? `Spot: ${activeSpot.waterTemp}°C` : "— select —"
   }), /*#__PURE__*/React.createElement("span", {
     className: "field-unit"
-  }, "manual")), /*#__PURE__*/React.createElement("div", {
-    className: "field-row top"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "field-icon",
-    style: {
-      marginTop: 2
-    }
-  }, "\uD83C\uDF0A"), /*#__PURE__*/React.createElement("span", {
-    className: "field-label",
-    style: {
-      marginTop: 2
-    }
-  }, "Tide"), tideStatus === "idle" && /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 11,
-      color: "#bbb"
-    }
-  }, "\u2014 get GPS first"), tideStatus === "loading" && /*#__PURE__*/React.createElement("span", {
-    className: "status-badge status-loading"
-  }, "Loading\u2026"), tideStatus === "error" && /*#__PURE__*/React.createElement("span", {
-    className: "status-badge status-error"
-  }, "API error"), tideStatus === "unavailable" && /*#__PURE__*/React.createElement("span", {
-    className: "status-badge status-error"
-  }, "No data"), tideStatus === "ok" && tide && /*#__PURE__*/React.createElement("div", {
-    className: "tide-bar-wrap"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "tide-value-line"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "tide-normalized"
-  }, tide.seasonal != null ? tidePct(tide.seasonal) + "%" : "—"), tide.valueCM != null && /*#__PURE__*/React.createElement("span", {
-    className: "tide-raw"
-  }, "(", tide.valueCM, " cm)"), tide.seasonal != null && /*#__PURE__*/React.createElement("span", {
-    className: "tide-hint"
-  }, tideLabel(tide.seasonal), tideArrow(tide.direction))), tide.seasonal != null && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
-    className: "tide-bar-track"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "tide-bar-fill",
-    style: {
-      width: `${Math.max(0,Math.min(100,tide.seasonal*100))}%`
-    }
-  })), /*#__PURE__*/React.createElement("div", {
-    className: "tide-bar-labels"
-  }, /*#__PURE__*/React.createElement("span", null, "Typical Low", tide.mlwsCM != null ? ` (${tide.mlwsCM}cm)` : ""), /*#__PURE__*/React.createElement("span", null, "Typical High", tide.mhwsCM != null ? ` (${tide.mhwsCM}cm)` : ""))))), /*#__PURE__*/React.createElement("div", {
-    className: "field-row"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "field-icon"
-  }, "\uD83D\uDD35"), /*#__PURE__*/React.createElement("span", {
-    className: "field-label"
-  }, "Pressure"), weather?.pressure != null ? /*#__PURE__*/React.createElement("span", {
-    className: "field-value"
-  }, weather.pressure, " hPa",
-    weather.pressureLevel ? ` · ${weather.pressureLevel}` : "",
-    weather.pressureTrend === "rising" ? " ↑" : weather.pressureTrend === "falling" ? " ↓" : "",
-    weather.pressureLabel ? /*#__PURE__*/React.createElement("span", { style: { fontSize: 10, color: "#999", fontStyle: "italic" } }, ` (${weather.pressureLabel})`) : null
-  ) : /*#__PURE__*/React.createElement("span", { className: "field-value", style: { color: "#ccc" } }, "—")), /*#__PURE__*/React.createElement("div", {
-    className: "field-row"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "field-icon"
-  }, "\uD83D\uDCA8"), /*#__PURE__*/React.createElement("span", {
-    className: "field-label"
-  }, "Wind"), weather?.windSpeed != null ? /*#__PURE__*/React.createElement("span", {
-    className: "field-value"
-  }, weather.windSpeed, " m/s", weather.windDir != null ? ` · ${windCompass(weather.windDir)} (${weather.windDir}°)` : "") : /*#__PURE__*/React.createElement("span", {
-    className: "field-value",
-    style: { color: "#bbb" }
-  }, "\u2014 get GPS first")), /*#__PURE__*/React.createElement("div", {
-    className: "field-row"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "field-icon"
-  }, "\uD83C\uDF15"), /*#__PURE__*/React.createElement("span", {
-    className: "field-label"
-  }, "Moon"), /*#__PURE__*/React.createElement("span", {
-    className: "field-value"
-  }, weather?.moon ?? getMoonPhase(new Date()))), !gps && /*#__PURE__*/React.createElement("div", {
-    className: "info-note"
-  }, "Get GPS fix to auto-load air temp, pressure, wind & tide"), tideStatus === "ok" && /*#__PURE__*/React.createElement("div", {
-    className: "info-note"
-  }, tide && tideAttribution(tide.source).full)), /*#__PURE__*/React.createElement("div", {
+  }, "manual")) })), /*#__PURE__*/React.createElement("div", {
     className: "field-group"
   }, /*#__PURE__*/React.createElement("div", {
     className: "field-group-title"
@@ -4809,7 +4442,7 @@ function ObsForm({
       estimatedSize: estSize.trim(),
       notes: notes.trim(),
       gps,
-      weather: weather ? (({pressureHistory, ...w}) => w)(weather) : null,
+      weather: stripLiveFields(weather),
       tide,
       tripId: activeTrip?.id || null,
       spotId: activeSpot?.id || null
@@ -4839,65 +4472,9 @@ function ObsForm({
         /*#__PURE__*/React.createElement("span", { className: "field-icon" }, "\uD83D\uDD50"),
         /*#__PURE__*/React.createElement("span", { className: "field-label" }, "Time"),
         /*#__PURE__*/React.createElement("span", { className: "field-value", style: { fontSize: 12 } }, fmtDT(timestamp))),
-      /*#__PURE__*/React.createElement("div", { className: "field-row" },
-        /*#__PURE__*/React.createElement("span", { className: "field-icon" }, "\uD83D\uDCCD"),
-        /*#__PURE__*/React.createElement("span", { className: "field-label" }, "GPS"),
-        gpsStatus === "idle" && /*#__PURE__*/React.createElement("button", { className: "gps-btn", onClick: () => getGPS(timestamp) }, "Get GPS"),
-        gpsStatus === "loading" && /*#__PURE__*/React.createElement("span", { className: "status-badge status-loading" }, "Acquiring\u2026"),
-        gpsStatus === "error" && /*#__PURE__*/React.createElement(React.Fragment, null,
-          /*#__PURE__*/React.createElement("span", { className: "status-badge status-error" }, "Failed"),
-          /*#__PURE__*/React.createElement("button", { className: "gps-btn", style: { marginLeft: 6 }, onClick: () => getGPS(timestamp) }, "Retry")),
-        gpsStatus === "ok" && gps && /*#__PURE__*/React.createElement("span", { className: "gps-coords" }, formatCoords(gps.lat, gps.lon, gps.acc)))),
+      /*#__PURE__*/React.createElement(GpsStatusRow, { icon: "\uD83D\uDCCD", gps, gpsStatus, onGet: () => getGPS(timestamp) })),
     /*#__PURE__*/React.createElement("div", { className: "field-group" },
-      /*#__PURE__*/React.createElement("div", { className: "field-group-title" },
-        "Conditions", (weatherStatus === "loading" || tideStatus === "loading") && /*#__PURE__*/React.createElement("span", { style: { opacity: .5, fontSize: 9 } }, " \u00b7 fetching\u2026")),
-      /*#__PURE__*/React.createElement("div", { className: "field-row" },
-        /*#__PURE__*/React.createElement("span", { className: "field-icon" }, "\uD83C\uDF21\uFE0F"),
-        /*#__PURE__*/React.createElement("span", { className: "field-label" }, "Air Temp"),
-        weather?.airTemp != null
-          ? /*#__PURE__*/React.createElement("span", { className: "field-value" }, weather.airTemp, " \xb0C")
-          : /*#__PURE__*/React.createElement("span", { className: "field-value", style:{color:"#ccc"} }, "\u2014 get GPS fix")),
-      /*#__PURE__*/React.createElement(ConditionsRow, { weather }),
-      /*#__PURE__*/React.createElement("div", { className: "field-row top" },
-        /*#__PURE__*/React.createElement("span", { className: "field-icon", style: { marginTop: 2 } }, "\uD83C\uDF0A"),
-        /*#__PURE__*/React.createElement("span", { className: "field-label", style: { marginTop: 2 } }, "Tide"),
-        tideStatus === "idle" && /*#__PURE__*/React.createElement("span", { style: { fontSize: 11, color: "#bbb" } }, "\u2014 get GPS first"),
-        tideStatus === "loading" && /*#__PURE__*/React.createElement("span", { className: "status-badge status-loading" }, "Loading\u2026"),
-        tideStatus === "error" && /*#__PURE__*/React.createElement("span", { className: "status-badge status-error" }, "API error"),
-        tideStatus === "unavailable" && /*#__PURE__*/React.createElement("span", { className: "status-badge status-error" }, "No data"),
-        tideStatus === "ok" && tide && /*#__PURE__*/React.createElement("div", { className: "tide-bar-wrap" },
-          /*#__PURE__*/React.createElement("div", { className: "tide-value-line" },
-            /*#__PURE__*/React.createElement("span", { className: "tide-normalized" }, tide.seasonal != null ? tidePct(tide.seasonal) + "%" : "\u2014"),
-            tide.valueCM != null && /*#__PURE__*/React.createElement("span", { className: "tide-raw" }, "(", tide.valueCM, " cm)"),
-            tide.seasonal != null && /*#__PURE__*/React.createElement("span", { className: "tide-hint" }, tideLabel(tide.seasonal), tideArrow(tide.direction))),
-          tide.seasonal != null && /*#__PURE__*/React.createElement(React.Fragment, null,
-            /*#__PURE__*/React.createElement("div", { className: "tide-bar-track" },
-              /*#__PURE__*/React.createElement("div", { className: "tide-bar-fill", style: { width: `${Math.max(0,Math.min(100,tide.seasonal*100))}%` } })),
-            /*#__PURE__*/React.createElement("div", { className: "tide-bar-labels" },
-              /*#__PURE__*/React.createElement("span", null, "Typical Low", tide.mlwsCM != null ? ` (${tide.mlwsCM}cm)` : ""),
-              /*#__PURE__*/React.createElement("span", null, "Typical High", tide.mhwsCM != null ? ` (${tide.mhwsCM}cm)` : ""))))),
-      /*#__PURE__*/React.createElement("div", { className: "field-row" },
-        /*#__PURE__*/React.createElement("span", { className: "field-icon" }, "\uD83D\uDD35"),
-        /*#__PURE__*/React.createElement("span", { className: "field-label" }, "Pressure"),
-        weather?.pressure != null
-          ? /*#__PURE__*/React.createElement("span", { className: "field-value" },
-              weather.pressure, " hPa",
-              weather.pressureLevel ? ` · ${weather.pressureLevel}` : "",
-              weather.pressureTrend === "rising" ? " ↑" : weather.pressureTrend === "falling" ? " ↓" : "",
-              weather.pressureLabel ? /*#__PURE__*/React.createElement("span", { style: { fontSize: 10, color: "#999", fontStyle: "italic" } }, ` (${weather.pressureLabel})`) : null)
-          : /*#__PURE__*/React.createElement("span", { className: "field-value", style:{color:"#ccc"} }, "\u2014")),
-      /*#__PURE__*/React.createElement("div", { className: "field-row" },
-        /*#__PURE__*/React.createElement("span", { className: "field-icon" }, "\uD83D\uDCA8"),
-        /*#__PURE__*/React.createElement("span", { className: "field-label" }, "Wind"),
-        weather?.windSpeed != null
-          ? /*#__PURE__*/React.createElement("span", { className: "field-value" }, weather.windSpeed, " m/s", weather.windDir != null ? ` · ${windCompass(weather.windDir)} (${weather.windDir}°)` : "")
-          : /*#__PURE__*/React.createElement("span", { className: "field-value", style:{color:"#ccc"} }, "\u2014")),
-      /*#__PURE__*/React.createElement("div", { className: "field-row" },
-        /*#__PURE__*/React.createElement("span", { className: "field-icon" }, "\uD83C\uDF15"),
-        /*#__PURE__*/React.createElement("span", { className: "field-label" }, "Moon"),
-        /*#__PURE__*/React.createElement("span", { className: "field-value" }, weather?.moon ?? getMoonPhase(new Date()))),
-      !gps && /*#__PURE__*/React.createElement("div", { className: "info-note" }, "Get GPS fix to auto-load air temp, pressure & tide"),
-      tideStatus === "ok" && tide && /*#__PURE__*/React.createElement("div", { className: "info-note" }, tideAttribution(tide.source).full)),
+      /*#__PURE__*/React.createElement(ConditionsTitle, { weatherStatus, tideStatus }), /*#__PURE__*/React.createElement(LiveConditionsRows, { weather, tide, tideStatus, gps })),
     /*#__PURE__*/React.createElement("div", { className: "field-group" },
       /*#__PURE__*/React.createElement("div", { className: "field-group-title" }, "Notes"),
       /*#__PURE__*/React.createElement("div", { className: "field-row top" },
@@ -4913,7 +4490,7 @@ function StatChart({ title, buckets, values, fmt, hours }) {
   var hasData = hours ? hours.some(function(h) { return h > 0; }) : values.some(function(v) { return v > 0; });
   if (!hasData) return null;
   var format = fmt || function(v) { return Number.isInteger(v) ? v : v.toFixed(2); };
-  var fmtH = function(h) { return h < 1 ? (h * 60).toFixed(0) + "m" : h.toFixed(1) + "h"; };
+  var fmtH = fmtHours;
   return React.createElement("div", { className: "stat-card" },
     React.createElement("div", { className: "stat-card-title" }, title),
     buckets.map(function(lbl, i) {
@@ -5208,12 +4785,7 @@ function AnalyticsView({ catches, spots, trips, observations }) {
   var moonBuckets  = ["🌑 New", "🌒 Wax.Cres.", "🌓 First Q.", "🌔 Wax.Gib.", "🌕 Full", "🌖 Wan.Gib.", "🌗 Last Q.", "🌘 Wan.Cres."];
 
   var getWT = function(c) { return c.waterTemp != null ? c.waterTemp : (spotById[c.spotId] || {}).waterTemp ?? null; };
-  var getPress = function(c) {
-    var p = c.weather ? c.weather.pressure : null;
-    if (p != null) return p;
-    var spot = spotById[c.spotId];
-    return spot && spot.weather ? spot.weather.pressure : null;
-  };
+
   // ── Water temp buckets (from all year-filtered data) ──
   var kpiTripIds = {};
   kpiTrips.forEach(function(t) { kpiTripIds[t.id] = 1; });
@@ -5253,44 +4825,34 @@ function AnalyticsView({ catches, spots, trips, observations }) {
     tideHierarchy.push({ label: "Unknown dir.", buckets: tideBuckets, counts: uCounts, total: untagged.length });
   }
 
-  // ── Time of Day — hours per catch ──
-  var timeHours = {};
-  timeBuckets.forEach(function(b) { timeHours[b] = 0; });
-  kpiTrips.filter(function(t) { return t.endTime; }).forEach(function(t) {
-    var tTz = tzFor(tripAnchorGPS(t, tripSpotsMap[t.id])); // resolved once per trip, not per 15-min step
-    tripSegs(t).forEach(function(sg) {
-      var step = 900000;
-      for (var ms = sg[0]; ms < sg[1]; ms += step) {
-        var chunk = Math.min(step, sg[1] - ms) / 3600000;
-        timeHours[hourBucket(localParts(ms, tTz).hour)] += chunk;
-      }
-    });
-  });
-  var cTimeCounts = buildCounts(fEventsEnded, function(c) { return timeBucket(c.timestamp, tzFor(itemAnchorGPS(c, spotById))); }, timeBuckets);
-  var timeRates = timeBuckets.map(function(b, i) {
-    return timeHours[b] > 0 ? cTimeCounts[i] / timeHours[b] : 0;
-  });
-
-  // ── Water Temp — hours per catch (temp assumed constant per spot) ──
-  var tempHours = {};
-  tempBucketsAll.forEach(function(b) { tempHours[b] = 0; });
-  kpiTrips.filter(function(t) { return t.endTime; }).forEach(function(t) {
-    var tripSpots = sortedSpotsOf(t);
+  // ── Shared walks ──
+  // Every rate below is (weighted catches in a bucket) / (fished hours in that
+  // bucket). These walks hand out the hours.
+  var endedTrips = kpiTrips.filter(function(t) { return t.endTime; });
+  // One trip's spot visits in order: each lasts until the next spot (or the
+  // trip's end), pauses cut out; spots outside a picked map area are skipped
+  var forEachVisit = function(t, fn) {
+    var ts = sortedSpotsOf(t);
     var tripEnd = new Date(t.endTime).getTime();
-    tripSpots.forEach(function(s, idx) {
+    ts.forEach(function(s, idx) {
       if (!spotInLoc(s)) return;
       var start = new Date(s.timestamp).getTime();
-      var end = idx < tripSpots.length - 1 ? new Date(tripSpots[idx + 1].timestamp).getTime() : tripEnd;
-      var hours = netHours(t, start, end);
-      var b = tempBucket(s.waterTemp);
-      if (b && b in tempHours) tempHours[b] += hours;
+      var end = idx < ts.length - 1 ? new Date(ts[idx + 1].timestamp).getTime() : tripEnd;
+      fn(s, netHours(t, start, end));
     });
-  });
-  var cTempCounts = buildCounts(fEventsEnded, function(c) { return tempBucket(getWT(c)); }, tempBucketsAll);
-  var tempRates = tempBucketsAll.map(function(b, i) {
-    return tempHours[b] > 0 ? cTempCounts[i] / tempHours[b] : 0;
-  });
-
+  };
+  // A trip's fished time in 15-minute steps (Time of Day, Moon Phase)
+  var forEachQuarterHour = function(t, fn) {
+    tripSegs(t).forEach(function(sg) {
+      var step = 900000;
+      for (var ms = sg[0]; ms < sg[1]; ms += step) fn(ms, Math.min(step, sg[1] - ms) / 3600000);
+    });
+  };
+  var zeroHours = function(buckets) { var h = {}; buckets.forEach(function(b) { h[b] = 0; }); return h; };
+  var addHours = function(hrs, b, h) { if (b && b in hrs) hrs[b] += h; };
+  var ratesOf = function(buckets, counts, hrs) {
+    return buckets.map(function(b, i) { return hrs[b] > 0 ? counts[i] / hrs[b] : 0; });
+  };
   // ── Helper: get representative weather for a trip (from catches or spots) ──
   // First catch / first spot carrying weather, per trip (array order, same as
   // the .find()s this replaces) — looked up once instead of per trip per chart
@@ -5300,108 +4862,90 @@ function AnalyticsView({ catches, spots, trips, observations }) {
   var getTripWeather = function(t) {
     return firstCatchWx[t.id] || firstSpotWx[t.id] || t.weather || null; // trolling trips carry start weather themselves
   };
+  // Hours per weather bucket, the hybrid used by Pressure, Wind, Sky and Rain:
+  // spot-level when the trip's spots carry the field (each visit charged to its
+  // own spot's reading), otherwise the whole trip goes to the trip's
+  // representative weather. `presenceField` decides which field counts as
+  // "spots carry weather" (Sky and Rain share cloudCover's test: the capture
+  // block writes cloudCover and precipMm together).
+  var weatherHours = function(buckets, field, bucketOf, presenceField) {
+    var hrs = zeroHours(buckets);
+    var pf = presenceField || field;
+    endedTrips.forEach(function(t) {
+      if (sortedSpotsOf(t).some(function(s) { return s.weather && s.weather[pf] != null; })) {
+        forEachVisit(t, function(s, h) { addHours(hrs, bucketOf(s.weather ? s.weather[field] : null), h); });
+      } else {
+        var w = getTripWeather(t);
+        addHours(hrs, bucketOf(w ? w[field] : null), segHours(t));
+      }
+    });
+    return hrs;
+  };
+  // A catch's own reading of a weather field, else its spot's.
+  // NB 0 is a real value for windDir (north), cloudCover (clear) and precipMm
+  // (dry) — every check is != null, never truthiness
+  var weatherOf = function(field) {
+    return function(c) {
+      var v = c.weather ? c.weather[field] : null;
+      if (v != null) return v;
+      var spot = spotById[c.spotId];
+      var sv = spot && spot.weather ? spot.weather[field] : null;
+      return sv != null ? sv : null;
+    };
+  };
+
+  // ── Time of Day — hours per catch ──
+  var timeHours = zeroHours(timeBuckets);
+  endedTrips.forEach(function(t) {
+    var tTz = tzFor(tripAnchorGPS(t, tripSpotsMap[t.id])); // resolved once per trip, not per 15-min step
+    forEachQuarterHour(t, function(ms, h) { timeHours[hourBucket(localParts(ms, tTz).hour)] += h; });
+  });
+  var cTimeCounts = buildCounts(fEventsEnded, function(c) { return timeBucket(c.timestamp, tzFor(itemAnchorGPS(c, spotById))); }, timeBuckets);
+  var timeRates = ratesOf(timeBuckets, cTimeCounts, timeHours);
+
+  // ── Water Temp — hours per catch (temp assumed constant per spot) ──
+  var tempHours = zeroHours(tempBucketsAll);
+  endedTrips.forEach(function(t) {
+    forEachVisit(t, function(s, h) { addHours(tempHours, tempBucket(s.waterTemp), h); });
+  });
+  var cTempCounts = buildCounts(fEventsEnded, function(c) { return tempBucket(getWT(c)); }, tempBucketsAll);
+  var tempRates = ratesOf(tempBucketsAll, cTempCounts, tempHours);
 
   // ── Moon Phase — hours per catch ──
   // getMoonPhase is a pure function of the timestamp — no capture dependency,
   // no network, never missing. Walking every session's minutes (same 15-min
-  // chunk pattern as Time of Day, below) is strictly more accurate than any
-  // stored per-spot snapshot: it also correctly splits a session that spans a
-  // phase boundary, which a snapshot never could.
-  var moonHours = {};
-  moonBuckets.forEach(function(b) { moonHours[b] = 0; });
-  kpiTrips.filter(function(t) { return t.endTime; }).forEach(function(t) {
-    tripSegs(t).forEach(function(sg) {
-      var step = 900000;
-      for (var ms = sg[0]; ms < sg[1]; ms += step) {
-        var chunk = Math.min(step, sg[1] - ms) / 3600000;
-        var b = moonBucket(getMoonPhase(new Date(ms)));
-        if (b && b in moonHours) moonHours[b] += chunk;
-      }
-    });
+  // chunk pattern as Time of Day) is strictly more accurate than any stored
+  // per-spot snapshot: it also correctly splits a session that spans a phase
+  // boundary, which a snapshot never could.
+  var moonHours = zeroHours(moonBuckets);
+  endedTrips.forEach(function(t) {
+    forEachQuarterHour(t, function(ms, h) { addHours(moonHours, moonBucket(getMoonPhase(new Date(ms))), h); });
   });
   var cMoonCounts = buildCounts(fEventsEnded, function(c) { return moonBucket(getMoonPhase(new Date(c.timestamp))); }, moonBuckets);
-  var moonRates = moonBuckets.map(function(b, i) {
-    return moonHours[b] > 0 ? cMoonCounts[i] / moonHours[b] : 0;
-  });
+  var moonRates = ratesOf(moonBuckets, cMoonCounts, moonHours);
 
   // ── Air Pressure — hours per catch ──
-  // Same hybrid approach: spot-level when available, trip-level fallback
-  var pressHours = {};
-  pressBuckets.forEach(function(b) { pressHours[b] = 0; });
-  kpiTrips.filter(function(t) { return t.endTime; }).forEach(function(t) {
-    var tripSpots = sortedSpotsOf(t);
-    var tripEnd = new Date(t.endTime).getTime();
-    var spotsHaveWeather = tripSpots.some(function(s) { return s.weather && s.weather.pressure != null; });
-    if (spotsHaveWeather) {
-      // Spot-level: attribute each spot's duration to its pressure bucket
-      tripSpots.forEach(function(s, idx) {
-        if (!spotInLoc(s)) return;
-        var start = new Date(s.timestamp).getTime();
-        var end = idx < tripSpots.length - 1 ? new Date(tripSpots[idx + 1].timestamp).getTime() : tripEnd;
-        var hours = netHours(t, start, end);
-        var b = pressBucket(s.weather ? s.weather.pressure : null);
-        if (b && b in pressHours) pressHours[b] += hours;
-      });
-    } else {
-      // Trip-level fallback: use weather from catches
-      var dur = segHours(t);
-      var w = getTripWeather(t);
-      var b = pressBucket(w ? w.pressure : null);
-      if (b && b in pressHours) pressHours[b] += dur;
-    }
-  });
+  var getPress = weatherOf("pressure");
+  var pressHours = weatherHours(pressBuckets, "pressure", pressBucket);
   var cPressCounts = buildCounts(fEventsEnded, function(c) { return pressBucket(getPress(c)); }, pressBuckets);
-  var pressRates = pressBuckets.map(function(b, i) {
-    return pressHours[b] > 0 ? cPressCounts[i] / pressHours[b] : 0;
-  });
+  var pressRates = ratesOf(pressBuckets, cPressCounts, pressHours);
 
   // ── Wind Direction — hours per catch ──
-  // Same hybrid approach as pressure. NB: windDir 0 (north) is valid — every
-  // check must be != null, never truthiness
   var windBuckets = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
   var windBucket = function(deg) {
     if (deg == null) return null;
     var d = ((deg % 360) + 360) % 360;
     return windBuckets[Math.round(d / 45) % 8];
   };
-  var getWindDir = function(c) {
-    var d = c.weather ? c.weather.windDir : null;
-    if (d != null) return d;
-    var spot = spotById[c.spotId];
-    var sd = spot && spot.weather ? spot.weather.windDir : null;
-    return sd != null ? sd : null;
-  };
-  var windHours = {};
-  windBuckets.forEach(function(b) { windHours[b] = 0; });
-  kpiTrips.filter(function(t) { return t.endTime; }).forEach(function(t) {
-    var tripSpots = sortedSpotsOf(t);
-    var tripEnd = new Date(t.endTime).getTime();
-    var spotsHaveWind = tripSpots.some(function(s) { return s.weather && s.weather.windDir != null; });
-    if (spotsHaveWind) {
-      tripSpots.forEach(function(s, idx) {
-        if (!spotInLoc(s)) return;
-        var start = new Date(s.timestamp).getTime();
-        var end = idx < tripSpots.length - 1 ? new Date(tripSpots[idx + 1].timestamp).getTime() : tripEnd;
-        var hours = netHours(t, start, end);
-        var b = windBucket(s.weather ? s.weather.windDir : null);
-        if (b && b in windHours) windHours[b] += hours;
-      });
-    } else {
-      var dur = segHours(t);
-      var w = getTripWeather(t);
-      var b = windBucket(w ? w.windDir : null);
-      if (b && b in windHours) windHours[b] += dur;
-    }
-  });
+  var getWindDir = weatherOf("windDir");
+  var windHours = weatherHours(windBuckets, "windDir", windBucket);
   var cWindCounts = buildCounts(fEventsEnded, function(c) { return windBucket(getWindDir(c)); }, windBuckets);
-  var windRates = windBuckets.map(function(b, i) {
-    return windHours[b] > 0 ? cWindCounts[i] / windHours[b] : 0;
-  });
+  var windRates = ratesOf(windBuckets, cWindCounts, windHours);
 
   // ── Sky & Rain — hours per catch ──
-  // Same hybrid approach as pressure and wind. Two charts, not one wxGroup axis:
-  // cloud and rain act on fish through different mechanisms, and a single
-  // categorical would collapse a 0.1 mm trace and a 20 mm downpour into one bar.
+  // Two charts, not one wxGroup axis: cloud and rain act on fish through
+  // different mechanisms, and a single categorical would collapse a 0.1 mm
+  // trace and a 20 mm downpour into one bar.
   //
   // Spot-level attribution is what makes these charts trustworthy without
   // per-hour weather lookups: spot count scales with session length (>4h sessions
@@ -5426,60 +4970,14 @@ function AnalyticsView({ catches, spots, trips, observations }) {
     if (mm < 10)   return "Moderate";
     return "Heavy";
   };
-  // NB cloudCover 0 (clear sky) and precipMm 0 (dry) are both valid — every
-  // check must be != null, never truthiness
-  var getCloud = function(c) {
-    var v = c.weather ? c.weather.cloudCover : null;
-    if (v != null) return v;
-    var spot = spotById[c.spotId];
-    var sv = spot && spot.weather ? spot.weather.cloudCover : null;
-    return sv != null ? sv : null;
-  };
-  var getPrecip = function(c) {
-    var v = c.weather ? c.weather.precipMm : null;
-    if (v != null) return v;
-    var spot = spotById[c.spotId];
-    var sv = spot && spot.weather ? spot.weather.precipMm : null;
-    return sv != null ? sv : null;
-  };
-  var skyHours = {}, rainHours = {};
-  skyBuckets.forEach(function(b) { skyHours[b] = 0; });
-  rainBuckets.forEach(function(b) { rainHours[b] = 0; });
-  kpiTrips.filter(function(t) { return t.endTime; }).forEach(function(t) {
-    var tripSpots = sortedSpotsOf(t);
-    var tripEnd = new Date(t.endTime).getTime();
-    // One presence test covers both charts: the capture block writes cloudCover
-    // and precipMm together, so a record has conditions or it has neither
-    var spotsHaveWx = tripSpots.some(function(s) { return s.weather && s.weather.cloudCover != null; });
-    if (spotsHaveWx) {
-      tripSpots.forEach(function(s, idx) {
-        if (!spotInLoc(s)) return;
-        var start = new Date(s.timestamp).getTime();
-        var end = idx < tripSpots.length - 1 ? new Date(tripSpots[idx + 1].timestamp).getTime() : tripEnd;
-        var hours = netHours(t, start, end);
-        var w = s.weather || {};
-        var sb = skyLabel(w.cloudCover);
-        if (sb && sb in skyHours) skyHours[sb] += hours;
-        var rb = rainBucket(w.precipMm);
-        if (rb && rb in rainHours) rainHours[rb] += hours;
-      });
-    } else {
-      var dur = segHours(t);
-      var tw = getTripWeather(t);
-      var sb2 = skyLabel(tw ? tw.cloudCover : null);
-      if (sb2 && sb2 in skyHours) skyHours[sb2] += dur;
-      var rb2 = rainBucket(tw ? tw.precipMm : null);
-      if (rb2 && rb2 in rainHours) rainHours[rb2] += dur;
-    }
-  });
+  var getCloud = weatherOf("cloudCover");
+  var getPrecip = weatherOf("precipMm");
+  var skyHours = weatherHours(skyBuckets, "cloudCover", skyLabel);
+  var rainHours = weatherHours(rainBuckets, "precipMm", rainBucket, "cloudCover");
   var cSkyCounts = buildCounts(fEventsEnded, function(c) { return skyLabel(getCloud(c)); }, skyBuckets);
-  var skyRates = skyBuckets.map(function(b, i) {
-    return skyHours[b] > 0 ? cSkyCounts[i] / skyHours[b] : 0;
-  });
+  var skyRates = ratesOf(skyBuckets, cSkyCounts, skyHours);
   var cRainCounts = buildCounts(fEventsEnded, function(c) { return rainBucket(getPrecip(c)); }, rainBuckets);
-  var rainRates = rainBuckets.map(function(b, i) {
-    return rainHours[b] > 0 ? cRainCounts[i] / rainHours[b] : 0;
-  });
+  var rainRates = ratesOf(rainBuckets, cRainCounts, rainHours);
 
   // ── Trolling Speed — hours per catch ──
   // Hours come straight from the track: each segment's duration lands in the
@@ -5495,8 +4993,7 @@ function AnalyticsView({ catches, spots, trips, observations }) {
     if (kn < 4) return "3–4 kn";
     return "4+ kn";
   };
-  var speedHours = {};
-  speedBuckets.forEach(function(b) { speedHours[b] = 0; });
+  var speedHours = zeroHours(speedBuckets);
   kpiTrips.filter(function(t) { return t.endTime && t.mode === "trolling"; }).forEach(function(t) {
     var pts = trackPts(t.track);
     for (var i = 1; i < pts.length; i++) {
@@ -5509,13 +5006,11 @@ function AnalyticsView({ catches, spots, trips, observations }) {
     }
   });
   var cSpeedCounts = buildCounts(fEventsEnded, function(c) { return speedBucket(c.speedMS); }, speedBuckets);
-  var speedRates = speedBuckets.map(function(b, i) {
-    return speedHours[b] > 0 ? cSpeedCounts[i] / speedHours[b] : 0;
-  });
+  var speedRates = ratesOf(speedBuckets, cSpeedCounts, speedHours);
 
   // ── Catch rate by method ──
   var methodHours = {};
-  kpiTrips.filter(function(t) { return t.endTime; }).forEach(function(t) {
+  endedTrips.forEach(function(t) {
     var dur = segHours(t);
     var tripSpots = (tripSpotsMap[t.id] || []).filter(spotInLoc);
     var lines = tripSpots.map(function(s) { return s.lineType; }).filter(Boolean);
@@ -5541,9 +5036,7 @@ function AnalyticsView({ catches, spots, trips, observations }) {
   var methodBuckets = methodIdx.map(function(i) { return allMethods[i]; });
   var methodValues  = methodIdx.map(function(i) { return methodRates[i]; });
 
-  // fmtH duplicated from StatChart (index.html:4481) — that one is scoped to
-  // StatChart's own closure, not reachable from here.
-  var fmtH = function(h) { return h < 1 ? (h * 60).toFixed(0) + "m" : h.toFixed(1) + "h"; };
+  var fmtH = fmtHours;
 
   // ── Spots mode: hours per spot ──
   // Mirrors the Pressure/Wind/Sky per-visit walk above (kpiTrips -> each
@@ -5554,14 +5047,8 @@ function AnalyticsView({ catches, spots, trips, observations }) {
   // revisits by, so each one is kept as its own entry (keyed by spot id)
   // rather than merged with other unnamed spots that may be unrelated.
   var spotHoursByName = {}, spotRepByName = {};
-  kpiTrips.filter(function(t) { return t.endTime; }).forEach(function(t) {
-    var tripSpots = sortedSpotsOf(t);
-    var tripEnd = new Date(t.endTime).getTime();
-    tripSpots.forEach(function(s, idx) {
-      if (!spotInLoc(s)) return;
-      var start = new Date(s.timestamp).getTime();
-      var end = idx < tripSpots.length - 1 ? new Date(tripSpots[idx + 1].timestamp).getTime() : tripEnd;
-      var hours = netHours(t, start, end);
+  endedTrips.forEach(function(t) {
+    forEachVisit(t, function(s, hours) {
       var key = (s.name && s.name.trim()) ? s.name.trim().toLowerCase() : "id:" + s.id;
       spotHoursByName[key] = (spotHoursByName[key] || 0) + hours;
       if (!spotRepByName[key] || new Date(s.timestamp) > new Date(spotRepByName[key].timestamp)) spotRepByName[key] = s;
@@ -5576,12 +5063,12 @@ function AnalyticsView({ catches, spots, trips, observations }) {
 
   // ── KPIs ──
   var totalCatches  = fEvents.reduce(function(s, e) { return s + (e._w || 1); }, 0);
-  var totalSessions = kpiTrips.filter(function(t) { return t.endTime; }).length;
+  var totalSessions = endedTrips.length;
   var eventTripIds = {};
   fEvents.forEach(function(e) { eventTripIds[e.tripId] = 1; });
   var hitSessions   = kpiTrips.filter(function(t) { return t.endTime && eventTripIds[t.id]; }).length;
   var successRate   = totalSessions > 0 ? Math.round(hitSessions / totalSessions * 100) : 0;
-  var totalHours    = kpiTrips.filter(function(t) { return t.endTime; }).reduce(function(sum, t) {
+  var totalHours    = endedTrips.reduce(function(sum, t) {
     return sum + segHours(t);
   }, 0);
   // Hrs/Fish counts EVENTS, not fish — one observation of 50 fish is still one
@@ -6241,6 +5728,16 @@ function loadLeafletCluster() {
   return _clusterPromise;
 }
 
+// A Leaflet map on OpenStreetMap tiles — the starting point of both maps
+function createBaseMap(L, el) {
+  const map = L.map(el);
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    attribution: "&copy; OpenStreetMap"
+  }).addTo(map);
+  return map;
+}
+
 // Short stable hash of a string (djb2) — for React keys derived from content
 function strHash(str) {
   let h = 5381;
@@ -6274,12 +5771,8 @@ function TrollMap({ track, catches, highlightId, fill }) {
     let dead = false;
     loadLeaflet().then(L => {
       if (dead || !boxRef.current || mapRef.current) return;
-      const map = L.map(boxRef.current);
+      const map = createBaseMap(L, boxRef.current);
       mapRef.current = map;
-      L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        maxZoom: 19,
-        attribution: "&copy; OpenStreetMap"
-      }).addTo(map);
       let bounds = L.latLngBounds([]);
       lineRef.current = L.polyline(pts, { color: "#2b5d75", weight: 3 }).addTo(map);
       if (pts.length >= 2) bounds.extend(lineRef.current.getBounds());
@@ -6346,12 +5839,8 @@ function ClusterMap({ catches, obs, spotPts, area, onAreaSelect }) {
     let dead = false;
     loadLeafletCluster().then(L => {
       if (dead || !boxRef.current || mapRef.current) return;
-      const map = L.map(boxRef.current);
+      const map = createBaseMap(L, boxRef.current);
       mapRef.current = map;
-      L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        maxZoom: 19,
-        attribution: "&copy; OpenStreetMap"
-      }).addTo(map);
       // hoursMode: spot pins show hours (fmtH-style "4.2h"/"45m") sized by
       // duration instead of a fish count — everything else about the badge
       // (border, shadow, font) stays the same visual language.
@@ -6424,6 +5913,29 @@ function ClusterMap({ catches, obs, spotPts, area, onAreaSelect }) {
       color: "#333", boxShadow: "0 1px 4px rgba(0,0,0,.3)"
     }
   }, area ? "Re-filter this view" : "Filter this view"));
+}
+
+// One catch / observation line inside a session's detail view
+function MiniCatchRow({ c, tz, onOpen }) {
+  return /*#__PURE__*/React.createElement("div", { className: "mini-catch", onClick: onOpen },
+    c.fishPhoto
+      ? /*#__PURE__*/React.createElement(PhotoImg, { src: c.fishPhoto, alt: "", className: "mini-catch-thumb" })
+      : /*#__PURE__*/React.createElement("div", { className: "mini-catch-thumb" }, ""),
+    /*#__PURE__*/React.createElement("div", { className: "mini-catch-info" },
+      /*#__PURE__*/React.createElement("div", { className: "mini-catch-species" }, c.species),
+      /*#__PURE__*/React.createElement("div", { className: "mini-catch-time" },
+        fmtTime(c.timestamp, tz), c.size ? ` \xB7 ${c.size}` : "", c.trollDepth ? ` \xB7 ${c.trollDepth}` : "",
+        c.speedMS != null ? ` \xB7 ${fmtKnots(c.speedMS)}` : "",
+        c.tide?.seasonal != null ? ` \xB7 ${tidePct(c.tide.seasonal)}%${tideArrow(c.tide.direction)}` : "")),
+    /*#__PURE__*/React.createElement("span", { style: { color: "#ccc", fontSize: 16 } }, "\u203A"));
+}
+function MiniObsRow({ o, tz, onOpen }) {
+  return /*#__PURE__*/React.createElement("div", { className: "mini-obs", onClick: onOpen },
+    /*#__PURE__*/React.createElement("span", { style: { fontSize: 14 } }, ""),
+    /*#__PURE__*/React.createElement("div", { style: { flex: 1 } },
+      /*#__PURE__*/React.createElement("div", { style: { fontSize: 13, fontFamily: "'Playfair Display',serif", fontWeight: 600 } }, o.species, o.count ? ` \xD7 ${o.count}` : ""),
+      /*#__PURE__*/React.createElement("div", { style: { fontSize: 10, color: "#999" } }, fmtTime(o.timestamp, tz), o.estimatedSize ? ` \xB7 ${o.estimatedSize}` : "")),
+    /*#__PURE__*/React.createElement("span", { style: { color: "#ccc", fontSize: 16 } }, "\u203A"));
 }
 
 // ── Trip detail modal ─────────────────────────────────────────────────────────
@@ -6589,7 +6101,7 @@ function TripDetail({
     }
   }, /*#__PURE__*/React.createElement("span", {
     className: "field-label"
-  }, f.label), /*#__PURE__*/React.createElement(TargetSelect, {
+  }, f.label), /*#__PURE__*/React.createElement(SpeciesSelect, {
     value: editTarget,
     onChange: setEditTarget
   }))), /*#__PURE__*/React.createElement("div", {
@@ -6663,56 +6175,7 @@ function TripDetail({
     }
   }, "Distance trolled: ", fmtTrackDist(trackDistM(t.track)), " \xB7 ", trackPts(t.track).length, " track points"), /*#__PURE__*/React.createElement("div", {
     className: "spot-items"
-  }, catches.map(c => /*#__PURE__*/React.createElement("div", {
-    key: c.id,
-    className: "mini-catch",
-    onClick: () => { if (flushIfDirty()) onSelCatch(c); }
-  }, c.fishPhoto ? /*#__PURE__*/React.createElement(PhotoImg, {
-    src: c.fishPhoto,
-    alt: "",
-    className: "mini-catch-thumb"
-  }) : /*#__PURE__*/React.createElement("div", {
-    className: "mini-catch-thumb"
-  }, ""), /*#__PURE__*/React.createElement("div", {
-    className: "mini-catch-info"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "mini-catch-species"
-  }, c.species), /*#__PURE__*/React.createElement("div", {
-    className: "mini-catch-time"
-  }, fmtTime(c.timestamp, tzFor(c.gps || t.gps)), c.size ? ` · ${c.size}` : "", c.trollDepth ? ` · ${c.trollDepth}` : "", c.speedMS != null ? ` · ${fmtKnots(c.speedMS)}` : "", c.tide?.seasonal != null ? ` · ${tidePct(c.tide.seasonal)}%${tideArrow(c.tide.direction)}` : "")), /*#__PURE__*/React.createElement("span", {
-    style: {
-      color: "#ccc",
-      fontSize: 16
-    }
-  }, "›"))), observations.map(o => /*#__PURE__*/React.createElement("div", {
-    key: o.id,
-    className: "mini-obs",
-    onClick: () => { if (flushIfDirty()) onSelObs(o); }
-  }, /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 14
-    }
-  }, ""), /*#__PURE__*/React.createElement("div", {
-    style: {
-      flex: 1
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 13,
-      fontFamily: "'Playfair Display',serif",
-      fontWeight: 600
-    }
-  }, o.species, o.count ? ` × ${o.count}` : ""), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 10,
-      color: "#999"
-    }
-  }, fmtTime(o.timestamp, tzFor(o.gps || t.gps)), o.estimatedSize ? ` · ${o.estimatedSize}` : "")), /*#__PURE__*/React.createElement("span", {
-    style: {
-      color: "#ccc",
-      fontSize: 16
-    }
-  }, "›"))), catches.length === 0 && observations.length === 0 && /*#__PURE__*/React.createElement("div", {
+  }, catches.map(c => /*#__PURE__*/React.createElement(MiniCatchRow, { key: c.id, c, tz: tzFor(c.gps || t.gps), onOpen: () => { if (flushIfDirty()) onSelCatch(c); } })), observations.map(o => /*#__PURE__*/React.createElement(MiniObsRow, { key: o.id, o, tz: tzFor(o.gps || t.gps), onOpen: () => { if (flushIfDirty()) onSelObs(o); } })), catches.length === 0 && observations.length === 0 && /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 11,
       color: "#ccc",
@@ -6774,61 +6237,12 @@ function TripDetail({
       natural: true,
       camera: true,
       // Only drop the old photo once the new one is stored and the record points at it — compressPhoto gives null on failure
-      onPick: function(f) { var old = s.photo; compressPhoto(f, function(d) { if (!d) return; onUpdSpot(s.id, { photo: d }); if (isPhotoId(old) && old !== d) { photoDB.del(old); cloudDeletePhoto(old); } }); }
+      onPick: function(f) { var old = s.photo; compressPhoto(f, function(d) { if (!d) return; onUpdSpot(s.id, { photo: d }); if (old !== d) deletePhoto(old); }); }
     })), s.weather && /*#__PURE__*/React.createElement("div", {
       style: {fontSize: 10, color: "#999", marginBottom: 6, lineHeight: 1.6, fontFamily: "'Source Code Pro',monospace"}
     }, [s.weather.airTemp != null ? `${s.weather.airTemp}\xB0C air` : null, s.weather.pressure != null ? `${s.weather.pressure} hPa${s.weather.pressureLevel ? ` ${s.weather.pressureLevel}` : ""}` : null, s.weather.windSpeed != null ? `${s.weather.windSpeed} m/s ${windCompass(s.weather.windDir)}` : null, s.tide?.seasonal != null ? `Tide ${tidePct(s.tide.seasonal)}%${tideArrow(s.tide.direction)}` : null, s.weather.moon || null].filter(Boolean).join(" \xB7 ")), /*#__PURE__*/React.createElement("div", {
       className: "spot-items"
-    }, sc.map(c => /*#__PURE__*/React.createElement("div", {
-      key: c.id,
-      className: "mini-catch",
-      onClick: () => { if (flushIfDirty()) onSelCatch(c); }
-    }, c.fishPhoto ? /*#__PURE__*/React.createElement(PhotoImg, {
-      src: c.fishPhoto,
-      alt: "",
-      className: "mini-catch-thumb"
-    }) : /*#__PURE__*/React.createElement("div", {
-      className: "mini-catch-thumb"
-    }, ""), /*#__PURE__*/React.createElement("div", {
-      className: "mini-catch-info"
-    }, /*#__PURE__*/React.createElement("div", {
-      className: "mini-catch-species"
-    }, c.species), /*#__PURE__*/React.createElement("div", {
-      className: "mini-catch-time"
-    }, fmtTime(c.timestamp, tzFor(c.gps || s.gps)), c.size ? ` · ${c.size}` : "", c.tide?.seasonal != null ? ` · ${tidePct(c.tide.seasonal) + "%"}${tideArrow(c.tide.direction)}` : "")), /*#__PURE__*/React.createElement("span", {
-      style: {
-        color: "#ccc",
-        fontSize: 16
-      }
-    }, "\u203A"))), so.map(o => /*#__PURE__*/React.createElement("div", {
-      key: o.id,
-      className: "mini-obs",
-      onClick: () => { if (flushIfDirty()) onSelObs(o); }
-    }, /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontSize: 14
-      }
-    }, ""), /*#__PURE__*/React.createElement("div", {
-      style: {
-        flex: 1
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 13,
-        fontFamily: "'Playfair Display',serif",
-        fontWeight: 600
-      }
-    }, o.species, o.count ? ` × ${o.count}` : ""), /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 10,
-        color: "#999"
-      }
-    }, fmtTime(o.timestamp, tzFor(o.gps || s.gps)), o.estimatedSize ? ` · ${o.estimatedSize}` : "")), /*#__PURE__*/React.createElement("span", {
-      style: {
-        color: "#ccc",
-        fontSize: 16
-      }
-    }, "\u203A"))), sc.length === 0 && so.length === 0 && /*#__PURE__*/React.createElement("div", {
+    }, sc.map(c => /*#__PURE__*/React.createElement(MiniCatchRow, { key: c.id, c, tz: tzFor(c.gps || s.gps), onOpen: () => { if (flushIfDirty()) onSelCatch(c); } })), so.map(o => /*#__PURE__*/React.createElement(MiniObsRow, { key: o.id, o, tz: tzFor(o.gps || s.gps), onOpen: () => { if (flushIfDirty()) onSelObs(o); } })), sc.length === 0 && so.length === 0 && /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 11,
         color: "#ccc",
@@ -6859,7 +6273,6 @@ function CatchDetail({
   spots,
   catches
 }) {
-  const norm = c.tide?.seasonal;
   const trip = trips?.find(t => t.id === c.tripId);
   const spot = spots?.find(s => s.id === c.spotId);
   const trolling = trip?.mode === "trolling";
@@ -6907,7 +6320,7 @@ function CatchDetail({
     photo: p.photo,
     label: p.label,
     // Only drop the old photo once the new one is stored and the record points at it — compressPhoto gives null on failure
-    onPick: f => { var old = p.photo; compressPhoto(f, d => { if (!d) return; onUpdate(c.id, {[p.key]: d}); if (isPhotoId(old) && old !== d) { photoDB.del(old); cloudDeletePhoto(old); } }); }
+    onPick: f => { var old = p.photo; compressPhoto(f, d => { if (!d) return; onUpdate(c.id, {[p.key]: d}); if (old !== d) deletePhoto(old); }); }
   }))), /*#__PURE__*/React.createElement("div", {
     className: "modal-section"
   }, /*#__PURE__*/React.createElement("div", {
@@ -6962,100 +6375,7 @@ function CatchDetail({
     className: "modal-section"
   }, /*#__PURE__*/React.createElement("div", {
     className: "modal-section-title"
-  }, "Conditions"), /*#__PURE__*/React.createElement("div", {
-    className: "modal-grid"
-  }, c.weather?.airTemp != null && /*#__PURE__*/React.createElement("div", {
-    className: "modal-stat"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "modal-stat-label"
-  }, "Air Temp"), /*#__PURE__*/React.createElement("div", {
-    className: "modal-stat-value"
-  }, c.weather.airTemp, "\xB0C")), /*#__PURE__*/React.createElement(ConditionsRow, { weather: c.weather, variant: "stat" }), (c.waterTemp ?? spot?.waterTemp) != null && /*#__PURE__*/React.createElement("div", {
-    className: "modal-stat"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "modal-stat-label"
-  }, "Water Temp"), /*#__PURE__*/React.createElement("div", {
-    className: "modal-stat-value"
-  }, c.waterTemp ?? spot?.waterTemp, "\xB0C")), c.weather?.pressure != null && /*#__PURE__*/React.createElement("div", {
-    className: "modal-stat"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "modal-stat-label"
-  }, "Pressure"), /*#__PURE__*/React.createElement("div", {
-    className: "modal-stat-value"
-  }, c.weather.pressure, " hPa",
-    c.weather.pressureLevel ? ` · ${c.weather.pressureLevel}` : "",
-    c.weather.pressureTrend === "rising" ? " ↑" : c.weather.pressureTrend === "falling" ? " ↓" : "",
-    c.weather.pressureLabel ? /*#__PURE__*/React.createElement("span", { style: { fontSize: 10, color: "#999", fontStyle: "italic", display: "block" } }, c.weather.pressureLabel) : null
-  )), c.weather?.windSpeed != null && /*#__PURE__*/React.createElement("div", {
-    className: "modal-stat"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "modal-stat-label"
-  }, "Wind"), /*#__PURE__*/React.createElement("div", {
-    className: "modal-stat-value"
-  }, c.weather.windSpeed, " m/s", c.weather.windDir != null ? ` ${windCompass(c.weather.windDir)}` : "")), c.weather?.moon && /*#__PURE__*/React.createElement("div", {
-    className: "modal-stat"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "modal-stat-label"
-  }, "Moon"), /*#__PURE__*/React.createElement("div", {
-    className: "modal-stat-value"
-  }, c.weather.moon))), c.tide && /*#__PURE__*/React.createElement("div", {
-    style: {
-      marginTop: 10,
-      background: "white",
-      padding: "10px",
-      borderRadius: 4
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "modal-stat-label",
-    style: {
-      marginBottom: 5
-    }
-  }, "Tide Level (Seasonal %)"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      alignItems: "baseline",
-      gap: 8,
-      flexWrap: "wrap"
-    }
-  }, norm != null && /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 21,
-      fontWeight: 700,
-      color: "var(--water)"
-    }
-  }, tidePct(norm) + "%"), c.tide.valueCM != null && /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 11,
-      color: "#888"
-    }
-  }, c.tide.valueCM, " cm above CD"), norm != null && /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 11,
-      color: "var(--water-light)",
-      fontStyle: "italic"
-    }
-  }, tideLabel(norm), tideArrow(c.tide.direction))), norm != null && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
-    className: "modal-tide-bar"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "modal-tide-fill",
-    style: {
-      width: `${Math.max(0, Math.min(100, norm * 100))}%`
-    }
-  })), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      justifyContent: "space-between",
-      fontSize: 9,
-      color: "#aaa",
-      marginTop: 3
-    }
-  }, /*#__PURE__*/React.createElement("span", null, "Typical Low", c.tide.mlwsCM != null ? ` (${c.tide.mlwsCM}cm)` : ""), /*#__PURE__*/React.createElement("span", null, "Typical High", c.tide.mhwsCM != null ? ` (${c.tide.mhwsCM}cm)` : ""))), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 9,
-      color: "#ccc",
-      marginTop: 4
-    }
-  }, tideAttribution(c.tide.source).short))), /*#__PURE__*/React.createElement("div", {
+  }, "Conditions"), /*#__PURE__*/React.createElement(RecordConditions, { weather: c.weather, waterTemp: c.waterTemp ?? spot?.waterTemp, tide: c.tide })), /*#__PURE__*/React.createElement("div", {
     className: "modal-section"
   }, /*#__PURE__*/React.createElement("div", {
     className: "modal-section-title"
@@ -7141,7 +6461,6 @@ function ObsDetail({
 }) {
   const trip = trips?.find(t => t.id === o.tripId);
   const spot = spots?.find(s => s.id === o.spotId);
-  const norm = o.tide?.seasonal;
   return /*#__PURE__*/React.createElement("div", {
     className: "modal-overlay", onClick: e => e.target === e.currentTarget && onClose()
   }, /*#__PURE__*/React.createElement("div", { className: "modal" },
@@ -7171,40 +6490,7 @@ function ObsDetail({
           /*#__PURE__*/React.createElement("div", { className: "modal-stat-value" }, trip.name)))),
     (o.weather || o.tide) && /*#__PURE__*/React.createElement("div", { className: "modal-section" },
       /*#__PURE__*/React.createElement("div", { className: "modal-section-title" }, "Conditions"),
-      /*#__PURE__*/React.createElement("div", { className: "modal-grid" },
-        o.weather?.airTemp != null && /*#__PURE__*/React.createElement("div", { className: "modal-stat" },
-          /*#__PURE__*/React.createElement("div", { className: "modal-stat-label" }, "Air Temp"),
-          /*#__PURE__*/React.createElement("div", { className: "modal-stat-value" }, o.weather.airTemp, "\xb0C")),
-        /*#__PURE__*/React.createElement(ConditionsRow, { weather: o.weather, variant: "stat" }),
-        spot?.waterTemp != null && /*#__PURE__*/React.createElement("div", { className: "modal-stat" },
-          /*#__PURE__*/React.createElement("div", { className: "modal-stat-label" }, "Water Temp"),
-          /*#__PURE__*/React.createElement("div", { className: "modal-stat-value" }, spot.waterTemp, "\xb0C")),
-        o.weather?.pressure != null && /*#__PURE__*/React.createElement("div", { className: "modal-stat" },
-          /*#__PURE__*/React.createElement("div", { className: "modal-stat-label" }, "Pressure"),
-          /*#__PURE__*/React.createElement("div", { className: "modal-stat-value" },
-            o.weather.pressure, " hPa",
-            o.weather.pressureLevel ? ` · ${o.weather.pressureLevel}` : "",
-            o.weather.pressureTrend === "rising" ? " ↑" : o.weather.pressureTrend === "falling" ? " ↓" : "",
-            o.weather.pressureLabel ? /*#__PURE__*/React.createElement("span", { style: { fontSize: 10, color: "#999", fontStyle: "italic", display: "block" } }, o.weather.pressureLabel) : null)),
-        o.weather?.windSpeed != null && /*#__PURE__*/React.createElement("div", { className: "modal-stat" },
-          /*#__PURE__*/React.createElement("div", { className: "modal-stat-label" }, "Wind"),
-          /*#__PURE__*/React.createElement("div", { className: "modal-stat-value" }, o.weather.windSpeed, " m/s", o.weather.windDir != null ? ` ${windCompass(o.weather.windDir)}` : "")),
-        o.weather?.moon && /*#__PURE__*/React.createElement("div", { className: "modal-stat" },
-          /*#__PURE__*/React.createElement("div", { className: "modal-stat-label" }, "Moon"),
-          /*#__PURE__*/React.createElement("div", { className: "modal-stat-value" }, o.weather.moon))),
-      o.tide && /*#__PURE__*/React.createElement("div", { style: { marginTop: 10, background: "white", padding: "10px", borderRadius: 4 } },
-        /*#__PURE__*/React.createElement("div", { className: "modal-stat-label", style: { marginBottom: 5 } }, "Tide Level (Seasonal)"),
-        /*#__PURE__*/React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" } },
-          norm != null && /*#__PURE__*/React.createElement("span", { style: { fontSize: 21, fontWeight: 700, color: "var(--water)" } }, tidePct(norm), "%"),
-          o.tide.valueCM != null && /*#__PURE__*/React.createElement("span", { style: { fontSize: 11, color: "#888" } }, o.tide.valueCM, " cm above CD"),
-          norm != null && /*#__PURE__*/React.createElement("span", { style: { fontSize: 11, color: "var(--water-light)", fontStyle: "italic" } }, tideLabel(norm), tideArrow(o.tide.direction))),
-        norm != null && /*#__PURE__*/React.createElement(React.Fragment, null,
-          /*#__PURE__*/React.createElement("div", { className: "modal-tide-bar" },
-            /*#__PURE__*/React.createElement("div", { className: "modal-tide-fill", style: { width: `${Math.max(0,Math.min(100,norm*100))}%` } })),
-          /*#__PURE__*/React.createElement("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 9, color: "#aaa", marginTop: 3 } },
-            /*#__PURE__*/React.createElement("span", null, "Typical Low", o.tide.mlwsCM != null ? ` (${o.tide.mlwsCM}cm)` : ""),
-            /*#__PURE__*/React.createElement("span", null, "Typical High", o.tide.mhwsCM != null ? ` (${o.tide.mhwsCM}cm)` : ""))),
-        /*#__PURE__*/React.createElement("div", { style: { fontSize: 9, color: "#ccc", marginTop: 4 } }, tideAttribution(o.tide.source).short))),
+      /*#__PURE__*/React.createElement(RecordConditions, { weather: o.weather, waterTemp: spot?.waterTemp, tide: o.tide })),
     o.notes && /*#__PURE__*/React.createElement("div", { className: "modal-section" },
       /*#__PURE__*/React.createElement("div", { className: "modal-section-title" }, "Notes"),
       /*#__PURE__*/React.createElement("div", { className: "modal-notes" }, o.notes)),
