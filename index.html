@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.74-exp</title>
+  <title>The Catch Log v2.75-exp</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -592,6 +592,22 @@ const css = `
   .field-select { flex: 1; border: none; outline: none; font-family: 'Inter', sans-serif; font-size: 14px; color: var(--text); background: transparent; -webkit-appearance: none; appearance: none; cursor: pointer; font-weight: 500; }
   .field-select-wrap { flex: 1; position: relative; display: flex; align-items: center; }
   .field-select-wrap::after { content: "▾"; position: absolute; right: 0; font-size: 10px; color: var(--text-3); pointer-events: none; }
+  /* "All species" panel, opened from the species dropdown's "More species…" */
+  .sheet-backdrop { position: fixed; inset: 0; z-index: 400; background: rgba(20,24,29,.55); display: flex; flex-direction: column; justify-content: flex-end; animation: sheetfade .15s ease; touch-action: none; }
+  .sheet { background: var(--paper); border-radius: 14px 14px 0 0; max-height: 62vh; max-height: 62dvh; display: flex; flex-direction: column;
+    padding-bottom: env(safe-area-inset-bottom, 0px); box-shadow: 0 -8px 30px rgba(0,0,0,.2); animation: sheetup .2s ease-out; }
+  .sheet-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px 10px; border-bottom: 1px solid var(--rule); flex-shrink: 0; }
+  .sheet-title { font-size: 11px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--text-3); font-weight: 600; }
+  .sheet-close { border: none; background: none; font-size: 24px; color: var(--text-3); padding: 0 4px; line-height: 1; cursor: pointer; font-family: inherit; }
+  .sheet-list { overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; touch-action: pan-y; padding: 2px 0 10px; }
+  .sheet-group { font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--text-3); font-weight: 600; padding: 12px 18px 4px; }
+  .sheet-item { display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: 48px; padding: 0 18px; border: none; background: none;
+    font-family: 'Inter', sans-serif; font-size: 16px; color: var(--text); text-align: left; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+  .sheet-item:active { background: var(--rule); }
+  .sheet-item.on { color: var(--moss); font-weight: 600; }
+  .sheet-item.clear { font-size: 13px; color: var(--text-3); min-height: 44px; }
+  @keyframes sheetup { from { transform: translateY(100%); } to { transform: none; } }
+  @keyframes sheetfade { from { opacity: 0; } to { opacity: 1; } }
   .line-type-badge { font-size: 9px; padding: 3px 9px; border-radius: 2px; font-weight: 600; letter-spacing: 1.2px; text-transform: uppercase; border: 1px solid; background: transparent; }
   .line-type-fly  { color: var(--slate); border-color: var(--slate); }
   .line-type-spin { color: var(--text-2); border-color: var(--text-2); }
@@ -3226,7 +3242,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.74-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.75-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -3649,49 +3665,92 @@ function RecordConditions({ weather: w, waterTemp, tide }) {
 // Species picker: the phone's own dropdown, kept SHORT. Android draws a <select>
 // as a dialog that is centred while it fits on screen, but once the list is
 // longer it fills the whole screen with "Recent" pinned at the very top, out of
-// thumb reach. So it first offers only Recent (plus the current value) and
-// "More species…"; choosing that switches the field to the full list.
+// thumb reach. So the dropdown offers only Recent (plus the current value) and
+// "More species…", which opens the app's own panel with every species.
+// (A second, longer dropdown can't be opened for the user: Android doesn't let
+// a page open one from a choice made inside another — it needed a second tap
+// and looked like nothing had happened.)
 const MORE_SPECIES = "__more_species__"; // never a real species name
 function SpeciesSelect({ value, onChange }) {
   const data = useContext(SpeciesCtx);
-  const selectRef = useRef(null);
   const groups = useMemo(() => buildSpeciesGroups(data?.trips, data?.catches, data?.observations, value), [data, value]);
-  const [showAll, setShowAll] = useState(false);
-  // Nothing recent yet (new user) or nothing beyond it: the short list would
-  // save nothing, so show everything straight away
-  const full = showAll || !groups.recent.length || !groups.more.length;
-  // Open the full list right away where the browser allows it (showPicker on a
-  // select: recent Chrome on Android, not iOS Safari) — otherwise it's one more
-  // tap on the field
-  useEffect(() => {
-    if (!showAll || !selectRef.current) return;
-    try { selectRef.current.showPicker && selectRef.current.showPicker(); } catch (e) {}
-  }, [showAll]);
+  const [panel, setPanel] = useState(false);
+  // Nothing recent yet (new user) or nothing beyond it: a short list would save
+  // nothing, so the dropdown just holds everything
+  const short = groups.recent.length > 0 && groups.more.length > 0;
   const opt = s => /*#__PURE__*/React.createElement("option", { key: s, value: s }, s);
   const currentElsewhere = value && groups.recent.indexOf(value) < 0;
-  return /*#__PURE__*/React.createElement("div", {
-    className: "field-select-wrap"
-  }, /*#__PURE__*/React.createElement("select", {
-    ref: selectRef,
-    className: "field-select",
-    value: value,
-    onChange: e => {
-      if (e.target.value === MORE_SPECIES) { setShowAll(true); return; }
-      setShowAll(false); // back to the short list for next time
-      onChange(e.target.value);
-    }
-  }, /*#__PURE__*/React.createElement("option", {
-    value: ""
-  }, "— select —"),
-    groups.recent.length ? /*#__PURE__*/React.createElement("optgroup", { key: "r", label: "Recent" }, groups.recent.map(opt)) : null,
-    full
-      ? (groups.more.length ? /*#__PURE__*/React.createElement("optgroup", { key: "m", label: groups.recent.length ? "More" : "Species" }, groups.more.map(opt)) : null)
-      : [
-          // the select must always contain its current value, or it shows blank
-          currentElsewhere ? opt(value) : null,
-          /*#__PURE__*/React.createElement("option", { key: "more", value: MORE_SPECIES }, "More species…")
-        ]
-  ));
+  return /*#__PURE__*/React.createElement(React.Fragment, null,
+    /*#__PURE__*/React.createElement("div", { className: "field-select-wrap" },
+      /*#__PURE__*/React.createElement("select", {
+        className: "field-select",
+        value: value,
+        onChange: e => {
+          if (e.target.value === MORE_SPECIES) { setPanel(true); return; }
+          onChange(e.target.value);
+        }
+      },
+        /*#__PURE__*/React.createElement("option", { value: "" }, "\u2014 select \u2014"),
+        groups.recent.length ? /*#__PURE__*/React.createElement("optgroup", { key: "r", label: "Recent" }, groups.recent.map(opt)) : null,
+        short
+          ? [
+              // the select must always contain its current value, or it shows blank
+              currentElsewhere ? opt(value) : null,
+              /*#__PURE__*/React.createElement("option", { key: "more", value: MORE_SPECIES }, "More species\u2026")
+            ]
+          : (groups.more.length ? /*#__PURE__*/React.createElement("optgroup", { key: "m", label: groups.recent.length ? "More" : "Species" }, groups.more.map(opt)) : null))),
+    // Portal: the field is also used inside modals, whose overflow would clip the panel
+    panel && ReactDOM.createPortal(/*#__PURE__*/React.createElement(SpeciesSheet, {
+      groups, value, title: "All species",
+      onPick: v => { onChange(v); setPanel(false); },
+      onClose: () => setPanel(false)
+    }), document.body));
+}
+// The "All species" panel: slides up from the bottom, Recent first (around the
+// middle of the screen), then everything else.
+function SpeciesSheet({ groups, value, title, onPick, onClose }) {
+  const listRef = useRef(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  useEffect(() => {
+    // A history entry while open, so Android's back button / back gesture
+    // closes the sheet instead of leaving the app. Closing any other way
+    // removes that entry again (in the cleanup).
+    let popped = false;
+    history.pushState({ speciesSheet: true }, "");
+    const onPop = () => { popped = true; onCloseRef.current(); };
+    const onKey = e => { if (e.key === "Escape") onCloseRef.current(); };
+    window.addEventListener("popstate", onPop);
+    document.addEventListener("keydown", onKey);
+    // Keep the page underneath from scrolling while the list is dragged
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    // A current value further down (in "More") is scrolled into view
+    const on = listRef.current && listRef.current.querySelector(".sheet-item.on");
+    if (on && on.offsetTop > listRef.current.clientHeight) on.scrollIntoView({ block: "center" });
+    return () => {
+      window.removeEventListener("popstate", onPop);
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prevOverflow;
+      if (!popped && history.state && history.state.speciesSheet) history.back();
+    };
+  }, []);
+  const item = s => /*#__PURE__*/React.createElement("button", {
+    key: s, type: "button", className: "sheet-item" + (s === value ? " on" : ""), onClick: () => onPick(s)
+  }, /*#__PURE__*/React.createElement("span", null, s), s === value ? /*#__PURE__*/React.createElement("span", null, "✓") : null);
+  const section = (label, list) => list.length ? [
+    /*#__PURE__*/React.createElement("div", { key: "h-" + label, className: "sheet-group" }, label),
+    ...list.map(item)
+  ] : [];
+  return /*#__PURE__*/React.createElement("div", { className: "sheet-backdrop", onClick: onClose },
+    /*#__PURE__*/React.createElement("div", { className: "sheet", onClick: e => e.stopPropagation() },
+      /*#__PURE__*/React.createElement("div", { className: "sheet-head" },
+        /*#__PURE__*/React.createElement("span", { className: "sheet-title" }, title),
+        /*#__PURE__*/React.createElement("button", { type: "button", className: "sheet-close", onClick: onClose }, "\xD7")),
+      /*#__PURE__*/React.createElement("div", { className: "sheet-list", ref: listRef },
+        ...section("Recent", groups.recent),
+        ...section(groups.recent.length ? "More" : "Species", groups.more),
+        value ? /*#__PURE__*/React.createElement("button", { key: "clear", type: "button", className: "sheet-item clear", onClick: () => onPick("") }, "Clear selection") : null)));
 }
 function ConditionsModal({ onClose }) {
   const [ts] = useState(new Date().toISOString());
