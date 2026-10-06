@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Catch Log" />
-  <title>The Catch Log v2.88-exp</title>
+  <title>The Catch Log v2.89-exp</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
@@ -724,6 +724,8 @@ const css = `
   .stat-track-r .stat-fill-c { position: relative; z-index: 1; }
   .stat-base { position: absolute; top: 50%; width: 4px; height: 4px; margin: -2px 0 0 -2px; border-radius: 50%; background: var(--text); opacity: .7; z-index: 2; }
   .stat-group { font-size: 10px; font-weight: 700; letter-spacing: .5px; text-transform: uppercase; color: var(--text-2); padding: 10px 14px 4px; font-family: 'Source Code Pro', monospace; border-bottom: 1px solid var(--rule); }
+  .stat-details-toggle { display: flex; align-items: center; justify-content: flex-end; gap: 6px; font-size: 11px; color: var(--text-2); padding: 0 8px 8px; cursor: pointer; user-select: none; }
+  .stat-details-toggle input { margin: 0; accent-color: var(--moss); }
   .stat-n { font-size: 9px; color: var(--text-3); font-family: 'Source Code Pro', monospace; padding-top: 3px; }
   .stat-ct-h { font-size: 9px; color: var(--text-3); width: 32px; text-align: right; font-family: 'Source Code Pro', monospace; flex-shrink: 0; }
   .stat-filter { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -3268,7 +3270,7 @@ function FishLog() {
     })
   )), /*#__PURE__*/React.createElement("div", {
     className: "header-sub"
-  }, "v2.88-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
+  }, "v2.89-exp \xB7 Norway")), /*#__PURE__*/React.createElement("div", {
     className: "tab-bar"
   }, /*#__PURE__*/React.createElement("button", {
     className: `tab${tab === "trips" ? " active" : ""}`,
@@ -4626,7 +4628,7 @@ function ObsForm({
 // sess }], base } from chartOf in AnalyticsView. Per row: the rate bar with the
 // chart's average rate as a small dark dot inside it, the hours bar, then the
 // count and how many sessions it came from.
-function StatChart({ title, chart, fmt }) {
+function StatChart({ title, chart, fmt, details }) {
   var rows = chart.rows.filter(function(r) { return r.hours > 0; });
   if (!rows.length) return null;
   var base = chart.base;
@@ -4648,7 +4650,7 @@ function StatChart({ title, chart, fmt }) {
           React.createElement("div", { className: "stat-bar-line" },
             React.createElement("div", { className: "stat-track stat-track-r" },
               React.createElement("div", { className: "stat-fill-c", style: { width: pctOf(r.rate) + "%" } }),
-              base > 0 && React.createElement("div", { className: "stat-base", style: { left: pctOf(base) + "%" } })
+              details && base > 0 && React.createElement("div", { className: "stat-base", style: { left: pctOf(base) + "%" } })
             ),
             React.createElement("div", { className: "stat-ct" }, fmt(r.rate))
           ),
@@ -4658,7 +4660,7 @@ function StatChart({ title, chart, fmt }) {
             ),
             React.createElement("div", { className: "stat-ct-h" }, fmtH(r.hours))
           ),
-          React.createElement("div", { className: "stat-n" },
+          details && React.createElement("div", { className: "stat-n" },
             // "13 fish from 22% of 41 sessions": the share of sessions that
             // fished this bucket and had at least one fish in it. A percentage
             // reads oddly for a single session or for no fish, so those say it plainly.
@@ -4711,6 +4713,18 @@ function AnalyticsView({ catches, spots, trips, observations }) {
   var monthState = useState([]);
   var monthFilter = monthState[0], setMonthFilter = monthState[1];
   var areaState = useState(null); // {n,s,w,e} picked on the Insights map, or null
+  // "More details" — the average dot and the "13 fish from 22% of 41
+  // sessions" line under each bar. Off by default (cleaner charts). Kept per
+  // device in localStorage: a cl_ key, which the cloud-sync interception
+  // ignores (it only watches the four fl_ data keys).
+  var detailsState = useState(function() {
+    try { return localStorage.getItem("cl_insights_details") === "1"; } catch (e) { return false; }
+  });
+  var details = detailsState[0];
+  var setDetails = function(on) {
+    detailsState[1](on);
+    try { localStorage.setItem("cl_insights_details", on ? "1" : "0"); } catch (e) {}
+  };
   var area = areaState[0], setArea = areaState[1];
   var incCatches = dataFilter === "catches" || dataFilter === "both";
   var incObs = dataFilter === "obs" || dataFilter === "both";
@@ -5423,7 +5437,7 @@ function AnalyticsView({ catches, spots, trips, observations }) {
   var fmtRate = S.fmtRate;
   // Props shared by every rate chart
   var rc = function(name, chart) {
-    return { title: name + " (" + rateUnit + ")", chart: chart, fmt: fmtRate };
+    return { title: name + " (" + rateUnit + ")", chart: chart, fmt: fmtRate, details: details };
   };
   var totalSpotsFished = S.totalSpotsFished;
   var fmtH = S.fmtH;
@@ -5484,6 +5498,9 @@ function AnalyticsView({ catches, spots, trips, observations }) {
         style: { padding: "3px 6px", fontSize: 10, fontFamily: "inherit", border: "1px solid var(--rule)", borderRadius: 6, cursor: "pointer", background: "none", color: "var(--text-3)" }
       }, "Clear")
     ),
+    dataFilter !== "spots" && React.createElement("label", { className: "stat-details-toggle" },
+      React.createElement("input", { type: "checkbox", checked: details, onChange: function(e) { setDetails(e.target.checked); } }),
+      "More details"),
     // ── KPI cards + charts (hidden in Spots mode — none are meaningful
     //    without catch data, see the Spots tiles + map below instead) ──
     dataFilter !== "spots" && React.createElement(React.Fragment, null,
